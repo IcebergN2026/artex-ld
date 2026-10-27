@@ -1,0 +1,25 @@
+ARTEX 可发布配置示例（已脱敏）
+
+来源：start.sh export-config；已排除 llm_profiles.jsonl。
+格式：PostgreSQL COPY text（每行一个转义后的 JSON 对象），请使用 start.sh import-config 导入。
+
+包含文件：
+  agent_prompt_vars.jsonl: 9 行
+  agent_prompts_current.jsonl: 11 行
+  agent_skill_visibility.jsonl: 3 行
+  agent_triggers.jsonl: 3 行
+  agent_visibility.jsonl: 2 行
+  agents_builtin_overrides.jsonl: 7 行
+  agents_custom.jsonl: 4 行
+  asset_intercept_rules_custom.jsonl: 0 行
+  intercept_rules_custom.jsonl: 0 行
+  mcp_servers.jsonl: 3 行
+  notification_channels.jsonl: 0 行
+  planner_templates_custom.jsonl: 0 行
+  task_categories.jsonl: 5 行
+  tools_bindings.jsonl: 56 行
+  tools_custom.jsonl: 0 行
+
+排除：llm_profiles.jsonl（LLM 配置/密钥）
+      companies.jsonl / company_scope.jsonl / task_templates.jsonl（测试与资产实例数据）
+MCP：全部禁用；认证值替换为 <REPLACE_ME>；内网地址替换为 mcp.example.internal。

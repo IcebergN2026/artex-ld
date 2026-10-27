@@ -1,0 +1,3 @@
+{"agent_key":"worker","skill_name":"api-recon","enabled":true}
+{"agent_key":"auto","skill_name":"api-recon","enabled":true}
+{"agent_key":"pentest","skill_name":"api-recon","enabled":true}

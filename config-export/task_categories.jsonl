@@ -1,0 +1,5 @@
+{"name":"内网渗透","nkey":"内网渗透","default_review_enabled":true,"asset_mode":"pentest","default_description":"","seed_first_intent":false,"seed_executor":"","default_planner_template_nkey":"内网渗透"}
+{"name":"权限提升","nkey":"权限提升","default_review_enabled":true,"asset_mode":"pentest","default_description":"","seed_first_intent":false,"seed_executor":"","default_planner_template_nkey":"权限提升"}
+{"name":"漏洞利用","nkey":"漏洞利用","default_review_enabled":true,"asset_mode":"pentest","default_description":"","seed_first_intent":false,"seed_executor":"","default_planner_template_nkey":"漏洞利用"}
+{"name":"漏洞挖掘","nkey":"漏洞挖掘","default_review_enabled":false,"asset_mode":"pentest","default_description":"","seed_first_intent":false,"seed_executor":"","default_planner_template_nkey":"漏洞挖掘"}
+{"name":"代码审计","nkey":"代码审计","default_review_enabled":false,"asset_mode":"pentest","default_description":"","seed_first_intent":false,"seed_executor":"","default_planner_template_nkey":"代码审计"}

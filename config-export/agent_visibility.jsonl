@@ -1,0 +1,2 @@
+{"agent_key":"worker","resource_kind":"mcp","mcp_name":"godzilla","mcp_tool_name":"","enabled":true}
+{"agent_key":"trace_cleaner","resource_kind":"mcp","mcp_name":"godzilla","mcp_tool_name":"","enabled":true}
