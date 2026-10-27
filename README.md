@@ -9,15 +9,11 @@
 ---
 
 ## 截图预览
-
-![[Pasted image 20261027220254.png]]
-![[Pasted image 20261027220306.png]]
-
-![[Pasted image 20261027220925.png]]
-
-![[Pasted image 20261027220937.png]]
-
-![[Pasted image 20261027221108.png]]
+![](docs/images/Pasted%20image%2020261027220254.png)
+![](docs/images/Pasted%20image%2020261027220306.png)
+![](docs/images/Pasted%20image%2020261027220925.png)
+![](docs/images/Pasted%20image%2020261027220937.png)
+![](docs/images/Pasted%20image%2020261027221108.png)
 ## 1. 二开内容
 
 ### 1.1 原版的典型流程
