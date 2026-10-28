@@ -138,6 +138,43 @@ func TestReviewApproveHTTPFlow(t *testing.T) {
 	}
 }
 
+func TestReviewDecisionRejectsMalformedJSON(t *testing.T) {
+	_, h, token, task := setupReviewHTTPServer(t)
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "approve", path: "approve", body: `{"expected_version":`},
+		{name: "reject", path: "reject", body: `{"reason":"valid reason","expected_version":`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			intentID := mustAddHTTPReviewIntent(t, task, "malformed JSON "+tt.name, "")
+			path := fmt.Sprintf("/api/tasks/%s/review/%d/%s", task.ID, intentID, tt.path)
+			if rec := doAuthed(t, h, token, http.MethodPost, path, tt.body); rec.Code != 400 {
+				t.Fatalf("malformed JSON must 400, got %d %s", rec.Code, rec.Body.String())
+			}
+			n, err := task.Store.GetNode(intentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n.State != "proposed" {
+				t.Fatalf("malformed request changed intent state to %q", n.State)
+			}
+		})
+	}
+}
+
+func TestReviewApproveAllowsEmptyBodyCompatibility(t *testing.T) {
+	_, h, token, task := setupReviewHTTPServer(t)
+	intentID := mustAddHTTPReviewIntent(t, task, "empty body compatibility", "")
+	path := fmt.Sprintf("/api/tasks/%s/review/%d/approve", task.ID, intentID)
+	if rec := doAuthed(t, h, token, http.MethodPost, path, ""); rec.Code != 200 {
+		t.Fatalf("empty body must retain legacy behavior, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestReviewRejectHTTPFlow(t *testing.T) {
 	_, h, token, task := setupReviewHTTPServer(t)
 	intentID := mustAddHTTPReviewIntent(t, task, "http 驳回流测试", "")
@@ -231,13 +268,17 @@ func TestTaskCloseReviewGuard(t *testing.T) {
 
 func TestReviewMessagesIncludeDetail(t *testing.T) {
 	_, h, token, task := setupReviewHTTPServer(t)
-	// 写入一条带 detail 的 review agent 回复
-	task.Store.EmitActivity(db.Activity{
+	// 写入一条超过 summary 截断长度的 review agent 回复。
+	fullDetail := strings.Repeat("完整回复：多行分析，不能只显示摘要。\n", 30)
+	activityID, err := task.Store.AppendActivity(db.Activity{
 		Worker:  "review",
 		Kind:    "result",
 		Summary: "简短摘要",
-		Detail:  "这是完整的详细分析内容，应当出现在 detail 字段而不是被 summary 的 200 字限制截断。",
+		Detail:  fullDetail,
 	})
+	if err != nil {
+		t.Fatalf("append review activity: %v", err)
+	}
 
 	rec := doAuthed(t, h, token, http.MethodGet, fmt.Sprintf("/api/tasks/%s/review/messages", task.ID), "")
 	if rec.Code != 200 {
@@ -245,32 +286,35 @@ func TestReviewMessagesIncludeDetail(t *testing.T) {
 	}
 	var body struct {
 		Messages []struct {
-			ID       int64  `json:"id"`
-			Worker   string `json:"worker"`
-			Kind     string `json:"kind"`
-			Summary  string `json:"summary"`
-			Detail   string `json:"detail"`
-			IsError  bool   `json:"is_error"`
-			CreatedAt int64 `json:"created_at"`
+			ID        int64  `json:"id"`
+			Worker    string `json:"worker"`
+			Kind      string `json:"kind"`
+			Summary   string `json:"summary"`
+			Detail    string `json:"detail"`
+			IsError   bool   `json:"is_error"`
+			CreatedAt int64  `json:"created_at"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(body.Messages) == 0 {
-		t.Fatal("expected at least one message")
+	for _, m := range body.Messages {
+		if m.ID != activityID {
+			continue
+		}
+		if m.Worker != "review" {
+			t.Fatalf("worker=%q, want review", m.Worker)
+		}
+		if m.Kind != "result" {
+			t.Fatalf("kind=%q, want result", m.Kind)
+		}
+		if len(fullDetail) <= 200 {
+			t.Fatalf("test detail must exceed 200 bytes, got %d", len(fullDetail))
+		}
+		if m.Detail != fullDetail {
+			t.Fatalf("detail was truncated or changed: got %d bytes, want %d", len(m.Detail), len(fullDetail))
+		}
+		return
 	}
-	m := body.Messages[0]
-	if m.Worker != "review" {
-		t.Fatalf("worker=%q, want review", m.Worker)
-	}
-	if m.Kind != "result" {
-		t.Fatalf("kind=%q, want result", m.Kind)
-	}
-	if m.Detail == "" {
-		t.Fatal("detail field must be present and non-empty")
-	}
-	if !strings.Contains(m.Detail, "完整的详细分析内容") {
-		t.Fatalf("detail content mismatch: %q", m.Detail)
-	}
+	t.Fatalf("inserted review activity %d not returned", activityID)
 }

@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -80,13 +82,12 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// TestExecPython runs a real Python script end-to-end: it must read params from
-// stdin JSON and the mirrored env var, then print — verifying the whole script
-// param-passing path. Skips if no python3.
+// TestExecPython runs a real Python script end-to-end: parameters must arrive via
+// stdin JSON and the mirrored environment variable. Skips without a working interpreter.
 func TestExecPython(t *testing.T) {
-	interp, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 unavailable")
+	interp := detectPython()
+	if interp == "" {
+		t.Skip("no working Python interpreter available")
 	}
 	code := `import json,sys,os
 a = json.load(sys.stdin)
@@ -156,12 +157,33 @@ func TestRunHTTPTool(t *testing.T) {
 	}
 }
 
-func TestDetectPython(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 unavailable")
+func TestDetectPythonSkipsBrokenPython3(t *testing.T) {
+	dir := t.TempDir()
+	want := "python"
+	if runtime.GOOS == "windows" {
+		want += ".bat"
+		for name, body := range map[string]string{
+			"python3.bat": "@echo off\r\nexit /b 1\r\n",
+			"python.bat":  "@echo off\r\necho Python 3.12.0\r\n",
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	} else {
+		for name, body := range map[string]string{
+			"python3": "#!/bin/sh\nexit 1\n",
+			"python":  "#!/bin/sh\necho Python 3.12.0\n",
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if p := detectPython(); p == "" {
-		t.Fatal("detectPython returned empty despite python3 on PATH")
+	t.Setenv("PATH", dir)
+
+	if got := detectPython(); filepath.Base(got) != want {
+		t.Fatalf("detectPython() = %q, want executable %q after broken python3", got, want)
 	}
 }
 

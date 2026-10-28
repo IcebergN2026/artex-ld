@@ -10,6 +10,8 @@ config.json
 .env.*
 !.env.example
 *.db
+/dist
+/screenshots
 transcripts
 bench/kv
 bench/debug

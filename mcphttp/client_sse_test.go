@@ -3,6 +3,7 @@ package mcphttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -86,13 +87,16 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	c, err := NewSSE(ctx, "test", srv.URL+"/sse", map[string]string{"Authorization ": "Bearer test"}, false)
+	setupCtx, cancelSetup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSetup()
+	c, err := NewSSE(setupCtx, "test", srv.URL+"/sse", map[string]string{"Authorization ": "Bearer test"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
+	cancelSetup() // 初始化结束后，setup ctx 的取消不应关闭长驻 SSE。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	tools, err := c.Tools(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -103,5 +107,61 @@ func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 	got, err := c.Call(ctx, "echo", map[string]any{"value": "x"})
 	if err != nil || got != "ok" {
 		t.Fatalf("Call() = %q, %v", got, err)
+	}
+}
+
+func TestLegacySSEHandshakeHonorsContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	c, err := NewSSE(ctx, "test", srv.URL, nil, false)
+	if c != nil {
+		_ = c.Close()
+		t.Fatal("handshake without an endpoint must not succeed")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handshake error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("handshake ignored cancellation for %s", elapsed)
+	}
+}
+
+func TestLegacyRoundTripPreservesStreamError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	// done 和 streamErr 同时就绪时，select 的选择是随机的；重复调用确保覆盖该交错。
+	for i := 0; i < 50; i++ {
+		want := errors.New("stream parse failed")
+		streamErr := make(chan error, 1)
+		streamErr <- want
+		streamDone := make(chan struct{})
+		close(streamDone)
+		c := &Client{
+			messageURL: srv.URL,
+			http:       srv.Client(),
+			streamDone: streamDone,
+			streamErr:  streamErr,
+			pending:    make(map[int]chan *rpcResponse),
+		}
+		_, err := c.legacyRoundTrip(context.Background(), rpcRequest{
+			JSONRPC: "2.0",
+			ID:      i + 1,
+			Method:  "ping",
+		}, true)
+		if !errors.Is(err, want) {
+			t.Fatalf("iteration %d: error = %v, want original stream error", i, err)
+		}
 	}
 }

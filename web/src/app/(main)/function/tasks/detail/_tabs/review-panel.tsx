@@ -1,11 +1,8 @@
-// ═══ ARTEX 二开 · [P-INTENT·U3 审核面板] ═══
-// 功能介绍：ReviewPanel——审核会话完整面板：待审意图卡片区（置顶独立区）、review agent 消息流
-//           （人工右气泡/agent 左气泡/系统事件中轴胶囊/错误红卡）、intercept ask 确认卡停靠 composer
-//           上方、驳回理由对话框、自动处置 Switch（开=agent 自主裁决；关=人工全审）
-// 二开日期：2026-10-21（2026-10-25 全面重设计 + 人工全审语义）
+// ReviewPanel 汇总单个任务的审核对话、待审意图、拦截确认和自动处置设置。
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
 	CheckIcon,
 	XIcon,
@@ -14,8 +11,7 @@ import {
 	Loader2Icon,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { InterceptPending, ReviewMessage } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import type { InterceptPending, ReviewMessage, ReviewProposedIntent as ProposedIntent } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -33,26 +29,10 @@ import {
 
 // ── 类型 ──────────────────────────────────────────────
 
-interface ProposedIntent {
-	id: number;
-	priority: number;
-	summary: string;
-	pending_executor: string | null; // m00973/K24：送审时的预选执行器（payload.pending_executor），approve 时后端自动转正
-	replaces: number | null;
-	review_note: string | null; // K20：AI 预审摘要（≤200 字）
-	created_at: string;
-	content_version?: number; // 审核流 PR3：批准/驳回时回传做 expected_version CAS
-}
-
-// 【二开·P-REVIEW·U3c】驳回理由草稿：默认以 AI 预审意见（payload.review_note）回填，
-// 人可直接编辑——预审意见已经是“这条意图为什么要改/为什么不放行”的描述，用它做草稿比空白框好。
-// 无预审意见时返回空串（保持原行为：必须人自己写）。
+// prefillRejectReason 将 AI 预审意见作为可编辑的驳回理由草稿。
 function prefillRejectReason(it: ProposedIntent | null): string {
-	const note = (it?.review_note ?? "").trim();
-	return note;
+	return (it?.review_note ?? "").trim();
 }
-
-
 
 // 系统事件（预审落账/放行/驳回通知等）渲染为中轴胶囊，不占聊天气泡。
 const SYS_RE = /^(预审|意图 #|【系统】)/;
@@ -68,9 +48,9 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 	const [messages, setMessages] = useState<ReviewMessage[]>([]);
 	const [proposed, setProposed] = useState<ProposedIntent[]>([]);
 	const [pending, setPending] = useState<InterceptPending[]>([]);
+	const [pendingHasMore, setPendingHasMore] = useState(false);
 	const [input, setInput] = useState("");
 	const [sending, setSending] = useState(false);
-	const [decided, setDecided] = useState<Record<number, "approved" | "rejected">>({});
 	// 驳回对话框
 	const [rejectTarget, setRejectTarget] = useState<ProposedIntent | null>(null);
 	const [rejectReason, setRejectReason] = useState("");
@@ -78,10 +58,14 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 	// 自动跟滚：仅当用户本就贴着底部时才跟随新消息；翻上去看历史绝不拉回去。
 	const scrollAreaRef = useRef<HTMLDivElement>(null);
 	const stickBottomRef = useRef(true);
-	// 「思考中」指示：发送后等待 agent 回话（轮询 3s 拿回）。>45s 显示连通性提示，>120s 放弃。
-	const awaitSinceRef = useRef(0);
+	// 用消息 id 而非客户端时钟判断回复是否到达，避免浏览器与服务器时钟漂移。
+	const awaitingRef = useRef(false);
+	const awaitAfterIdRef = useRef(0);
+	const messageRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const [awaiting, setAwaiting] = useState(false);
 	const [awaitSlow, setAwaitSlow] = useState(false);
+	const taskIdRef = useRef(taskId);
+	taskIdRef.current = taskId;
 
 	useEffect(() => {
 		const vp = scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
@@ -93,16 +77,33 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 		return () => vp.removeEventListener("scroll", onScroll);
 	}, []);
 
-	// 审核流 PR2.9.5：执行器在送审/修订时确定，批准时后端转正，面板不再提供下拉改选
+	// 执行器由后端在送审/修订时确定，面板只展示。
+
+	// 切换任务时清空上一任务的消息、草稿和等待水位，防止跨任务污染。
+	useEffect(() => {
+		setMessages([]);
+		setProposed([]);
+		setPending([]);
+		setPendingHasMore(false);
+		setInput("");
+		setSending(false);
+		awaitingRef.current = false;
+		awaitAfterIdRef.current = 0;
+		setAwaiting(false);
+		setAwaitSlow(false);
+	}, [taskId]);
 
 	// 轮询：消息流（3s）+ 待审列表（5s）+ intercept 确认卡（2s）
 	const loadMessages = useCallback(() => {
-		api.reviewMessages(taskId)
+		const requestTaskId = taskId;
+		api.reviewMessages(requestTaskId)
 			.then((list) => {
+				if (taskIdRef.current !== requestTaskId) return;
 				setMessages(list);
-				// 人工消息之后出现了新的非人工消息 → 回复已到，撤掉「思考中」。
-				if (awaitSinceRef.current > 0 && list.some((m) => m.kind !== "user" && m.created_at * 1000 > awaitSinceRef.current)) {
-					awaitSinceRef.current = 0;
+				// 仅终态消息结束等待；审核过程日志不会让最终回复的指示提前消失。
+				const terminalKinds = ["result", "error", "auto_result", "review_rejection"];
+				if (awaitingRef.current && list.some((m) => m.id > awaitAfterIdRef.current && terminalKinds.includes(m.kind))) {
+					awaitingRef.current = false;
 					setAwaiting(false);
 					setAwaitSlow(false);
 				}
@@ -110,13 +111,21 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 			.catch(() => {});
 	}, [taskId]);
 	const loadProposed = useCallback(() => {
-		// 审核端点列表查询带 executor='review' 双条件过滤（D3 ProposedIntents SQL，m00973/K24）
-		api.reviewProposed(taskId).then((list) => setProposed(list as unknown as ProposedIntent[])).catch(() => {});
+		// 后端按当前任务和 review executor 过滤待审意图。
+		const requestTaskId = taskId;
+		api.reviewProposed(requestTaskId)
+			.then((list) => { if (taskIdRef.current === requestTaskId) setProposed(list); })
+			.catch(() => {});
 	}, [taskId]);
 	const loadPending = useCallback(() => {
-		// interceptTask 返回已解包的数组（api.ts:1258 .then((r) => arr(r.items))）
-		api.interceptTask(taskId)
-			.then((list) => setPending(list.filter((p) => p.status === "pending" && p.agent_name === "review")))
+		// 仅查询当前任务的待确认首页，避免下载完整审批历史或全站队列。
+		const requestTaskId = taskId;
+		api.interceptTaskPage(requestTaskId, 1, 100, { status: "pending" })
+			.then((page) => {
+				if (taskIdRef.current !== requestTaskId) return;
+				setPending(page.items.filter((p) => p.agent_name === "review"));
+				setPendingHasMore(page.total > page.items.length);
+			})
 			.catch(() => {});
 	}, [taskId]);
 
@@ -127,14 +136,20 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 		const t1 = setInterval(loadMessages, 3000);
 		const t2 = setInterval(loadProposed, 5000);
 		const t3 = setInterval(loadPending, 2000);
-		return () => { clearInterval(t1); clearInterval(t2); clearInterval(t3); };
+		return () => {
+			clearInterval(t1);
+			clearInterval(t2);
+			clearInterval(t3);
+			if (messageRefreshTimerRef.current) clearTimeout(messageRefreshTimerRef.current);
+			awaitingRef.current = false;
+		};
 	}, [loadMessages, loadProposed, loadPending]);
 
 	// 思考中超时降级：>45s 提示检查 LLM 连通性；>120s 撤掉指示（错误会以红卡形式出现在消息流）。
 	useEffect(() => {
 		if (!awaiting) return;
 		const slowT = setTimeout(() => setAwaitSlow(true), 45000);
-		const giveUpT = setTimeout(() => { awaitSinceRef.current = 0; setAwaiting(false); setAwaitSlow(false); }, 120000);
+		const giveUpT = setTimeout(() => { awaitingRef.current = false; setAwaiting(false); setAwaitSlow(false); }, 120000);
 		return () => { clearTimeout(slowT); clearTimeout(giveUpT); };
 	}, [awaiting]);
 
@@ -145,23 +160,25 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 	// 处置动作
 	const approve = async (it: ProposedIntent) => {
 		try {
-			// 审核流 PR3：content_version 回传做 expected_version CAS；executor 由后端从 pending_executor 转正
+			// 回传 content_version 做 CAS；后端从 pending_executor 确定执行器。
 			await api.reviewApprove(taskId, it.id, it.content_version);
-			setDecided((d) => ({ ...d, [it.id]: "approved" }));
 			setProposed((l) => l.filter((x) => x.id !== it.id));
-		} catch { /* 409=已被处理，下轮轮询自然消失 */ }
+		} catch (e) {
+			toast.error("通过失败：" + (e as Error).message);
+		}
 	};
 	const doReject = async () => {
 		if (!rejectTarget || !rejectReason.trim()) return;
 		try {
 			await api.reviewReject(taskId, rejectTarget.id, rejectReason.trim(), rejectTarget.content_version);
-			setDecided((d) => ({ ...d, [rejectTarget.id]: "rejected" }));
 			setProposed((l) => l.filter((x) => x.id !== rejectTarget.id));
-		} catch { /* 409=意图已被其它通道处理，下轮轮询自然从列表消失 */ }
-		setRejectTarget(null);
-		setRejectReason("");
+			setRejectTarget(null);
+			setRejectReason("");
+		} catch (e) {
+			toast.error("驳回失败：" + (e as Error).message);
+		}
 	};
-	// 【二开·P-REVIEW·U3b】起 —— 自动处置 Switch（tasks.review_auto，PATCH 落库即生效，ReviewRunner 下一轮 60s 内接管）
+	// 自动处置开关；后端 ReviewRunner 在下一轮审核时读取最新设置。
 	const [reviewAuto, setReviewAuto] = useState(false);
 	const [autoToggling, setAutoToggling] = useState(false);
 	// 人工全审：任务未开启审核时面板显示空态（tab 常驻，不再按开关隐藏）。
@@ -175,33 +192,52 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 		try {
 			await api.updateTask(taskId, { review_auto: v });
 			setReviewAuto(v);
-		} catch { /* 失败保持原态 */ } finally {
+		} catch (e) {
+			toast.error("更新自动处置失败：" + (e as Error).message);
+		} finally {
 			setAutoToggling(false);
 		}
 	};
-	// 【二开·P-REVIEW·U3b】止
 
 	const send = async () => {
 		const v = input.trim();
 		if (!v || sending) return;
-		setInput("");
+		const requestTaskId = taskId;
 		setSending(true);
-		stickBottomRef.current = true; // 自己发言后强制回到底部
 		try {
-			await api.reviewChat(taskId, v); // 202 accepted，回复走消息流轮询回来
-			awaitSinceRef.current = Date.now();
+			// 发送前取得当前任务的消息水位，避免首次加载前发送把历史终态误认为新回复。
+			const current = await api.reviewMessages(requestTaskId);
+			if (taskIdRef.current !== requestTaskId) return;
+			setInput("");
+			setMessages(current);
+			stickBottomRef.current = true; // 自己发言后强制回到底部
+			awaitAfterIdRef.current = current.reduce((max, m) => Math.max(max, m.id), 0);
+			awaitingRef.current = true;
 			setAwaiting(true);
 			setAwaitSlow(false);
+			await api.reviewChat(requestTaskId, v); // 202 accepted，回复走消息流轮询回来
+		} catch (e) {
+			if (taskIdRef.current === requestTaskId) {
+				awaitingRef.current = false;
+				setAwaiting(false);
+				setAwaitSlow(false);
+				setInput(v);
+			}
+			toast.error("发送失败：" + (e as Error).message);
 		} finally {
-			setSending(false);
-			setTimeout(loadMessages, 800);
+			if (taskIdRef.current === requestTaskId) {
+				setSending(false);
+				messageRefreshTimerRef.current = setTimeout(loadMessages, 800);
+			}
 		}
 	};
 	const decidePending = async (p: InterceptPending, decision: "allowed" | "denied") => {
 		try {
 			await api.interceptDecide(p.id, decision);
 			setPending((l) => l.filter((x) => x.id !== p.id));
-		} catch { /* 已超时/被处理 */ }
+		} catch (e) {
+			toast.error("处置确认失败：" + (e as Error).message);
+		}
 	};
 
 	// 未开启审核的任务：常驻空态（所有 hooks 已执行完毕，此处早退安全）。
@@ -248,7 +284,7 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 							<div key={it.id} className="rounded-lg border border-dashed border-amber-500 bg-amber-50 px-3.5 py-2.5 dark:bg-amber-950/20">
 								<div className="flex items-center gap-2">
 									<span className="font-mono text-sm font-bold text-blue-600 dark:text-blue-400">#{it.id}</span>
-									<Badge className="bg-amber-600 text-white">pri={it.priority}</Badge>
+									<Badge className="bg-amber-600 text-white">pri={it.priority ?? "?"}</Badge>
 									<Badge variant="destructive" className="animate-pulse">待审</Badge>
 									<span className="ml-auto text-xs text-muted-foreground">
 										执行器：<b className="text-foreground">{it.pending_executor || "默认 worker"}</b>
@@ -350,9 +386,14 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 				</div>
 			</ScrollArea>
 
-			{/* ── 确认卡：停靠 composer 正上方（K15：写动作按钮确认制） ── */}
-			{pending.length > 0 && (
+			{/* 确认卡停靠在输入框上方，所有写操作都需人工确认。 */}
+			{(pending.length > 0 || pendingHasMore) && (
 				<div className="border-t bg-amber-50/50 px-4 pt-2.5 dark:bg-amber-950/15">
+					{pendingHasMore && (
+						<p className="pb-2 text-xs text-amber-700 dark:text-amber-400">
+							待确认请求超过 100 条，当前仅加载第一页；请先处理已显示的请求。
+						</p>
+					)}
 					{pending.map((p) => (
 						<div key={p.id} className="mb-2.5 rounded-xl border border-amber-300/70 bg-card shadow-sm dark:border-amber-900/60">
 							<div className="flex items-center gap-1.5 px-3.5 pt-2.5 text-xs font-bold text-amber-700 dark:text-amber-400">

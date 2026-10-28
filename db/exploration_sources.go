@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"sort"
 )
 
@@ -311,6 +312,65 @@ func (s *ExplorationStore) ActivityListWithSources(nodeID, sinceID int64, limit 
 		return markInheritedActivities(acts, source.Task.TaskID), cursor, nil
 	}
 	return []Activity{}, sinceID, nil
+}
+
+// LatestWorkerOutputWithSources returns the newest final result for an intent,
+// falling back to its newest text only when no result exists. The dedicated
+// query avoids the old first-1000-history limit; inherited intents must still
+// be terminal before their activity is exposed.
+func (s *ExplorationStore) LatestWorkerOutputWithSources(nodeID int64) (*Activity, error) {
+	store := s
+	sourceTaskID := int64(0)
+	terminalOnly := false
+	node, err := s.GetNode(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node == nil {
+		sources, err := s.DirectSourceStores()
+		if err != nil {
+			return nil, err
+		}
+		for _, source := range sources {
+			node, err = source.Store.GetNode(nodeID)
+			if err != nil {
+				return nil, err
+			}
+			if node != nil && node.Kind == KindIntent {
+				store = source.Store
+				sourceTaskID = source.Task.TaskID
+				terminalOnly = true
+				break
+			}
+		}
+		if store == s {
+			return nil, nil
+		}
+	}
+
+	query := `SELECT a.id,a.node_id,COALESCE(a.worker,''),COALESCE(a.kind,''),a.is_error,COALESCE(a.summary,''),a.created_at
+FROM activity a`
+	if terminalOnly {
+		query += ` JOIN exploration_nodes n ON n.id=a.node_id AND n.exploration_id=a.exploration_id`
+	}
+	query += ` WHERE a.exploration_id=$1 AND a.node_id=$2 AND a.kind IN ('result','text')`
+	if terminalOnly {
+		query += ` AND n.state IN ('done','blocked','exhausted','stopped')`
+	}
+	query += ` ORDER BY (a.kind='result') DESC,a.id DESC LIMIT 1`
+	var a Activity
+	err = store.db.QueryRow(query, store.expID, nodeID).Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.IsError, &a.Summary, &a.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sourceTaskID != 0 {
+		a.SourceTaskID = sourceTaskID
+		a.Inherited = true
+	}
+	return &a, nil
 }
 
 // ActivityDetailWithSources keeps the legacy local-task lookup (including local

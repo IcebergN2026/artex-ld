@@ -474,7 +474,7 @@ chmod +x deploy.sh
 ./deploy.sh --no-build
 ```
 
-首次运行会自动创建 `.env` 并生成 **16 位随机 PostgreSQL 密码**；已有 `.env` 不会被覆盖。部署成功后，终端会显示实际生效的数据库密码和 JWT Key，请妥善保存，不要公开终端日志。
+首次运行会自动创建权限为 `0600` 的 `.env` 并生成随机 PostgreSQL 密码；已有 `.env` 不会被覆盖。部署成功后默认不打印凭据，确需显示数据库密码时使用 `./deploy.sh --show-secrets`。JWT 密钥由服务在 `data/jwt.key` 自动管理。
 
 Compose 使用 `Dockerfile.source` 构建当前源码，不会拉取没有这些二开能力的上游 `autumn27/artex:latest`。
 

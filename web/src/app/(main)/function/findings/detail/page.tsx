@@ -61,19 +61,31 @@ function FindingDetailInner() {
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
+  const loadSeq = React.useRef(0);
 
   const load = React.useCallback(() => {
+    const seq = ++loadSeq.current;
     if (!id) {
+      setFinding(null);
       setLoaded(true);
       return;
     }
     api
       .getFinding(id, contextTaskId || undefined)
-      .then((f) => setFinding(f))
-      .catch(() => setFinding(null))
-      .finally(() => setLoaded(true));
+      .then((f) => {
+        if (loadSeq.current === seq) setFinding(f);
+      })
+      .catch(() => {
+        if (loadSeq.current === seq) setFinding(null);
+      })
+      .finally(() => {
+        if (loadSeq.current === seq) setLoaded(true);
+      });
   }, [contextTaskId, id]);
   React.useEffect(() => {
+    // id/context 切换时不能继续展示或编辑上一条发现。
+    setFinding(null);
+    setLoaded(false);
     load();
   }, [load]);
 
@@ -84,10 +96,10 @@ function FindingDetailInner() {
       setFinding({ ...finding, severity: next });
       try {
         const updated = await api.setFindingSeverity(id, next);
-        setFinding(updated);
+        setFinding((cur) => (cur?.id === finding.id ? updated : cur));
         toast.success(`严重等级已改为「${statusMeta("severity", next).label}」`);
       } catch (e) {
-        setFinding((cur) => (cur ? { ...cur, severity: prev } : cur));
+        setFinding((cur) => (cur?.id === finding.id ? { ...cur, severity: prev } : cur));
         toast.error("更新失败：" + (e as Error).message);
       }
     },
@@ -101,10 +113,10 @@ function FindingDetailInner() {
       setFinding({ ...finding, status: next });
       try {
         const updated = await api.setFindingStatus(id, next);
-        setFinding(updated);
+        setFinding((cur) => (cur?.id === finding.id ? updated : cur));
         toast.success(`处理状态已改为「${statusMeta("finding", next).label}」`);
       } catch (e) {
-        setFinding((cur) => (cur ? { ...cur, status: prev } : cur));
+        setFinding((cur) => (cur?.id === finding.id ? { ...cur, status: prev } : cur));
         toast.error("更新失败：" + (e as Error).message);
       }
     },

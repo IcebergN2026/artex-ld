@@ -47,9 +47,9 @@ chmod +x deploy.sh
 ./deploy.sh --no-build
 ```
 
-首次运行会自动创建权限为 `0600` 的 `.env`，生成 **16 位随机 PostgreSQL 密码**，随后从当前源码构建并启动服务。健康检查通过后，脚本会直接显示实际生效的 PostgreSQL 密码和 JWT Key。请妥善保存这些信息，不要公开终端日志。
+首次运行会自动创建权限为 `0600` 的 `.env`，生成 **64 个十六进制字符的随机 PostgreSQL 密码**，随后从当前源码构建并启动服务。脚本同时检查 `/api/health` 和前端首页，失败时输出容器状态与最近日志。凭据默认不打印；确需查看数据库密码时，显式运行 `./deploy.sh --show-secrets`。JWT 密钥由服务自动写入并复用 `data/jwt.key`，不是 `.env` 中可随意替换的变量。
 
-已有 `.env` 不会被覆盖，已有密码也不会因重复执行脚本而重新生成。LLM API Key 可留空，初始化后在 UI 中配置。可用 `./deploy.sh --help` 查看参数。
+已有 `.env` 不会被覆盖，已有密码也不会因重复执行脚本而重新生成。空密码、常见弱默认值及含 Docker DSN 特殊字符的密码会被拒绝。LLM API Key 可留空，初始化后在 UI 中配置。可用 `./deploy.sh --help` 查看参数。
 
 如需手动部署，也可执行：
 
@@ -65,7 +65,7 @@ docker compose logs -f artex
 
 Compose 的实际行为：
 
-- PostgreSQL 使用 `postgres:16-alpine`，密码由 `.env` 的 `POSTGRES_PASSWORD` 必填项提供；留空会拒绝启动。`deploy.sh` 仅在首次创建 `.env` 时自动生成 16 位随机密码。
+- PostgreSQL 使用 `postgres:16-alpine`，密码由 `.env` 的 `POSTGRES_PASSWORD` 必填项提供；留空会拒绝启动。`deploy.sh` 仅在首次创建 `.env` 时自动生成随机密码。
 - artex 使用 `Dockerfile.source` 从**当前源码**构建，镜像名默认为 `artex-second-dev:local`。
 - Web/API 为 `8787`，代理仅绑定 `127.0.0.1:8788`。
 - `./data` 挂载到容器 `/app/data`，`./skills` 挂载到 `/app/skills`；删除容器不等于删除数据。
@@ -153,10 +153,10 @@ sudo bash install.sh --server ./artex-<版本>-linux-amd64.deploy.tar.gz
 脚本实际会做：
 
 - 安装/检查 PostgreSQL、curl、tar、python3、logrotate 等依赖。
-- 创建或复用 `artex` 数据库和账号，密码写入 `/opt/artex/config.json`，不打印密码。
-- 安装到 `/opt/artex`，保留已有 `data/`、`config.json` 和数据库；旧二进制最多保留 5 份备份。
+- 创建或复用 `artex` 数据库和账号，密码写入 `/opt/artex/config.json`，不打印密码；升级前用 `pg_dump` 在 `/opt/artex-backups/` 留下数据库备份。
+- 安装到 `/opt/artex`，保留已有 `data/`、`config.json` 和数据库；旧二进制最多保留 5 份备份，失败时恢复旧二进制和技能目录并尝试回拉服务。
 - 写入 `/etc/logrotate.d/artex`，`daily`、`rotate 7`、`copytruncate`。
-- **全新部署不创建 systemd 服务**；已有 `artex.service` 才会按原配置停启升级。
+- **全新部署不创建 systemd 服务**；已有 `artex.service` 才会按原配置停启升级，并检查 systemd 状态、`/api/health` 和前端首页。非默认端口用 `ARTEX_HEALTH_URL=http://127.0.0.1:<端口>` 指定。
 
 全新部署后按脚本提示启动：
 
@@ -187,7 +187,7 @@ nohup ./start.sh >> /opt/artex/artex.log 2>&1 &
 # 或等价地：docker compose up -d --build artex
 ```
 
-`update.sh` 会先备份 `.env`，再重新构建当前源码并重启 artex。数据库和 `./data` 按 Compose 卷配置保留；升级前仍应备份数据库和数据目录。
+`update.sh` 调用统一的 `deploy.sh` 从当前源码重建并重启 artex，执行完整健康检查和失败诊断。数据库和 `./data` 按 Compose 卷配置保留；升级前仍应备份数据库和数据目录。
 
 ### 二进制部署
 
@@ -231,4 +231,12 @@ go test ./server -run '^$'
 go vet ./...
 ```
 
-需要 PostgreSQL 的集成测试必须先准备测试数据库并设置 `ARTEX_PG_DSN`；没有数据库时不要把相关跳过或连接失败报成“全量测试通过”。
+需要 PostgreSQL 的集成测试必须先准备测试数据库并设置 `ARTEX_PG_DSN`；没有数据库时不要把相关跳过或连接失败报成“全量测试通过”。多个 Go 包共用同一个测试库时使用 `go test -p=1 ./...`，避免跨包并行清理或修改同一批数据。
+
+部署脚本可运行离线回归：
+
+```bash
+bash scripts/test-deploy-scripts.sh
+```
+
+该测试使用 fake docker/curl/go/npm/psql 检查参数、失败分支和文件生成，**不替代真实 Docker Compose、PostgreSQL 或生产服务验收**；发布前仍须完成上面的数据库集成测试和对应部署方式的健康检查。

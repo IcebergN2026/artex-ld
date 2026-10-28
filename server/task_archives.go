@@ -126,6 +126,7 @@ func (s *Server) archiveTask(job *pgdb.TaskArchive) (runErr error) {
 		}
 	}()
 	s.cancelTaskChat(taskID, agent.AbortTaskDeleted)
+	s.cancelTaskReview(taskID)
 	drainCtx, cancel := context.WithTimeout(s.ctx, taskDeleteDrainTimeout)
 	defer cancel()
 	if err := s.waitTaskQuiescent(drainCtx, taskID); err != nil {

@@ -155,6 +155,7 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	// Main-agent runs use a separate context from planner/workers. Cancel it, then
 	// wait until both execution domains have returned before removing transcripts.
 	s.cancelTaskChat(id, agent.AbortTaskDeleted)
+	s.cancelTaskReview(id)
 	drainCtx, cancelDrain := context.WithTimeout(r.Context(), taskDeleteDrainTimeout)
 	defer cancelDrain()
 	if err := s.waitTaskQuiescent(drainCtx, id); err != nil {
@@ -1527,10 +1528,9 @@ func skillPathRune(r rune) bool {
 // maxSkillPathLen caps a relative path so a pathological name can't reach the syscall.
 const maxSkillPathLen = 512
 
-// skillRelPath validates a relative file path supplied by the client.
-// Returns the cleaned path and an empty error string on success.
-// Validation order matters: character check first (before Clean) so encoding tricks
-// can't survive normalization.
+// skillRelPath validates a client-supplied relative path and returns a canonical
+// slash-separated path for filesystem joins and URL/JSON round trips.
+// Character validation happens before cleaning so normalization cannot hide invalid input.
 func skillRelPath(file string) (string, string) {
 	// 1. Character check — before normalization. Defeats null bytes, backslash,
 	//    '%', control characters and unicode look-alikes; CJK names pass through.
@@ -1561,14 +1561,11 @@ func skillRelPath(file string) (string, string) {
 	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
 		return "", "invalid path"
 	}
-	return clean, ""
+	return filepath.ToSlash(clean), ""
 }
 
-// walkSkillFiles returns all files under root (relative to root), sorted,
-// including files in subdirectories (scripts/, references/, assets/, etc.).
-// walkSkillFiles returns all entries under root relative to root.
-// Directories are included with a trailing "/" so the frontend can distinguish
-// them from files and render empty folders in the tree.
+// walkSkillFiles lists files and directories below root using slash-separated
+// relative paths. Directory entries have a trailing slash for frontend tree rendering.
 func walkSkillFiles(root string) ([]string, error) {
 	var entries []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -1579,6 +1576,7 @@ func walkSkillFiles(root string) ([]string, error) {
 		if relErr != nil || rel == "." {
 			return nil
 		}
+		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
 			entries = append(entries, rel+"/")
 		} else {

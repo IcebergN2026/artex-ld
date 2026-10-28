@@ -228,21 +228,47 @@ function SyncWorkbench() {
   const [tasks, setTasks] = React.useState<SSTask[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [search, setSearch] = React.useState("");
+  const [query, setQuery] = React.useState("");
   const [page, setPage] = React.useState(1);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const loadSeq = React.useRef(0);
 
   const [syncing, setSyncing] = React.useState(false);
   const [result, setResult] = React.useState<Awaited<ReturnType<typeof api.ssSync>> | null>(null);
 
   const load = React.useCallback(() => {
+    const seq = ++loadSeq.current;
     setLoading(true);
-    setSelected(new Set());
     const fn =
       dimension === "project"
-        ? api.ssProjects(page, 50, search).then((r) => setProjects(r.projects))
-        : api.ssTasks(page, 50, search).then(setTasks);
-    fn.catch((e) => toast.error(`加载列表失败：${e.message}`)).finally(() => setLoading(false));
-  }, [dimension, page, search]);
+        ? api.ssProjects(page, 50, query).then((r) => {
+            if (loadSeq.current === seq) setProjects(r.projects);
+          })
+        : api.ssTasks(page, 50, query).then((r) => {
+            if (loadSeq.current === seq) setTasks(r);
+          });
+    fn.catch((e) => {
+      if (loadSeq.current === seq) toast.error(`加载列表失败：${e.message}`);
+    }).finally(() => {
+      if (loadSeq.current === seq) setLoading(false);
+    });
+  }, [dimension, page, query]);
+
+  React.useEffect(() => {
+    // 输入停止 300ms 后才查询；仅实际 query 变化时重置页码。
+    const timer = setTimeout(() => {
+      const next = search.trim();
+      if (next === query) return;
+      setPage(1);
+      setQuery(next);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search, query]);
+
+  React.useEffect(() => {
+    // 切换数据集合时清除不可见选择；单纯刷新保留用户已选行。
+    setSelected(new Set());
+  }, [dimension, page, query]);
 
   React.useEffect(() => {
     load();
@@ -387,7 +413,7 @@ function SyncWorkbench() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   setPage(1);
-                  load();
+                  setQuery(search.trim());
                 }
               }}
             />

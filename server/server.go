@@ -1142,13 +1142,29 @@ func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// 与删除/归档共用调度锁和 inflight 屏障，避免打开任务时复活正在 teardown 的运行态。
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
+	t, ok := s.m.Task(req.ID)
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	// 排队任务只设为活跃以供查看，不绕过并发队列。
+	queued := t.lifecycleSnapshot().Queued
+	if !queued {
+		if !s.engine.beginTaskOperation(t.ID) {
+			writeErr(w, 409, "任务正在删除或归档")
+			return
+		}
+		defer s.engine.decInflight(t.ID)
+	}
+	// 所有可能失败的检查完成后再切换 active，避免 404/409 留下悬空任务指针。
 	if !s.m.SetActive(req.ID) {
 		writeErr(w, 404, "task not found")
 		return
 	}
-	// resume the engine for the opened task (idempotent — no-op if already running).
-	// 排队中的任务:仅设为活跃可查看,不启动引擎(维持并发上限,由 reconcile 补位)。
-	if t, ok := s.m.Task(req.ID); ok && !t.lifecycleSnapshot().Queued {
+	if !queued {
 		s.engine.Run(s.ctx, t)
 	}
 	writeJSON(w, 200, map[string]any{"active": req.ID})

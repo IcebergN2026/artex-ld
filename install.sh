@@ -33,22 +33,10 @@ ensure_docker(){
 # ── ① 全部 Docker ───────────────────────────────
 install_docker(){
   ensure_docker
-  if [ ! -f .env ]; then
-    cp .env.example .env 2>/dev/null || true
-    local pw key
-    pw="$(ask 'Postgres 密码（回车随机生成）' "$(rand)")"
-    key="$(ask 'ANTHROPIC_API_KEY（可留空，后续在 UI 配）' '')"
-    sed -i.bak "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${pw}|" .env
-    sed -i.bak "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${key}|" .env
-    rm -f .env.bak
-    ok "已生成 .env（POSTGRES_PASSWORD 已设置）"
-  else
-    info "沿用已存在的 .env"
-  fi
-  info "从当前源码构建镜像并启动…"
-  docker compose up -d --build
-  ok "启动完成 → http://localhost:8787"
-  info "查看日志：docker compose logs -f artex"
+  # 凭据、Compose 校验、健康检查和失败诊断统一由 deploy.sh 处理，
+  # 避免交互安装与常规更新使用不同的安全默认值。
+  bash ./deploy.sh
+  ok "Docker 安装完成"
 }
 
 # ── ② 本地编译运行 ──────────────────────────────
@@ -73,20 +61,35 @@ install_local(){
       DB_SSL="$(ask 'sslmode (disable/require)' disable)" ;;
   esac
 
-  # 生成 config.json
+  # 对 Shell 无法安全表示的控制字符直接报错，其余引号/反斜杠按 JSON 转义。
+  json_value(){
+    local value="$1"
+    [[ ! "$value" =~ [[:cntrl:]] ]] || die "数据库配置不能包含控制字符"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s' "$value"
+  }
+  [[ "$DB_PORT" =~ ^[0-9]+$ ]] && [ "$DB_PORT" -ge 1 ] && [ "$DB_PORT" -le 65535 ] || die "数据库端口必须是 1-65535 的数字"
+  case "$DB_SSL" in disable|require|verify-ca|verify-full) ;; *) die "不支持的 sslmode：$DB_SSL" ;; esac
+  DB_HOST_JSON="$(json_value "$DB_HOST")"
+  DB_USER_JSON="$(json_value "$DB_USER")"
+  DB_PASS_JSON="$(json_value "$DB_PASS")"
+  DB_NAME_JSON="$(json_value "$DB_NAME")"
+  umask 077
   cat > config.json <<JSON
 {
   "database": {
-    "host": "${DB_HOST}",
+    "host": "${DB_HOST_JSON}",
     "port": ${DB_PORT},
-    "user": "${DB_USER}",
-    "password": "${DB_PASS}",
-    "dbname": "${DB_NAME}",
+    "user": "${DB_USER_JSON}",
+    "password": "${DB_PASS_JSON}",
+    "dbname": "${DB_NAME_JSON}",
     "sslmode": "${DB_SSL}"
   }
 }
 JSON
-  ok "已生成 config.json"
+  chmod 600 config.json
+  ok "已生成 config.json（0600）"
 
   # go 环境检查
   command -v go >/dev/null 2>&1 || die "未检测到 Go，请先安装 Go（>=1.26）：https://go.dev/dl/"
@@ -96,7 +99,9 @@ JSON
   if command -v npm >/dev/null 2>&1; then
     info "构建前端静态产物…"
     ( cd web && npm ci && npm run build:static )
-    rm -rf server/webui/dist && cp -r web/out server/webui/dist
+    mkdir -p server/webui/dist
+    rm -rf server/webui/dist
+    cp -r web/out server/webui/dist
     info "编译内嵌单二进制…"
     CGO_ENABLED=0 go build -tags embedui -trimpath -o artex ./cmd/artex
   else
@@ -123,7 +128,7 @@ install_server(){
 
   # 1. 定位部署包
   if [ -z "$pkg" ]; then
-    pkg="$(ls -t artex*.tar.gz 2>/dev/null | head -1)"
+    pkg="$(find . -maxdepth 1 -type f -name 'artex*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | sed -n '1s/^[^ ]* //p')"
     [ -n "$pkg" ] || die "当前目录找不到 artex*.tar.gz 部署包；请把包放到本目录或用参数指定：./install.sh --server /path/artex-xxx.tar.gz"
   fi
   [ -f "$pkg" ] || die "部署包不存在：$pkg"
@@ -142,45 +147,102 @@ install_server(){
   ok "PostgreSQL 就绪"
 
   # 4. 库与账号（幂等；密码复用已有 config.json，否则随机生成，不落屏）
-  local ARTEX_DIR=/opt/artex db_pass=""
+  local ARTEX_DIR=/opt/artex db_pass="" db_pass_sql=""
   if [ -f "$ARTEX_DIR/config.json" ]; then
-    db_pass="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database"]["password"])' "$ARTEX_DIR/config.json" 2>/dev/null || true)"
+    if ! db_pass="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database"]["password"])' "$ARTEX_DIR/config.json")" || [ -z "$db_pass" ]; then
+      die "无法读取 $ARTEX_DIR/config.json 的 database.password；已中止，绝不会在配置读取失败时重置数据库密码"
+    fi
+  else
+    db_pass="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
   fi
-  [ -n "$db_pass" ] || db_pass="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-  runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='artex'" | grep -q 1 \
-    || runuser -u postgres -- psql -q -c "CREATE ROLE artex LOGIN PASSWORD '$db_pass'"
+  # 密码只经环境变量交给 Python，并以 SQL literal 通过 stdin 执行；不出现在 psql argv/历史中。
+  db_pass_sql="$(DB_PASS="$db_pass" python3 -c 'import os; p=os.environ["DB_PASS"]; assert "\0" not in p; print("\x27" + p.replace("\x27", "\x27\x27") + "\x27")')"
+  runuser -u postgres -- psql -v ON_ERROR_STOP=1 -q <<SQL
+DO \$do\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'artex') THEN
+    CREATE ROLE artex LOGIN;
+  END IF;
+END
+\$do\$;
+ALTER ROLE artex WITH LOGIN PASSWORD ${db_pass_sql};
+SQL
   runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='artex'" | grep -q 1 \
     || runuser -u postgres -- createdb -O artex artex
-  # 已有角色时把密码对齐到 config.json（首次建库随机值与后续重装保持一致）
-  runuser -u postgres -- psql -q -c "ALTER ROLE artex WITH PASSWORD '$db_pass'"
   ok "数据库 artex / 账号 artex 就绪（密码不落屏，见 $ARTEX_DIR/config.json）"
+
+  # 更新前先做一次独立数据库备份；密码只通过环境变量传给 pg_dump。
+  local backup_dir="/opt/artex-backups/$(date +%Y%m%d-%H%M%S)"
+  install -d -m 700 "$backup_dir"
+  if runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='artex'" | grep -q 1; then
+    PGPASSWORD="$db_pass" pg_dump -h 127.0.0.1 -p 5432 -U artex -d artex -Fc -f "$backup_dir/artex.dump"
+    chmod 600 "$backup_dir/artex.dump"
+    ok "数据库已备份到 $backup_dir/artex.dump"
+  fi
 
   # 5. 解包安装（保留 data/config；二进制先备份，备份只留最近 5 份）
   install -d -m 755 "$ARTEX_DIR" "$ARTEX_DIR/data"
   chmod 700 "$ARTEX_DIR/data"
-  # 已存在 artex.service = 升级：停服覆盖后重启（失败时 trap 回拉，不留停机状态）。
-  # 不存在 = 全新部署：不创建自启动服务，也不停任何进程（若用户手动跑着 artex，
-  # 请先行停止，否则覆盖二进制会 Text file busy）。
+  # 已存在 artex.service = 升级：停服覆盖后重启；任何失败都恢复旧二进制并回拉服务。
+  # 不存在 = 全新部署：不创建自启动服务，也不停任何进程。
   local svc_exists=0
   if [ -f /etc/systemd/system/artex.service ] || systemctl cat artex.service >/dev/null 2>&1; then
     svc_exists=1
-    systemctl stop artex 2>/dev/null || true
-    trap 'warn "安装中断，尝试回拉 artex 服务…"; systemctl start artex 2>/dev/null || true' ERR
+    systemctl stop artex || die "无法停止 artex.service，已中止部署"
   fi
-  local tmp; tmp="$(mktemp -d)"
+  local tmp src backup="" skills_backup="" installed=0 completed=0
+  tmp="$(mktemp -d)"
+  rollback_install(){
+    local status=$?
+    trap - EXIT
+    if [ "$completed" -ne 1 ]; then
+      warn "安装未成功（状态 $status），恢复部署前状态…"
+      if [ "$installed" -eq 1 ]; then
+        if [ -n "$backup" ] && [ -f "$backup" ]; then
+          cp -a "$backup" "$ARTEX_DIR/artex"
+        else
+          rm -f "$ARTEX_DIR/artex"
+        fi
+        if [ -n "$skills_backup" ] && [ -d "$skills_backup" ]; then
+          rm -rf "$ARTEX_DIR/skills"
+          cp -a "$skills_backup" "$ARTEX_DIR/skills"
+        fi
+      fi
+      [ "$svc_exists" -eq 1 ] && systemctl start artex 2>/dev/null || true
+    fi
+    rm -rf "$tmp"
+    exit "$status"
+  }
+  trap rollback_install EXIT
+
   tar -xzf "$pkg" -C "$tmp"
-  # 兼容「包内有单层目录」与「平铺」两种打包方式
-  local src="$tmp"
+  # 兼容「包内有单层目录」与「平铺」两种打包方式。
+  src="$tmp"
   if [ "$(ls -A "$tmp" | wc -l)" = "1" ] && [ -d "$tmp"/"$(ls "$tmp")" ]; then src="$tmp/$(ls "$tmp")"; fi
-  [ -f "$src/artex" ] || { rm -rf "$tmp"; die "包内找不到 artex 二进制，包结构不对"; }
-  # 官方源码包里的 artex 是 30 字节占位 gzip，不是真二进制；拒绝装坏包
-  [ "$(head -c 4 "$src/artex")" = "$(printf '\177ELF')" ] || { rm -rf "$tmp"; die "包内 artex 不是 ELF 可执行文件（官方源码包里的同名文件是占位符）。请先用 ./build.sh 编译出含前端的二进制再打包部署，见部署手册 §2.4"; }
-  [ -f "$ARTEX_DIR/artex" ] && cp "$ARTEX_DIR/artex" "$ARTEX_DIR/artex.bak-$(date +%Y%m%d-%H%M%S)"
-  cp -a "$src"/. "$ARTEX_DIR"/
-  rm -rf "$tmp"
-  chmod +x "$ARTEX_DIR/artex" "$ARTEX_DIR/start.sh" "$ARTEX_DIR/install.sh" 2>/dev/null || true
-  # 备份只留最近 5 份（每份 ~百 MB，无上限会慢慢吃磁盘）
-  ls -t "$ARTEX_DIR"/artex.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f
+  [ -f "$src/artex" ] || die "包内找不到 artex 二进制，包结构不对"
+  [ "$(head -c 4 "$src/artex")" = "$(printf '\177ELF')" ] || die "包内 artex 不是 ELF 可执行文件，请先构建含前端的 Linux 二进制"
+
+  if [ -f "$ARTEX_DIR/artex" ]; then
+    backup="$ARTEX_DIR/artex.bak-$(date +%Y%m%d-%H%M%S)"
+    cp -a "$ARTEX_DIR/artex" "$backup"
+  fi
+  if [ -d "$ARTEX_DIR/skills" ]; then
+    skills_backup="$tmp/skills.before"
+    cp -a "$ARTEX_DIR/skills" "$skills_backup"
+  fi
+
+  # data/ 和 config.json 永远不属于程序包覆盖范围；从此时起失败会触发完整回滚。
+  installed=1
+  (cd "$src" && tar --exclude='./data' --exclude='./config.json' -cf - .) | tar -xf - -C "$ARTEX_DIR"
+  chmod +x "$ARTEX_DIR/artex"
+  for executable in start.sh install.sh; do
+    [ ! -f "$ARTEX_DIR/$executable" ] || chmod +x "$ARTEX_DIR/$executable"
+  done
+  # 备份只留最近 5 份；find 无匹配也返回成功，不会让 pipefail 误中断安装。
+  find "$ARTEX_DIR" -maxdepth 1 -type f -name 'artex.bak-*' -printf '%T@ %p\n' \
+    | sort -nr | sed -n '6,$s/^[^ ]* //p' | while IFS= read -r old; do
+      [ -z "$old" ] || rm -f -- "$old"
+    done
   ok "程序安装到 $ARTEX_DIR"
 
   # 5.1 日志轮转：systemd unit / nohup 都是 append 直写 artex.log，不配轮转会无限增长
@@ -222,19 +284,30 @@ JSON
   #    全新部署由用户自选运行方式（start.sh 守护 / 自建 systemd / supervisor）。
   if [ "$svc_exists" = "1" ]; then
     systemctl start artex
-    sleep 3
-    trap - ERR
-    systemctl is-active --quiet artex || { journalctl -u artex -n 20 --no-pager >&2; die "artex 启动失败，日志见上"; }
-    local code; code="$(curl -s -o /dev/null -w '%{http_code}' "${ARTEX_HEALTH_URL:-http://127.0.0.1:18080/}" || true)"
-    [ "$code" = "200" ] || warn "UI 健康检查返回 $code（期望 200），可查日志：tail -f $ARTEX_DIR/artex.log"
-    ok "已重启现有 artex.service（未改动其配置）"
+    local health_base healthy=0
+    health_base="${ARTEX_HEALTH_URL:-http://127.0.0.1:8787}"
+    health_base="${health_base%/}"
+    for i in $(seq 1 30); do
+      if systemctl is-active --quiet artex \
+        && curl -fsS --max-time 3 "$health_base/api/health" >/dev/null 2>&1 \
+        && curl -fsS --max-time 3 "$health_base/" >/dev/null 2>&1; then
+        healthy=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "$healthy" -ne 1 ]; then
+      journalctl -u artex -n 80 --no-pager >&2 || true
+      die "artex 未通过 systemd 状态、后端健康和前端首页检查（$health_base）"
+    fi
+    ok "已重启现有 artex.service，完整健康检查通过（未改动 unit 配置）"
   fi
 
   ok "部署完成"
   echo "    程序目录: $ARTEX_DIR（配置 $ARTEX_DIR/config.json，0600）"
   echo "    日志    : $ARTEX_DIR/artex.log（已配 logrotate：daily 留 7 份）"
   if [ "$svc_exists" = "1" ]; then
-    echo "    Web UI : ${ARTEX_PUBLIC_URL:-http://$(hostname -I 2>/dev/null | awk '{print $1}'):18080}"
+    echo "    Web UI : ${ARTEX_PUBLIC_URL:-http://$(hostname -I 2>/dev/null | awk '{print $1}'):8787}"
     echo "    升级    : 把新包放进来再跑一遍本命令即可（配置/数据保留，旧二进制自动备份留 5 份）"
   else
     echo "    启动    : 本脚本不创建自启动服务。手动运行："
@@ -242,6 +315,9 @@ JSON
     echo "              需要开机自启请自行编写 systemd unit，本脚本不代建"
   fi
   echo "    首次初始化: 打开 /setup 设置管理员密码；LLM 在「系统 → LLM」里配"
+  completed=1
+  trap - EXIT
+  rm -rf "$tmp"
 }
 
 echo "=============================="

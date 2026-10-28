@@ -256,6 +256,20 @@ func TestSideArchiveRowsWithoutNewFields(t *testing.T) {
 	if err = tx.QueryRow(`SELECT context_info,memory FROM side_question_requests r JOIN side_question_sessions s USING(session_key) WHERE r.id=$1`, e.ID).Scan(&info, &memory); err != nil || string(info) != "{}" || string(memory) != "{}" {
 		t.Fatalf("legacy defaults: %s %s %v", info, memory, err)
 	}
+	var status string
+	var sequence int64
+	if err = tx.QueryRow(`SELECT status,sequence FROM side_question_requests WHERE id=$1`, e.ID).Scan(&status, &sequence); err != nil {
+		t.Fatal(err)
+	}
+	if status != "interrupted" || sequence != e.Sequence+1 {
+		t.Fatalf("restored running request must be interrupted: status=%q sequence=%d old=%d", status, sequence, e.Sequence)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = d.StartSideRequest(t.Context(), s, "after-restore", "new question"); err != nil {
+		t.Fatalf("restored session must accept a new question: %v", err)
+	}
 }
 
 func TestSideClearLateWritersAndDeletedParent(t *testing.T) {

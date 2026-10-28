@@ -684,6 +684,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const [llmResolutions, setLLMResolutions] = React.useState<TaskLLMResolutions | null>(null);
   // Pending intercept requests for this task — used to show warning icons on sessions.
   const [pendingIntercepts, setPendingIntercepts] = React.useState<InterceptApprovalRow[]>([]);
+  const [pendingInterceptsHasMore, setPendingInterceptsHasMore] = React.useState(false);
 
   // Refs backing SSE/loading without re-render churn.
   const snapshotRef = React.useRef(0); // task-level snapshot cursor → SSE since=
@@ -891,9 +892,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     let alive = true;
     const load = () =>
       api
-        .interceptTask(taskId)
-        .then((rows) => {
-          if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
+        .interceptTaskPage(taskId, 1, 100, { status: "pending" })
+        .then((page) => {
+          if (alive) {
+            setPendingIntercepts(page.items);
+            setPendingInterceptsHasMore(page.total > page.items.length);
+          }
         })
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
@@ -1637,6 +1641,14 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   className={cn("size-3.5 shrink-0 transition-transform lg:hidden", !listOpen && "-rotate-90")}
                 />
                 <span className="shrink-0">会话列表</span>
+                {pendingInterceptsHasMore && (
+                  <span
+                    className="shrink-0 text-amber-700 dark:text-amber-400"
+                    title="待确认请求超过 100 条，会话提醒仅基于第一页；请先处理已显示的请求"
+                  >
+                    待确认 100+
+                  </span>
+                )}
                 {!listOpen && (
                   <>
                     <span className="min-w-0 truncate text-foreground lg:hidden" title={activeDisplayTitle}>

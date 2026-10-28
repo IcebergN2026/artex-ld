@@ -130,6 +130,9 @@ if [[ -z "$NEWPASS" ]]; then
   [[ "$NEWPASS" == "$NEWPASS2" ]] || die "两次输入不一致"
 fi
 [[ -n "$NEWPASS" ]] || die "密码不能为空"
+[[ ${#NEWPASS} -ge 8 ]] || die "密码至少需要 8 个字符（与后端规则一致）"
+newpass_bytes="$(LC_ALL=C printf '%s' "$NEWPASS" | wc -c | tr -d ' ')"
+[[ "$newpass_bytes" -le 72 ]] || die "密码 UTF-8 编码后不能超过 72 字节（bcrypt 限制）"
 
 # 通过环境变量把密码交给 psql（\getenv 读取，不进入 argv/ps）
 export ARTEX_RESET_NEWPASS="$NEWPASS"
@@ -165,7 +168,7 @@ if [[ "$MODE" == "local" ]]; then
   declare -a PSQL_ARGS=()
   if [[ -n "$DSN" ]]; then
     PSQL_ARGS=("$DSN")
-    target="$DSN"
+    target="由 DSN 指定（凭据已隐藏）"
   else
     [[ -n "$USER"   ]] || die "缺少数据库用户（-U）或有效的 config.json/DSN"
     [[ -n "$DBNAME" ]] || die "缺少数据库名（-d）或有效的 config.json/DSN"
@@ -201,14 +204,18 @@ else
   fi
 
   # 容器内的 psql 凭据：优先命令行，其次 .env 的 POSTGRES_*，再退回 compose 默认(artex)
-  if [[ -f .env ]]; then
-    # shellcheck disable=SC1091
-    set -a; . ./.env; set +a
-  fi
-  DUSER="${USER:-${POSTGRES_USER:-artex}}"
-  DNAME="${DBNAME:-${POSTGRES_DB:-artex}}"
+  # 只解析需要的 POSTGRES_* 键，绝不 source .env（其中内容不是可信 Shell 脚本）。
+  dotenv_value() {
+    [[ -f .env ]] || return 0
+    awk -v key="$1" 'index($0, key "=") == 1 { sub(/^[^=]*=/, ""); sub(/\r$/, ""); print; exit }' .env
+  }
+  ENV_POSTGRES_USER="$(dotenv_value POSTGRES_USER)"
+  ENV_POSTGRES_DB="$(dotenv_value POSTGRES_DB)"
+  ENV_POSTGRES_PASSWORD="$(dotenv_value POSTGRES_PASSWORD)"
+  DUSER="${USER:-${ENV_POSTGRES_USER:-artex}}"
+  DNAME="${DBNAME:-${ENV_POSTGRES_DB:-artex}}"
   [[ -n "$DBPASS" ]] && export PGPASSWORD="$DBPASS"
-  [[ -z "${PGPASSWORD:-}" && -n "${POSTGRES_PASSWORD:-}" ]] && export PGPASSWORD="$POSTGRES_PASSWORD"
+  [[ -z "${PGPASSWORD:-}" && -n "$ENV_POSTGRES_PASSWORD" ]] && export PGPASSWORD="$ENV_POSTGRES_PASSWORD"
 
   info "目标：容器 $CONTAINER 内 psql -U $DUSER -d $DNAME（exec=$EXEC_KIND）"
   if [[ "$ASSUME_YES" -ne 1 ]]; then

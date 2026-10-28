@@ -340,6 +340,14 @@ type RecordedFinding struct {
 // ctx 由调用方传入本次事务所用的上下文（而非在内部取 context.Background）：
 // 事务内新加的推送事件写入同样应受调用方的取消与超时约束。
 func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, prepared []PreparedTrafficEvidence) (*RecordedFinding, error) {
+	// Tool evidence is untrusted bytes; sanitize every text/JSON destination before
+	// starting the multi-table write so PostgreSQL cannot roll back the whole finding.
+	in.VulnClass = utf8Clean(in.VulnClass)
+	in.Name = utf8Clean(in.Name)
+	in.Severity = utf8Clean(in.Severity)
+	in.Summary = utf8Clean(in.Summary)
+	in.Evidence = utf8Clean(in.Evidence)
+	in.Worker = utf8Clean(in.Worker)
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}
@@ -364,7 +372,7 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 	payload, _ := json.Marshal(map[string]any{"vulnclass": in.VulnClass, "name": in.Name, "severity": in.Severity, "summary": in.Summary, "evidence": map[string]any{"by": in.Worker, "poc": in.Evidence}})
 	out := &RecordedFinding{}
 	if err := tx.QueryRow(`INSERT INTO exploration_nodes(exploration_id,kind,payload,priority,state,origin)
-VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string(payload), in.Worker).Scan(&out.NodeID); err != nil {
+VALUES($1,'finding',$2,9,'confirmed',$3) RETURNING id`, in.ExplorationID, string(jsonbClean(payload)), in.Worker).Scan(&out.NodeID); err != nil {
 		return nil, err
 	}
 	for _, asset := range in.AssetIDs {

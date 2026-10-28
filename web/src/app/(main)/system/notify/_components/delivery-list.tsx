@@ -22,18 +22,25 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
   const [channelID, setChannelID] = React.useState<number | undefined>(undefined);
   const [state, setState] = React.useState<string | undefined>(undefined);
   const [loading, setLoading] = React.useState(false);
+  const loadSeq = React.useRef(0);
   const pageSize = 50;
 
   const load = React.useCallback(() => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     api
       .notifyDeliveries({ channelId: channelID, state, page, pageSize })
       .then((r) => {
+        if (loadSeq.current !== seq) return;
         setRows(r.deliveries);
         setTotal(r.total);
       })
-      .catch((e) => toast.error("读取投递记录失败：" + (e as Error).message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (loadSeq.current === seq) toast.error("读取投递记录失败：" + (e as Error).message);
+      })
+      .finally(() => {
+        if (loadSeq.current === seq) setLoading(false);
+      });
   }, [channelID, state, page]);
   React.useEffect(() => {
     load();
@@ -50,6 +57,10 @@ export function DeliveryList({ channels }: { channels: NotificationChannel[] }) 
   }
 
   const maxPage = Math.max(1, Math.ceil(total / pageSize));
+  React.useEffect(() => {
+    // 删除、重发或筛选导致总数缩小时，自动回到最后一个有效页。
+    if (page > maxPage) setPage(maxPage);
+  }, [maxPage, page]);
 
   return (
     <div className="flex flex-col gap-3">

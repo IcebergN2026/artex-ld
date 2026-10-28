@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestJsonbClean(t *testing.T) {
@@ -40,5 +41,13 @@ func TestJsonbClean(t *testing.T) {
 	plain := []byte(`{"body":"hello"}`)
 	if got := jsonbClean(plain); string(got) != string(plain) {
 		t.Fatalf("plain JSON must be untouched, got %s", got)
+	}
+
+	raw := []byte(`{"body":"before`)
+	raw = append(raw, 0x00, 0xff)
+	raw = append(raw, []byte(`after"}`)...)
+	cleaned = jsonbClean(raw)
+	if !json.Valid(cleaned) || !utf8.Valid(cleaned) || strings.ContainsRune(string(cleaned), '\x00') {
+		t.Fatalf("invalid UTF-8/raw NUL must become valid clean JSON: %q", cleaned)
 	}
 }

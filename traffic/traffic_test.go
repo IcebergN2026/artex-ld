@@ -8,9 +8,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 )
+
+func TestExchangeIDDoesNotWrapAt10000(t *testing.T) {
+	tr := &Traffic{}
+	now := time.Unix(1700000000, 123)
+	seen := make(map[string]struct{}, 10001)
+	for i := 0; i < 10001; i++ {
+		id := tr.nextExchangeID(now)
+		if _, exists := seen[id]; exists {
+			t.Fatalf("exchange id %q reused at sequence %d", id, i+1)
+		}
+		seen[id] = struct{}{}
+	}
+}
 
 func TestRequestHeaderLinesIncludesHost(t *testing.T) {
 	req := &mproxy.Request{
@@ -89,6 +103,35 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 	c = 0
 	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges`).Scan(&c); err == nil && c != 0 {
 		t.Fatalf("rows=%d, want 0 after full sweep", c)
+	}
+}
+
+func TestDeleteHostTreatsFilterAsLiteralSubstring(t *testing.T) {
+	tr, err := Open(t.TempDir(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	hosts := []string{"100%.example", "100x.example", "a_b.example", "axb.example"}
+	for i, host := range hosts {
+		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`, fmt.Sprintf("literal-%d", i), i+1, host, "GET", "/", "http://"+host+"/", 200, "text/plain", 0, 0, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := tr.DeleteHost("100%"); err != nil || n != 1 {
+		t.Fatalf("DeleteHost(100%%)=(%d,%v), want (1,nil)", n, err)
+	}
+	if n, err := tr.DeleteHost("a_b"); err != nil || n != 1 {
+		t.Fatalf("DeleteHost(a_b)=(%d,%v), want (1,nil)", n, err)
+	}
+	var remaining int
+	if err := tr.DB().QueryRow(`SELECT COUNT(*) FROM exchanges`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 2 {
+		t.Fatalf("remaining=%d, want 2; LIKE wildcards must not match unrelated hosts", remaining)
 	}
 }
 

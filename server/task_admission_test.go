@@ -42,6 +42,44 @@ func restoreConcurrencySetting(t *testing.T, m *Manager) func() {
 	}
 }
 
+func TestSetActiveRejectedDeleteDoesNotChangeActive(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer m.Close()
+	first, err := m.CreateTask("active task", "keep active", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting, err := m.CreateTask("deleting task", "reject activation", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = m.DeleteTask(first.ID, DeleteTaskOptions{})
+		_, _ = m.DeleteTask(deleting.ID, DeleteTaskOptions{})
+	}()
+	s := newAdmissionTestServer(m, nil)
+	if !m.SetActive(first.ID) {
+		t.Fatal("seed active task")
+	}
+	if !s.engine.BeginDelete(deleting.ID) {
+		t.Fatal("seed delete barrier")
+	}
+	defer s.engine.AbortDelete(deleting.ID, false)
+
+	req := httptest.NewRequest("POST", "/api/active", bytes.NewBufferString(`{"id":"`+deleting.ID+`"}`))
+	rec := httptest.NewRecorder()
+	s.setActive(rec, req)
+	if rec.Code != 409 {
+		t.Fatalf("expected 409 while deleting, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if active := m.ActiveTask(); active == nil || active.ID != first.ID {
+		t.Fatalf("rejected activation changed active task: %#v", active)
+	}
+}
+
 func TestAdmitAlreadyRunningTaskDoesNotQueueAfterLimitDecrease(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {

@@ -8,7 +8,7 @@ import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// Mock demo：无后端 SSE，塞几行示例日志。
+// Mock 模式使用本地示例日志，不连接后端 SSE。
 const MOCK_LOGS: LogLine[] = [
   { seq: 1, ts: "2026-07-26T03:55:00Z", level: "info", tag: "engine", text: "artex v0.1.0 backend listening on :8787 (workers=3)" },
   { seq: 2, ts: "2026-07-26T03:55:01Z", level: "info", tag: "config", text: "LLM configured from DB: anthropic / claude-opus-4-8" },
@@ -38,18 +38,19 @@ function fmtTime(ts: string) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-// 【二开·P-LOG·U1】任务维度区分：从日志文本提取 "task NNN"（引擎各角色行已统一携带），
-// 按任务 id 哈希出稳定色相渲染彩色徽章，并提供任务过滤 chips。
+// taskOf 从引擎日志文本中提取数字任务 id。
 const TASK_RE = /(?:^|[\s#])task\s+(\d+)/;
 function taskOf(text: string): string | null {
   const m = TASK_RE.exec(text);
   return m ? m[1] : null;
 }
+// taskHue 为任务 id 生成稳定的徽章色相。
 function taskHue(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
   return h;
 }
+// taskChipStyle 根据任务 id 生成可区分的徽章颜色。
 function taskChipStyle(id: string): React.CSSProperties {
   const hue = taskHue(id);
   return {
@@ -64,8 +65,9 @@ export default function LogsPage() {
   const [q, setQ] = React.useState("");
   const [level, setLevel] = React.useState<"all" | LogLine["level"]>("all");
   const [paused, setPaused] = React.useState(false);
-  const [taskFilter, setTaskFilter] = React.useState<string | null>(null); // 【二开·P-LOG·U1】任务过滤（null=全部）
+  const [taskFilter, setTaskFilter] = React.useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = React.useState(false);
+  const [historyError, setHistoryError] = React.useState("");
   const [hasMore, setHasMore] = React.useState(false);
   const bottom = React.useRef<HTMLDivElement>(null);
   const stick = React.useRef(true);
@@ -109,10 +111,11 @@ export default function LogsPage() {
   async function loadOlderHistory() {
     if (loadingHistory) return;
     setLoadingHistory(true);
+    setHistoryError("");
     try {
       const params = minDbId > 0 ? `?before=${minDbId}&limit=200` : `?limit=200`;
       const res = await fetch(`/api/logs/history${params}`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { items: LogLine[]; has_more: boolean };
       if (data.items?.length) {
         // Assign synthetic seq numbers below current minimum to keep dedup working.
@@ -135,6 +138,8 @@ export default function LogsPage() {
         });
       }
       setHasMore(data.has_more ?? false);
+    } catch (error) {
+      setHistoryError("加载更早日志失败：" + (error as Error).message);
     } finally {
       setLoadingHistory(false);
     }
@@ -150,7 +155,7 @@ export default function LogsPage() {
     );
   }, [lines, q, level, taskFilter]);
 
-  // 【二开·P-LOG·U1】当前日志里出现过的任务 id（新→旧，最多 12 个做过滤 chips）
+  // 从当前日志提取最近出现的任务 id，最多显示 12 个过滤项。
   const seenTasks = React.useMemo(() => {
     const seen = new Map<string, number>();
     lines.forEach((l, idx) => {
@@ -219,7 +224,7 @@ export default function LogsPage() {
           </span>
         </div>
 
-        {/* 【二开·P-LOG·U1】任务过滤 chips：按任务着色，点击只看该任务，再点取消 */}
+        {/* 任务过滤：按任务着色，再次点击可取消。 */}
         {seenTasks.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs text-muted-foreground">任务:</span>
@@ -269,6 +274,7 @@ export default function LogsPage() {
               </Button>
             </div>
           )}
+          {historyError && <p className="py-1 text-center text-red-600 dark:text-red-400">{historyError}</p>}
           {filtered.length === 0 ? (
             <p className="py-10 text-center text-muted-foreground">暂无日志。</p>
           ) : (
@@ -277,7 +283,7 @@ export default function LogsPage() {
                 l.tag && l.text.startsWith("[" + l.tag + "]")
                   ? l.text.slice(l.tag.length + 2).trimStart()
                   : l.text;
-              const tid = taskOf(l.text); // 【二开·P-LOG·U1】
+              const tid = taskOf(l.text);
               return (
                 <div key={l.seq} className="flex items-start gap-2 px-1 py-0.5 hover:bg-muted/40">
                   <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", levelDot[l.level])} />

@@ -64,6 +64,33 @@ func TestSkillRelPath(t *testing.T) {
 	}
 }
 
+func TestWalkSkillFilesUsesSlashPaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"SKILL.md":                         "skill",
+		filepath.Join("scripts", "run.py"): "print(1)",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	entries, err := walkSkillFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "SKILL.md|references/|scripts/|scripts/run.py"
+	if got := strings.Join(entries, "|"); got != want {
+		t.Fatalf("walkSkillFiles() = %q, want %q", got, want)
+	}
+}
+
 type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }

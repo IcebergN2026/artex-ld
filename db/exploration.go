@@ -32,17 +32,13 @@ func utf8Clean(s string) string {
 	return strings.ToValidUTF8(s, "�")
 }
 
-// jsonbClean makes marshaled JSON safe for a PostgreSQL jsonb column. json.Marshal
-// faithfully encodes a NUL byte (U+0000) as the 6-byte escape sequence \u0000; the
-// json type stores it, but jsonb rejects it with "unsupported Unicode escape
-// sequence" (SQLSTATE 22P05). Captured HTTP/tool bytes can carry NULs, so drop the
-// escape — this also covers NULs nested inside json.RawMessage fields, which are
-// copied verbatim into the output. Only a *real* escape is stripped: a \u0000 is
-// genuine when preceded by an even number of backslashes, so an escaped-backslash
-// run such as \\u0000 (the literal text u0000) is left intact.
+// jsonbClean makes marshaled JSON safe for PostgreSQL: invalid UTF-8 and raw NULs
+// are removed, and JSON \u0000 escapes are stripped because jsonb rejects them.
+// Captured HTTP/tool bytes can contain all three forms. Only a real NUL escape is
+// removed; an escaped-backslash sequence such as \\u0000 remains literal text.
 func jsonbClean(b []byte) []byte {
 	if !bytes.Contains(b, []byte("\\u0000")) {
-		return b
+		return []byte(utf8Clean(string(b)))
 	}
 	out := make([]byte, 0, len(b))
 	bs := 0 // consecutive backslashes already emitted before position i
@@ -60,7 +56,7 @@ func jsonbClean(b []byte) []byte {
 		}
 		out = append(out, b[i])
 	}
-	return out
+	return []byte(utf8Clean(string(out)))
 }
 
 // Node is a typed reasoning node (= old task_nodes). kind ∈ goal|intent|finding|hint.
@@ -79,11 +75,11 @@ type Node struct {
 	DeleteReason  string          `json:"delete_reason,omitempty"` // 仅意图假删除(state='deleted')时非空
 	// 【二开·审核流 PR2】content_version 乐观锁版本号：正文编辑/送审状态翻转时递增；
 	// 审核元数据（review_note/pre_review/reviewed_version）不推版本（§8.2）。
-	ContentVersion int             `json:"content_version"`
-	Anchors        []int64         `json:"anchors,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	SourceTaskID  int64           `json:"source_task_id,omitempty"`
-	Inherited     bool            `json:"inherited,omitempty"`
+	ContentVersion int       `json:"content_version"`
+	Anchors        []int64   `json:"anchors,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	SourceTaskID   int64     `json:"source_task_id,omitempty"`
+	Inherited      bool      `json:"inherited,omitempty"`
 }
 
 // Activity is one worker execution step (= old task_activity).
@@ -1268,7 +1264,7 @@ func (s *ExplorationStore) AppendActivity(a Activity) (int64, error) {
 INSERT INTO activity(exploration_id, node_id, worker, kind, tool, tool_use_id, is_error, summary, detail, metadata, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, main_seg)
 VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF($8,''),NULLIF($9,''),$10,$11,$12,$13,$14,$15)
 RETURNING id`, s.expID, a.NodeID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool), utf8Clean(a.ToolUseID), a.IsError, utf8Clean(a.Summary), utf8Clean(a.Detail),
-		metadata, a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.MainSeg).Scan(&id)
+		jsonbClean(metadata), a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens, a.MainSeg).Scan(&id)
 	return id, err
 }
 

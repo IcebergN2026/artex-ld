@@ -183,20 +183,26 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 
 const settingPythonInterp = "python_interpreter"
 
-// detectPython finds a python interpreter absolute path (python3 preferred).
+// detectPython returns the first Python interpreter on PATH that can actually run.
+// The version probe skips unusable entries such as Windows Store alias executables.
 func detectPython() string {
 	for _, c := range []string{"python3", "python"} {
-		if p, err := exec.LookPath(c); err == nil {
+		p, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err = exec.CommandContext(ctx, p, "--version").Run()
+		cancel()
+		if err == nil {
 			return p
 		}
 	}
 	return ""
 }
 
-// validatePythonInterp 审计 🔴 修复：自定义脚本工具的解释器路径入库前校验。
-// 原实现把任意字符串直存直用（exec.CommandContext(interp, script)），改成
-// /bin/sh 即把脚本当 shell 跑 = 认证后一键 RCE。规则：绝对路径 + 文件存在且
-// 可执行 + basename 必须像 python 解释器（python/python3/python3.11/pypy…）。
+// validatePythonInterp restricts configured interpreters to absolute, executable
+// Python paths so script execution cannot be redirected to an arbitrary binary.
 func validatePythonInterp(p string) error {
 	if p == "" {
 		return nil // 允许清空=恢复自动检测
@@ -204,12 +210,9 @@ func validatePythonInterp(p string) error {
 	if !filepath.IsAbs(p) {
 		return fmt.Errorf("必须是绝对路径")
 	}
-	base := strings.ToLower(filepath.Base(p))
-	ok := base == "python" || base == "pypy" || base == "pypy3" ||
-		strings.HasPrefix(base, "python3") || base == "python.exe" || strings.HasPrefix(base, "python3")
-	if strings.HasSuffix(base, ".exe") {
-		ok = ok || base == "python.exe" || strings.HasPrefix(base, "python3")
-	}
+	rawBase := strings.ToLower(filepath.Base(p))
+	base := strings.TrimSuffix(rawBase, ".exe")
+	ok := base == "python" || base == "pypy" || base == "pypy3" || strings.HasPrefix(base, "python3")
 	if !ok {
 		return fmt.Errorf("解释器必须是 python（basename 形如 python / python3 / python3.11），当前: %s", base)
 	}
@@ -220,7 +223,7 @@ func validatePythonInterp(p string) error {
 	if fi.IsDir() {
 		return fmt.Errorf("路径是目录")
 	}
-	if fi.Mode()&0o111 == 0 && !strings.HasSuffix(base, ".exe") {
+	if fi.Mode()&0o111 == 0 && !strings.HasSuffix(rawBase, ".exe") {
 		return fmt.Errorf("文件不可执行")
 	}
 	return nil

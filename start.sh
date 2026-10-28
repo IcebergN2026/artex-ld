@@ -253,7 +253,7 @@ imp() {
 	_file="$1"; _sql="$2"
 	[ -s "$CFG_DIR/$_file" ] || { cfg_info "跳过 $_file（空或不存在）"; return 0; }
 	cfg_info "导入 $_file"
-	psql -X -q -1 -v ON_ERROR_STOP=1 $PSQL_URL <<SQL
+	psql -X -q -1 -v ON_ERROR_STOP=1 $PSQL_URL <<SQL || cfg_die "导入 $_file 失败，单文件事务已回滚"
 CREATE TEMP TABLE _st(doc jsonb);
 \copy _st FROM '$CFG_DIR/$_file'
 $_sql
@@ -510,7 +510,7 @@ WHERE NOT EXISTS (
 	# 17. settings 全局开关（可选，按 key upsert）
 	imp settings.jsonl "
 INSERT INTO settings (key, value)
-SELECT doc->>'key', doc->'value' FROM _st
+SELECT doc->>'key', doc->>'value' FROM _st
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
 
 	cfg_ok "导入完成。重启 artex 服务后生效：systemctl restart artex"

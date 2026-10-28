@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -73,15 +74,41 @@ type Task struct {
 	Guard      *guard.Guard           `json:"-"`
 	notify     chan struct{}
 	// 【二开·P-REVIEW·S6】reviewBusy：review 会话单飞门（同任务同刻只允许一个 review 对话在跑）
-	reviewBusy  atomic.Bool
-	lifecycleMu sync.RWMutex
-	llmMu       sync.RWMutex
+	reviewBusy   atomic.Bool
+	reviewMu     sync.Mutex
+	reviewCancel context.CancelFunc
+	lifecycleMu  sync.RWMutex
+	llmMu        sync.RWMutex
 
 	// pendingTriggers accumulates the concrete changes (worker done / finding) that
 	// fired planning rounds since the last one consumed them. The debounce coalesces
 	// a burst into one round, so several may pile up before drainTriggers() clears them.
 	trigMu          sync.Mutex
 	pendingTriggers []agent.TriggerEvent
+}
+
+// setReviewCancel 注册当前 review 会话的取消函数；reviewBusy 保证同时只有一个会话。
+func (t *Task) setReviewCancel(cancel context.CancelFunc) {
+	t.reviewMu.Lock()
+	t.reviewCancel = cancel
+	t.reviewMu.Unlock()
+}
+
+// cancelReview 取消当前 review 会话，供任务删除和归档在 drain 前调用。
+func (t *Task) cancelReview() {
+	t.reviewMu.Lock()
+	cancel := t.reviewCancel
+	t.reviewMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// clearReviewCancel 在会话完全退出后清除取消函数，避免保留已结束的上下文。
+func (t *Task) clearReviewCancel() {
+	t.reviewMu.Lock()
+	t.reviewCancel = nil
+	t.reviewMu.Unlock()
 }
 
 // taskLifecycleState is an internally consistent view of the mutable task

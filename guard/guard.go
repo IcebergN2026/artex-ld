@@ -27,13 +27,22 @@ type AuditEntry struct {
 	Command string `json:"command,omitempty"`
 }
 
+// interceptorAPI 是 Guard 使用的审批能力；接口让审计逻辑可以独立做单元测试。
+type interceptorAPI interface {
+	IsToolEnabled(string) bool
+	Match(string, []byte) (intercept.Decision, bool)
+	Judge(context.Context, string, json.RawMessage) (intercept.Decision, bool)
+	Log(context.Context, int64, intercept.Decision, string, []byte, string)
+	HandleAsk(context.Context, int64, intercept.Decision, string, []byte) bool
+}
+
 // Guard enforces the side-effect policy via agent-core hooks.
 type Guard struct {
 	mu          sync.Mutex
 	audit       []AuditEntry
 	attrib      map[string]int // failure attribution counts (Observer / G5)
 	reg         *hook.Registry
-	interceptor *intercept.Interceptor // optional; nil disables user-configured rules
+	interceptor interceptorAPI // optional; nil disables user-configured rules
 }
 
 // New creates a Guard without user-configured intercept rules (used for pentest
@@ -41,9 +50,14 @@ type Guard struct {
 func New() *Guard { return newGuard(nil) }
 
 // NewWithInterceptor creates a Guard with user-configured intercept rules.
-func NewWithInterceptor(ic *intercept.Interceptor) *Guard { return newGuard(ic) }
+func NewWithInterceptor(ic *intercept.Interceptor) *Guard {
+	if ic == nil {
+		return newGuard(nil)
+	}
+	return newGuard(ic)
+}
 
-func newGuard(ic *intercept.Interceptor) *Guard {
+func newGuard(ic interceptorAPI) *Guard {
 	g := &Guard{attrib: map[string]int{}, interceptor: ic}
 	g.reg = hook.NewRegistry().
 		On(hook.PreToolUse, g.preToolUse).
@@ -74,8 +88,11 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 		_ = json.Unmarshal(ev.Input, &in)
 		cmd = in.Text
 	}
-	g.record(ev.ToolName, "allow", "", cmd)
-	return g.applyIntercept(ctx, ev)
+	result := g.applyIntercept(ctx, ev)
+	if result.Decision != "block" {
+		g.record(ev.ToolName, "allow", "", cmd)
+	}
+	return result
 }
 
 // applyIntercept evaluates user-configured intercept rules against the tool call.

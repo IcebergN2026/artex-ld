@@ -1,16 +1,16 @@
 package server
 
-// ═══ ARTEX 二开 · [P-REVIEW 审核服务] ═══
-// 功能介绍：review agent 的预审 runner（S5）+ 审核五端点 handler（S6）+ intercept ask 化迁移（D9）
-// 二开日期：2026-10-21
+// Review service 实现审核 agent 的周期预审、对话以及人工裁决接口。
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,21 +19,15 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/xlog" // 【二开·P-LOG】S5/S6 等点位 DEBUG/INFO 开关
+	"github.com/Autumn-27/artex/xlog"
 	"github.com/Autumn-27/norma/llm"
 )
 
-// ═══ ARTEX 二开 · [P-REVIEW·D9 intercept审核写工具ask化] ═══
-// 功能介绍：启动迁移（幂等）——把审核写工具补进 intercept 启用集，并种子对应 [内置] ask 规则（按钮确认制 K15）
-
-// reviewWriteTools 是 review agent 会话轮的写工具集合（K15：全部 ask 化，人点按钮才放行）。
-// 【二开·审核流 PR1/§2.8】名单唯一定义移到 intercept.ReviewWriteTools（guard 来源校验共用）。
+// reviewWriteTools 与 guard 共用审核写工具名单，所有写动作都需人工确认。
 var reviewWriteTools = intercept.ReviewWriteTools
 
-// seedReviewIntercept ① 把审核写工具补进 intercept 启用集（缺才 append，幂等）；
-// ② 种子审核写工具的 [内置] ask 规则（按 name 查重，用户可禁用/删除，与既有内置规则同款待遇）。
-// ask 超时默认 300s 自动 deny（intercept/intercept.go:317 defaultJudgeAskTimeoutSecs），
-// 前端确认卡需提示时限（U3）。
+// seedReviewIntercept 幂等补齐审核写工具的启用项和内置 ask 规则。
+// 用户之后仍可禁用或删除规则；确认超时默认 300 秒并自动拒绝。
 func (s *Server) seedReviewIntercept() {
 	pg := s.m.pg
 	if pg == nil || s.m.interceptor == nil {
@@ -61,7 +55,7 @@ func (s *Server) seedReviewIntercept() {
 		if err := s.m.interceptor.SetEnabledTools(enabled); err != nil {
 			log.Printf("[review] intercept 启用集写入失败: %v", err)
 		} else {
-			// 【二开·P-LOG·D9】INFO 记启用集补齐成功（排障：K15 闸门在不在）
+			// 记录启用集补齐结果，便于排查审核写闸门是否生效。
 			log.Printf("[review] review 写工具补进 intercept 启用集成功（K15 会话写闸门生效）")
 		}
 	}
@@ -85,7 +79,7 @@ func (s *Server) seedReviewIntercept() {
 			"tool_name", // match_target：按工具名匹配
 			"string",    // match_type：精确串
 			tool,        // pattern
-			"ask",       // action：一律人工按钮确认（K15），不走 LLM 兜底判官
+			"ask",       // 写动作一律进入人工确认，不调用 LLM 判定。
 			"review agent 写动作需人工确认（会话内确认卡放行）", // message
 			100,    // priority
 			true,   // enabled
@@ -96,42 +90,33 @@ func (s *Server) seedReviewIntercept() {
 		if err != nil {
 			log.Printf("[review] 种子拦截规则 %s 失败: %v", name, err)
 		} else {
-			// 【二开·P-LOG·D9】INFO 记种子写入（排障：三条规则在位情况）
+			// 记录种子规则，便于确认审核写动作的保护项是否存在。
 			log.Printf("[review] review 写工具拦截规则种子：%s（ask 按钮确认制）", name)
 		}
 	}
 }
 
-// 【二开·P-REVIEW·D9】止
-
-// ═══ ARTEX 二开 · [P-REVIEW·S5 预审 Runner] ═══
-// 功能介绍：ReviewRunner——周期扫描有待审意图的任务，review agent 物理只读预审（K14）；
-//           fresh 判据=reviewed_version 缺失或落后于 content_version（§3.4，SQL 下推），
-//           预审建议 ≤200 字落 payload.review_note（revise 时），人工审核卡片直接展示。
-// 二开日期：2026-10-21
+// ReviewRunner 周期预审待审意图，并串行化每个任务的审核会话。
 
 type ReviewRunner struct {
 	s        *Server
 	interval time.Duration
-	// 【二开·审核流 PR1/§2.6】wake 是送审/重送成功的即时唤醒通道（容量 1、非阻塞发送，
-	// 多个送审合并为一轮 sweep）；ticker 仍是兜底，重启恢复场景由启动即扫覆盖。
+	// wake 合并即时审核请求；ticker 负责周期扫描和漏唤醒恢复。
 	wake chan struct{}
-	// 【二开·审核流 PR6/§3.12】每任务 review 槽位（第 1 层进程内租约）：
-	// 同一时刻一个任务最多一个 review agent（预审/自动/对话互斥，chat 优先）。
+	// slots 保证同一任务的预审、自动处置和对话互斥。
 	mu        sync.Mutex
 	slots     map[string]*reviewSlot
 	undecided map[string]int // 自动审核连续全未决轮数（≥3 告警）
 }
 
+// newReviewRunner 创建默认每 15 秒扫描一次的审核调度器。
 func newReviewRunner(s *Server) *ReviewRunner {
-	// 【二开·审核流 PR6/§3.11】默认 15s 一轮；送审/重送成功另有 wake 通道即时唤醒（§2.6），
-	// ticker 只是重启恢复与漏唤醒场景的兜底，不宜过长。
+	// ticker 是漏唤醒时的兜底，间隔不宜过长。
 	return &ReviewRunner{s: s, interval: 15 * time.Second, wake: make(chan struct{}, 1),
 		slots: make(map[string]*reviewSlot), undecided: make(map[string]int)}
 }
 
-// reviewSlot 每任务 review agent 租约（§3.12 第 1 层：进程内单飞）。
-// 租约带 TTL：holder 崩溃不主动释放也会被后续 acquire 抢占（WARN 记抢占）。
+// reviewSlot 是每任务的进程内审核租约；TTL 允许后续请求接管失效租约。
 type reviewSlot struct {
 	mu    sync.Mutex
 	busy  bool
@@ -177,7 +162,7 @@ func (rr *ReviewRunner) slotFor(taskID string) *reviewSlot {
 	return sl
 }
 
-// bumpUndecided 累加自动审核连续全未决轮数并返回当前值（§3.5 附注告警判据）。
+// bumpUndecided 累加自动审核连续全未决轮数并返回当前值。
 func (rr *ReviewRunner) bumpUndecided(taskID string) int {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
@@ -202,7 +187,7 @@ func (rr *ReviewRunner) Wake() {
 
 // Run loops until ctx done，每 interval 扫一轮（启动即扫一次）；wake 通道随到随扫。
 func (rr *ReviewRunner) Run(ctx context.Context) {
-	// 【二开·P-LOG·S5】启动日志：INFO 记启动（排障：预审/自动轮跑没跑、多久扫一次）。
+	// 记录扫描周期，便于确认预审调度已启动。
 	log.Printf("[review] review 审核轮启动：扫描间隔 %s（预审 + review_auto 自动处置）", rr.interval)
 	tick := time.NewTicker(rr.interval)
 	defer tick.Stop()
@@ -211,7 +196,7 @@ func (rr *ReviewRunner) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-rr.wake: // 【二开·审核流 PR1/§2.6】送审即唤醒
+		case <-rr.wake: // 送审或重送后立即唤醒。
 			rr.sweep(ctx)
 		case <-tick.C:
 			rr.sweep(ctx)
@@ -219,7 +204,7 @@ func (rr *ReviewRunner) Run(ctx context.Context) {
 	}
 }
 
-// wakeReviewRunner 送审/重送成功后即时唤醒审核轮（§2.6）。runner 未启动（测试/未装配）时安全空转。
+// wakeReviewRunner 在送审或重送后立即唤醒审核轮；runner 未启动时安全空转。
 func (s *Server) wakeReviewRunner() {
 	if s.reviewRunner != nil {
 		s.reviewRunner.Wake()
@@ -234,22 +219,21 @@ func (s *Server) reviewRunnerSlot(taskID string) *reviewSlot {
 	return &reviewSlot{}
 }
 
-// checkExecutorKey 校验 target_executor（建议执行器 key，§2.9.3）：未注册/已禁用/内置一律拒绝。
+// checkExecutorKey 拒绝未注册、已禁用或内置的建议执行器。
 // 内部复用 engine.resolveExecutor（查唯一启用、非内置的自定义 agent 配置）。
 func (s *Server) checkExecutorKey(key string) error {
 	_, err := s.engine.resolveExecutor(key)
 	return err
 }
 
-// sweep 遍历有待审意图的任务（D3 TasksWithProposed），逐任务预审 fresh（reviewed_version
-// 缺失或落后 content_version，§3.4）的待审意图。
+// sweep 遍历有待审意图的任务，只预审内容版本尚未覆盖的意图。
 func (rr *ReviewRunner) sweep(ctx context.Context) {
-	taskIDs, err := rr.s.m.pg.TasksWithProposed() // D3 第七法
+	taskIDs, err := rr.s.m.pg.TasksWithProposed()
 	if err != nil {
 		log.Printf("[review] sweep 获取待审任务失败: %v", err)
 		return
 	}
-	// 【二开·P-LOG·S5】拾取日志：INFO 记待审任务数（排障：待审意图为什么没被处理）。
+	// 记录本轮发现的待审任务数。
 	if len(taskIDs) > 0 {
 		log.Printf("[review] 审核轮拾取：%d 个任务有待审意图", len(taskIDs))
 	}
@@ -269,15 +253,13 @@ func (rr *ReviewRunner) sweep(ctx context.Context) {
 
 // preReviewTask 对单个任务的 fresh 待审意图跑一轮 review agent 预审。
 // BeginLLMCall/EndLLMCall 包裹——预热限流/断网熔断统计与正式 LLM 调用同口径。
-// 【二开·审核流 PR6/§3.4】fresh 判据下推 SQL（FreshPendingIntents：reviewed_version 缺失
-// 或 < content_version），不再用 review_note 是否为空。
+// 仅处理 reviewed_version 缺失或落后于 content_version 的意图。
 func (rr *ReviewRunner) preReviewTask(ctx context.Context, t *Task) {
-	freshNodes, err := t.Store.FreshPendingIntents(50) // §3.4 SQL 下推
+	freshNodes, err := t.Store.FreshPendingIntents(50) // 在 SQL 中筛选版本过期的意图。
 	if err != nil || len(freshNodes) == 0 {
 		return
 	}
-	// 【二开·审核流 PR6/§3.12】每任务 review 槽位单飞门（第 1 层进程内租约）：
-	// 预审/自动轮拿不到槽位直接跳过本轮（ticker/wake 下轮重试），不排队不并发。
+	// 预审或自动轮未拿到租约时跳过，本轮不排队；下一轮再试。
 	slot := rr.slotFor(t.ID)
 	if !slot.acquire("prescreen", 5*time.Minute) {
 		log.Printf("[review] task %s 预审跳过：review 槽位被占用（owner=%s）", t.ID, slot.ownerName())
@@ -293,11 +275,11 @@ func (rr *ReviewRunner) preReviewTask(ctx context.Context, t *Task) {
 	// review agent 的 LLM：绑定该 agent 的 profile（未绑→全局激活）。
 	prov := rr.reviewProvider(t)
 	if prov == nil {
-		// 【二开·P-LOG·S5】WARN：provider 解析失败导致预审无声跳过（预审轮疑似 bug 的排障眼）
+		// provider 不可用时记录告警，避免审核被静默跳过。
 		log.Printf("[review] task %s 预审跳过 ⚠ reviewProvider() 为 nil（review agent 缺失/禁用/无 LLM 绑定）——%d 条待审意图无人预审", t.ID, len(fresh))
 		return
 	}
-	// 【二开·P-LOG·S5】INFO 记进入审核轮（排障：预审轮跑没跑）。
+	// 记录本次审核的意图数和自动处置状态。
 	log.Printf("[review] task %s 进入审核轮：%d 条待审意图（review_auto=%v）", t.ID, len(fresh), t.ReviewAuto)
 	// ReviewPreScreenConfig.TaskID 是 string 型（agent 侧签名）——t.ID 直接传，不再 ParseInt。
 	rr.s.engine.BeginLLMCall(t.ID)
@@ -307,7 +289,7 @@ func (rr *ReviewRunner) preReviewTask(ctx context.Context, t *Task) {
 		Provider: prov, FreshIDs: fresh,
 		Emit: func(a db.Activity) { rr.s.engine.emitActivity(t, a) },
 	}
-	if t.ReviewAuto { // 【二开·P-REVIEW·S5b】自动处置分支（任务审核聊天窗 Switch 开启）
+	if t.ReviewAuto { // 开启自动处置时根据预审结论执行后续动作。
 		rr.autoDecide(ctx, t, cfg, versions)
 		return
 	}
@@ -316,13 +298,12 @@ func (rr *ReviewRunner) preReviewTask(ctx context.Context, t *Task) {
 		log.Printf("[review] task %s 预审失败: %v", t.ID, err)
 		return
 	}
-	// 【二开·P-REVIEW·人工全审】裁决落账：预审只标注不批准——pass=写 pre_review='pass'+放行理由，
-	// revise=写修改建议，两者都保持 pending 等人工处置；自动裁决只在 review_auto=true 的 autoDecide 分支。
-	// 全部带版本 CAS：预审期间正文被改的裁决整条丢弃（审的必须是这份稿）。
+	// 预审只写建议并保持 pending；自动处置仅在 review_auto=true 时执行。
+	// 写回带版本 CAS，预审期间正文变化的裁决会被丢弃。
 	var passed, revised, dropped int
 	for id, v := range verdicts {
 		note := v.Note
-		if len([]rune(note)) > 200 { // 红线：预审摘要 ≤200 字（01 册 A8）
+		if len([]rune(note)) > 200 { // 预审摘要最多 200 字。
 			note = string([]rune(note)[:200])
 		}
 		switch v.Verdict {
@@ -354,10 +335,8 @@ func (rr *ReviewRunner) preReviewTask(ctx context.Context, t *Task) {
 	}
 }
 
-// autoDecide 自动处置一轮（S5b）：LLM 输出决策 JSON，这里经版本 CAS 执行并留痕。
-// CAS 失败（人刚好手动处置了同一条）静默跳过——先到先得，与人工面板并发安全。
-// 【二开·审核流 PR6/§3.5】决策收窄 approve/reject 两态：拿不准=未决（不输出 id、不做任何
-// 写操作）；连续多轮全未决记 WARN 告警（提示 review agent 可能失灵）。
+// autoDecide 按模型决策自动批准或驳回，并用版本 CAS 避免覆盖人工并发处置。
+// 无法确定的意图保持未决；连续多轮全部未决时记录告警。
 func (rr *ReviewRunner) autoDecide(ctx context.Context, t *Task, cfg agent.ReviewPreScreenConfig, versions map[int64]int) {
 	decisions, err := agent.RunReviewAuto(ctx, agent.ReviewAutoConfig{
 		Store: cfg.Store, Goal: cfg.Goal, TaskID: cfg.TaskID,
@@ -368,7 +347,7 @@ func (rr *ReviewRunner) autoDecide(ctx context.Context, t *Task, cfg agent.Revie
 		return
 	}
 	if len(decisions) == 0 && len(cfg.FreshIDs) > 0 {
-		// 连续未决告警（§3.5 附注）：可能 review agent 提示词/模型异常导致不出决策。
+		// 连续未决可能表示审核提示词或模型异常。
 		if rr.bumpUndecided(t.ID) >= 3 {
 			log.Printf("[review] task %s ⚠ 自动审核连续 3 轮以上全未决（%d 条待审无人处置），请检查 review agent 配置", t.ID, len(cfg.FreshIDs))
 		}
@@ -383,7 +362,7 @@ func (rr *ReviewRunner) autoDecide(ctx context.Context, t *Task, cfg agent.Revie
 		}
 		switch d.Action {
 		case "approve":
-			ok, err := t.Store.ApproveIntentAt(d.ID, versions[d.ID]) // §8：pending_executor 转正
+			ok, err := t.Store.ApproveIntentAt(d.ID, versions[d.ID]) // 批准时确定执行器。
 			if err != nil {
 				log.Printf("[review] task %s 自动放行 #%d 失败: %v", t.ID, d.ID, err)
 				continue
@@ -395,7 +374,7 @@ func (rr *ReviewRunner) autoDecide(ctx context.Context, t *Task, cfg agent.Revie
 			rr.s.engine.emitActivity(t, db.Activity{Worker: "review", Kind: "text",
 				Summary: fmt.Sprintf("意图 #%d 已自动放行：%s", d.ID, note)})
 		case "reject":
-			_, _, ok, err := t.Store.RequestRevisionAt(d.ID, note, versions[d.ID]) // §8.1.1：退回修订，不再软删
+			_, _, ok, err := t.Store.RequestRevisionAt(d.ID, note, versions[d.ID]) // 驳回后退回修订。
 			if err != nil {
 				if errors.Is(err, db.ErrNoteRequired) {
 					// 模型驳回了却给不出理由（且节点无既有 review_note）——决策未能执行，
@@ -423,10 +402,8 @@ func (rr *ReviewRunner) autoDecide(ctx context.Context, t *Task, cfg agent.Revie
 	log.Printf("[review] task %s 自动审核完成：放行 %d / 驳回 %d / 留人 %d", t.ID, approved, rejected, len(cfg.FreshIDs)-approved-rejected)
 }
 
-// reviewProvider 解析 review agent 的 LLM provider（绑定 profile 优先，全局激活兜底）。
-// reviewProvider 解析 review agent 的 LLM。【二开·P-REVIEW·D2c】m03934「在任务中启动」：
-// 优先跟随任务 LLM 配置链（LLMProfileIDs 逐个试）；任务未绑配置时回退 review agent 自身绑定，
-// 再回退 providerForProfile(0) 全局默认。全部失败返回 nil（预审跳过并 WARN，S5③）。
+// reviewProvider 依次尝试任务配置链、review agent 绑定和全局默认 profile。
+// 没有可用 provider 时返回 nil，由调用方跳过并记录告警。
 func (rr *ReviewRunner) reviewProvider(t *Task) llm.Provider {
 	a, err := rr.s.m.pg.GetAgentByKey("review")
 	if err != nil || a == nil || !a.Enabled {
@@ -452,11 +429,9 @@ func (rr *ReviewRunner) reviewProvider(t *Task) llm.Provider {
 	return prov
 }
 
-// ═══ ARTEX 二开 · [P-REVIEW·S6 审核五端点] ═══
-// 功能介绍：人工审核面板 API——待审列表/批准/驳回/对话/消息页（U3 ReviewPanel 数据源）
-// 二开日期：2026-10-21
+// 以下 handler 实现审核列表、批准、驳回、对话、消息和自动处置设置。
 
-// reviewListProposed GET /api/tasks/{id}/review/proposed —— 待审意图列表（双条件，m00973/K24）。
+// reviewListProposed 返回当前任务仍待人工裁决的意图。
 func (s *Server) reviewListProposed(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
@@ -481,7 +456,7 @@ func (s *Server) reviewListProposed(w http.ResponseWriter, r *http.Request) {
 			"id": n.ID, "summary": p["summary"], "priority": n.Priority, "origin": n.Origin,
 			"pending_executor": p["pending_executor"], "review_note": p["review_note"],
 			"replaces": p["replaces"], "created_at": n.CreatedAt.Unix(),
-			// 【二开·审核流 PR2】content_version 给前端做批准/驳回 expected_version CAS。
+			// 返回内容版本，供批准和驳回时做 CAS。
 			"content_version": n.ContentVersion,
 		})
 	}
@@ -521,17 +496,19 @@ func (s *Server) reviewApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		// 【二开·审核流 PR3/§8】expected_version 可空：携带时做版本 CAS（前端以 list 返回的
-		// content_version 为准），缺省（nil）兼容旧前端=不校验版本（取当前版本代入）。
+		// 空值兼容旧客户端；非空时做版本 CAS。
 		ExpectedVersion *int `json:"expected_version"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := decode(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
 	ver, err := resolveReviewVersion(t.Store, intentID, body.ExpectedVersion)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	ok2, err := t.Store.ApproveIntentAt(intentID, ver) // §8：pending_executor 转正
+	ok2, err := t.Store.ApproveIntentAt(intentID, ver) // 批准时确定执行器。
 	if err != nil {
 		// 【审核-2】db 层以哨兵错误报告 CAS 未命中（状态门禁/版本漂移/节点不存在），
 		// HTTP 语义上都是「已被并发处置」→ 409，不是 500。
@@ -544,12 +521,12 @@ func (s *Server) reviewApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok2 { // CAS 冲突：已不在待审池（并发重复处置）
-		// 【二开·P-LOG·S6】WARN 记冲突（排障：明明点了批准为什么没生效）
+		// 版本冲突返回 409，前端刷新后再裁决。
 		log.Printf("[review] 人工审核 approve 冲突 ⚠ task %s 意图 #%d 已不在待审池（并发重复处置或已驳回）", t.ID, intentID)
 		writeErr(w, 409, "意图已被处理（并发冲突）")
 		return
 	}
-	// 【二开·P-LOG·S6】INFO 记人工处置（排障：谁批的、批的哪条）。
+	// 记录人工批准的任务、意图和操作者。
 	log.Printf("[review] 人工审核 approve：task %s 意图 #%d（版本 CAS=%d）", t.ID, intentID, ver)
 	t.Notify() // 唤醒 planner/worker 池立即领取放行的 open 意图
 	s.engine.emitActivity(t, db.Activity{Worker: "review", Kind: "text",
@@ -577,9 +554,12 @@ func (s *Server) reviewReject(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Reason          string `json:"reason"`
-		ExpectedVersion *int   `json:"expected_version"` // 【二开·审核流 PR3/§8】可空，携带时版本 CAS
+		ExpectedVersion *int   `json:"expected_version"` // 可空；携带时做版本 CAS。
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := decode(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
+		return
+	}
 	reason := strings.TrimSpace(body.Reason)
 	if reason == "" {
 		writeErr(w, 400, "驳回理由必填")
@@ -590,7 +570,7 @@ func (s *Server) reviewReject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	// 【二开·审核流 PR5/§8.1.1】驳回=退回修订（保持 proposed + review_status=rejected），不再软删。
+	// 驳回保持 proposed 并标记 rejected，等待修订后重新送审。
 	_, _, ok2, err := t.Store.RequestRevisionAt(intentID, reason, ver)
 	if err != nil {
 		// 【审核-2】同上：CAS 未命中以哨兵错误返回 → 409。
@@ -603,12 +583,12 @@ func (s *Server) reviewReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok2 { // CAS 冲突：已不在待审池（并发重复处置）
-		// 【二开·P-LOG·S6】WARN 记冲突
+		// 记录驳回时的版本冲突。
 		log.Printf("[review] 人工审核 reject 冲突 ⚠ task %s 意图 #%d 已不在待审池（并发重复处置或已放行）", t.ID, intentID)
 		writeErr(w, 409, "意图已被处理（并发冲突）")
 		return
 	}
-	// 【二开·P-LOG·S6】INFO 记人工处置。
+	// 记录人工驳回的任务、意图和操作者。
 	log.Printf("[review] 人工审核 reject：task %s 意图 #%d 理由=%q（退回修订）", t.ID, intentID, firstLine(reason, 60))
 	// §4.2.3 三件套：revision_requested 事件送达 planner（带 IntentID+理由）。
 	t.NotifyRevisionRequested(intentID, reason)
@@ -617,7 +597,14 @@ func (s *Server) reviewReject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// reviewChat POST /api/tasks/{id}/review/chat —— 与 review agent 对话（异步 202；写动作经 intercept ask 确认卡 K15）。
+// cancelTaskReview 在任务删除或归档前取消 review 会话，使 inflight drain 能正常结束。
+func (s *Server) cancelTaskReview(taskID string) {
+	if t, ok := s.m.Task(taskID); ok {
+		t.cancelReview()
+	}
+}
+
+// reviewChat 异步运行审核对话，立即返回 202；写动作仍需 intercept 确认。
 func (s *Server) reviewChat(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
@@ -638,12 +625,12 @@ func (s *Server) reviewChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// 单飞门：同任务同刻只允许一个 review 会话在跑（原子 CAS，与 chatBusy 同款模式）。
 	if !t.reviewBusy.CompareAndSwap(false, true) {
-		// 【二开·P-LOG·S6】WARN 记忙碌拒绝（排障：消息发了为什么没回）
+		// 同任务已有审核会话时记录并返回 409。
 		log.Printf("[review] review chat 拒绝 ⚠ task %s 上一轮未结束（busy 互斥）", t.ID)
 		writeErr(w, 409, "review 会话正在处理上一条消息")
 		return
 	}
-	// 【二开·审核流 PR6/§3.12】chat 也要占 review 槽位（第 1 层租约）：与预审/自动轮互斥。
+	// 对话与预审、自动处置共用每任务租约。
 	// chat 优先体现在预审侧——预审拿不到槽位直接跳过本轮；chat 拿不到（预审在跑）则 409。
 	chatSlot := s.reviewRunnerSlot(t.ID)
 	if !chatSlot.acquire("chat", 10*time.Minute) {
@@ -652,18 +639,34 @@ func (s *Server) reviewChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, "审核轮正在处理该任务，请稍后重试")
 		return
 	}
-	// 【二开·P-LOG·S6】DEBUG 记受理。
+	// 把异步会话纳入任务删除/归档屏障，避免数据库删除后仍有 review 写入。
+	if !s.engine.beginTaskOperation(t.ID) {
+		t.reviewBusy.Store(false)
+		chatSlot.release()
+		writeErr(w, 409, "任务正在删除或归档，无法发起 review 会话")
+		return
+	}
 	xlog.Debugf("[review] review chat 受理：task %s 消息 %q", t.ID, firstLine(strings.TrimSpace(body.Message), 60))
 	msg := strings.TrimSpace(body.Message)
 	s.engine.emitActivity(t, db.Activity{Worker: "review", Kind: "user", Summary: msg, Detail: msg})
+	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Minute)
+	t.setReviewCancel(cancel)
+	// 删除可能发生在 inflight 注册之后、cancel 注册之前；补查屏障关闭这个窗口。
+	if s.engine.IsDeleting(t.ID) {
+		cancel()
+	}
 	go func() {
-		defer t.reviewBusy.Store(false)
-		defer chatSlot.release()
-		// 会话生命周期跟服务进程（不随 HTTP 请求取消）；3 分钟硬熔断——LLM 通路异常
-		// （代理缓冲/对端挂死）时按时失败出错误卡，不再无限死等（历史事故：gzip+SSE
-		// 经中转代理被缓冲，连接 ESTAB 死等无任何回执）。
-		ctx, cancel := context.WithTimeout(s.ctx, 3*time.Minute)
-		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				xlog.Errorf("[review] chat PANIC task %s: %v\n%s", t.ID, r, debug.Stack())
+			}
+			cancel()
+			t.clearReviewCancel()
+			chatSlot.release()
+			t.reviewBusy.Store(false)
+			s.engine.decInflight(t.ID)
+		}()
+		// 会话不随 HTTP 请求取消；删除/归档通过 cancelReview 主动终止，3 分钟超时作为最终兜底。
 		prov := (&ReviewRunner{s: s}).reviewProvider(t)
 		if prov == nil {
 			s.engine.emitActivity(t, db.Activity{Worker: "review", Kind: "error", Summary: "review agent 不可用（未启用或未绑定 LLM）"})
@@ -681,12 +684,12 @@ func (s *Server) reviewChat(w http.ResponseWriter, r *http.Request) {
 				}
 				s.engine.emitActivity(t, a)
 			},
-			Notify:       t.Notify, // 【二开·审核流 PR1】批准放行后唤醒 planner/worker 领取
+			Notify:       t.Notify, // 批准后唤醒 planner/worker。
 			NotifyHint:   t.NotifyHint,
-			NotifyReview: func(int64) { s.wakeReviewRunner() }, // 【二开·审核流 PR1/§2.6】送审即唤醒审核轮
-			// 【二开·审核流 PR5/§4.2.3】对话确认驳回 → revision_requested 事件送达 planner。
+			NotifyReview: func(int64) { s.wakeReviewRunner() }, // 送审后立即唤醒审核轮。
+			// 驳回后向 planner 发送 revision_requested 事件。
 			NotifyRevision: t.NotifyRevisionRequested,
-			// 【二开·审核流 PR8/审核-2 P1】review 对话内送审/修订也要校验 target_executor。
+			// 对话内送审或修订同样校验目标执行器。
 			CheckExecutor: s.checkExecutorKey,
 			Hooks:         t.Guard.Hooks(),
 		}); err != nil {
@@ -731,5 +734,3 @@ func (s *Server) reviewMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"messages": out})
 }
-
-// 【二开·P-REVIEW·S5/S6】止

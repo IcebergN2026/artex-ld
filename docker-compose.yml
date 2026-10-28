@@ -34,9 +34,15 @@ services:
     ports:
       - "8787:8787"
       - "127.0.0.1:8788:8788"
+    healthcheck:
+      # curl 已安装于运行镜像；同时检查 API 与内嵌前端，避免仅容器活着就判定成功。
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/api/health >/dev/null && curl -fsS http://127.0.0.1:8787/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     volumes:
-      # 把数据目录（含 jwt.key、SQLite 等）绑定到项目根目录的 data/，
-      # 方便在宿主机直接查看/备份，容器重建也不丢。
+      # 数据目录包含 jwt.key；绑定挂载确保容器重建后登录密钥和业务数据不丢失。
       - ./data:/app/data
       # 把项目根目录的 skills 挂进容器（覆盖镜像内置的 /app/skills）；
       # 改 skill 无需重建镜像，容器读的就是宿主机这份。

@@ -189,13 +189,15 @@ function mockReport(_task?: string): string {
 > （demo）本报告由 mock 数据生成，仅用于界面演示。`;
 }
 
+// sseUrl 构建 SSE 地址。同源流由浏览器携带登录 cookie，避免把 JWT 放进
+// URL 查询串而泄漏到访问日志；仅跨源、无法使用该 cookie 时才附加 token。
 export function sseUrl(path: string): string {
   const base =
     process.env.NEXT_PUBLIC_SSE_BASE ??
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
-  const token = getToken();
+  const token = base !== "" ? getToken() : null;
   const sep = path.includes("?") ? "&" : "?";
   return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
 }
@@ -1225,9 +1227,9 @@ export const api = {
     meta: { mcps?: string[]; description?: string; license?: string; compatibility?: string },
   ) => put<{ ok: boolean }>(`/skills/${name}/meta`, meta),
   createSkillDir: (skill: string, path: string) => post<{ dir: string }>(`/skills/${skill}/dirs`, { path }),
-  skillFiles: (name: string) => get<{ files: string[] }>(`/skills/${name}/files`).then((r) => r.files),
+  skillFiles: (name: string) => get<{ files: string[] }>(`/skills/${name}/files`).then((r) => arr(r.files)),
   readSkillFile: (name: string, file: string) =>
-    get<{ content: string; file: string }>(`/skills/${name}/files/${file}`).then((r) => r.content),
+    get<{ content: string; file: string }>(`/skills/${name}/files/${file}`).then((r) => r.content ?? ""),
   writeSkillFile: (name: string, file: string, content: string) =>
     put<{ ok: boolean }>(`/skills/${name}/files/${file}`, { content }),
   deleteSkillPath: (skill: string, path: string) => del<{ deleted: string }>(`/skills/${skill}/files/${path}`),

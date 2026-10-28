@@ -131,6 +131,12 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	streamCtx, cancel := context.WithCancel(context.Background())
+	// SSE 本身需要长驻，但握手必须受调用方取消和默认 30 秒上限约束。
+	// 握手成功后解除这个映射，避免 setup ctx 取消时误杀已建立的流。
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelHandshake()
+	stopHandshake := context.AfterFunc(handshakeCtx, cancel)
+	defer stopHandshake()
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {
 		cancel()
@@ -153,9 +159,20 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	reader := bufio.NewReader(resp.Body)
 	endpoint, err := readSSEEndpoint(reader, sseURL)
 	if err != nil {
+		if handshakeCtx.Err() != nil {
+			err = fmt.Errorf("mcp sse handshake: %w", handshakeCtx.Err())
+		}
 		resp.Body.Close()
 		cancel()
 		return nil, err
+	}
+	if !stopHandshake() || handshakeCtx.Err() != nil {
+		resp.Body.Close()
+		cancel()
+		if handshakeCtx.Err() != nil {
+			return nil, fmt.Errorf("mcp sse handshake: %w", handshakeCtx.Err())
+		}
+		return nil, fmt.Errorf("mcp sse handshake canceled")
 	}
 	c := &Client{
 		server:       server,
@@ -525,6 +542,14 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 		return response, nil
 	case err := <-c.streamErr:
 		return nil, fmt.Errorf("mcp sse stream: %w", err)
+	case <-c.streamDone:
+		// streamErr 在 streamDone 关闭前写入；优先保留底层解析或网络错误。
+		select {
+		case err := <-c.streamErr:
+			return nil, fmt.Errorf("mcp sse stream: %w", err)
+		default:
+		}
+		return nil, fmt.Errorf("mcp sse stream closed")
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

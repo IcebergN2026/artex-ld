@@ -19,7 +19,7 @@ func (d *DB) InsertLog(level, tag, text string) (int64, error) {
 	var id int64
 	err := d.QueryRowContext(context.Background(),
 		"INSERT INTO server_logs(level,tag,text) VALUES($1,$2,$3) RETURNING id",
-		level, tag, text,
+		utf8Clean(level), utf8Clean(tag), utf8Clean(text),
 	).Scan(&id)
 	return id, err
 }
@@ -47,7 +47,7 @@ func (d *DB) RecentLogs(limit int) ([]*DBLog, error) {
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // DeleteOldLogs 【P-LOG·M0】删除 days 天前的 server_logs 行（表无上限增长 → 每日清理）。
@@ -85,5 +85,5 @@ func (d *DB) ListLogsBefore(beforeID int64, limit int) ([]*DBLog, error) {
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
-	return out, nil
+	return out, rows.Err()
 }

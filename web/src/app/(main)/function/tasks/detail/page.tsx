@@ -225,9 +225,9 @@ function TaskDetailInner() {
     let alive = true;
     const load = () =>
       api
-        .interceptTask(id)
-        .then((rows) => {
-          if (alive) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+        .interceptTaskPage(id, 1, 1, { status: "pending" })
+        .then((page) => {
+          if (alive) setInterceptPendingCount(page.total);
         })
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
@@ -270,6 +270,10 @@ function TaskDetailInner() {
       });
   }, [id]);
   React.useEffect(() => {
+    // URL 切换后先移除旧任务，防止标题和操作按钮短时指向错误任务。
+    setTask(null);
+    setPaused(false);
+    setLoaded(false);
     load();
     const timer = setInterval(load, 5000);
     return () => clearInterval(timer);

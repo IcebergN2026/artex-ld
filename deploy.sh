@@ -1,128 +1,155 @@
 #!/usr/bin/env bash
-# ARTEX Docker 一键部署：生成配置、从源码构建、启动服务并检查健康状态。
+# 一键部署：首次启动自动初始化数据库密码，之后始终复用 .env 与命名卷中的数据。
+# 默认构建当前源码，支持 --no-build 严格复用已有镜像，支持 --show-secrets 显式显示凭据。
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
-COMPOSE_FILE="docker-compose.yml"
-HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
+cd "$(cd "$(dirname "$0")" && pwd)"
 
 info() { printf '\033[36m[*]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[32m[+]\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() {
-  cat <<'EOF'
-用法：
-  ./deploy.sh              生成缺失的配置，从源码构建并启动 ARTEX
-  ./deploy.sh --no-build   使用已有镜像启动（不重新构建）
-  ./deploy.sh --help       显示帮助
-
-环境变量：
-  HEALTH_TIMEOUT           应用健康检查超时秒数，默认 120
-
-首次运行会自动创建 .env，并生成 16 位随机 PostgreSQL 密码。
-已有 .env 不会被覆盖；API Key 可填入 .env，也可部署后在 UI 中配置。
-重复执行会保留数据库、data/ 和现有配置。
-部署成功后会显示实际生效的 PostgreSQL 密码和 JWT Key，请注意终端与日志安全。
-EOF
-}
-
 BUILD=1
-case "${1:-}" in
-  "") ;;
-  --no-build) BUILD=0; shift ;;
-  --help|-h) usage; exit 0 ;;
-  *) die "未知参数：$1（使用 --help 查看用法）" ;;
-esac
-[ "$#" -eq 0 ] || die "多余参数：$*"
-[[ "$HEALTH_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "HEALTH_TIMEOUT 必须是正整数"
-
-compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
-}
-
-show_diagnostics() {
-  compose ps || true
-  compose logs --tail=80 artex postgres || true
-}
-
-info "检查部署文件"
-[ -f "$COMPOSE_FILE" ] || die "找不到 $COMPOSE_FILE"
-[ -f Dockerfile.source ] || die "找不到 Dockerfile.source"
-[ -f .env.example ] || die "找不到 .env.example"
-[ -f start.sh ] || die "找不到 start.sh"
-[ -d skills ] || die "找不到 skills 目录"
-
-info "检查 Docker 环境"
-command -v docker >/dev/null 2>&1 || die "未检测到 Docker，请先安装 Docker Engine 和 Compose v2"
-docker compose version >/dev/null 2>&1 || die "未检测到 Docker Compose v2（命令：docker compose）"
-docker info >/dev/null 2>&1 || die "无法连接 Docker 守护进程，请启动 Docker 并检查当前用户权限"
-
-if [ ! -f .env ]; then
-  info "首次部署：创建 .env 并生成 16 位随机 PostgreSQL 密码"
-  # 使用 16 个十六进制字符，避免密码中的 URL 保留字符破坏 Compose 中的 PG DSN。
-  POSTGRES_PASSWORD="$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  [ "${#POSTGRES_PASSWORD}" -eq 16 ] || die "随机密码生成失败"
-  (umask 077; sed "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" .env.example > .env)
-  chmod 600 .env
-  ok "已创建 .env（权限 0600）"
-else
-  info "沿用现有 .env"
-  if grep -Eq '^POSTGRES_PASSWORD=(change-me-please)?[[:space:]]*$' .env; then
-    die "请先在 .env 中设置安全的 POSTGRES_PASSWORD"
-  fi
-fi
-
-# 提前创建 bind-mount 数据目录，避免 Docker 以 root 身份自动创建。
-mkdir -p data
-
-info "校验 Compose 配置"
-compose config --quiet
-
-if [ "$BUILD" -eq 1 ]; then
-  info "从当前源码构建镜像并启动 PostgreSQL、ARTEX"
-  compose up -d --build
-else
-  info "使用现有镜像启动 PostgreSQL、ARTEX"
-  compose up -d
-fi
-
-info "等待 ARTEX 健康检查通过（最多 ${HEALTH_TIMEOUT} 秒）"
-deadline=$((SECONDS + HEALTH_TIMEOUT))
-while [ "$SECONDS" -lt "$deadline" ]; do
-  # 镜像内已安装 curl；容器内探测不依赖宿主机是否安装 curl。
-  if compose exec -T artex curl -fsS --max-time 5 \
-      http://127.0.0.1:8787/api/health >/dev/null 2>&1; then
-    # 从容器读取实际生效值，避免 .env 引号或 shell 环境变量覆盖导致展示不一致。
-    pg_password="$(compose exec -T postgres sh -c 'printf %s "$POSTGRES_PASSWORD"')" ||
-      die "无法从 postgres 容器读取 POSTGRES_PASSWORD"
-    jwt_key="$(compose exec -T artex sh -c 'cat /app/jwt.key')" ||
-      die "无法从 artex 容器读取 /app/jwt.key"
-    [ -n "$pg_password" ] || die "PostgreSQL 密码为空"
-    [ "${#jwt_key}" -ge 32 ] || die "JWT Key 无效或尚未生成"
-
-    ok "部署完成，ARTEX 运行正常"
-    printf '\n'
-    printf 'Web UI         : http://localhost:8787（远程服务器请使用 http://<服务器IP>:8787）\n'
-    printf '初始化页面     : http://localhost:8787/setup\n'
-    printf 'PostgreSQL 密码: %s\n' "$pg_password"
-    printf 'JWT Key        : %s\n' "$jwt_key"
-    printf '服务状态       : docker compose ps\n'
-    printf '查看日志       : docker compose logs -f artex\n'
-    printf '停止服务       : docker compose down（不要加 -v，否则会删除数据库卷）\n'
-    exit 0
-  fi
-
-  if ! compose ps --status running --services | grep -qx artex; then
-    printf '\033[31m[x]\033[0m artex 容器未保持运行，诊断信息如下：\n' >&2
-    show_diagnostics
-    exit 1
-  fi
-  sleep 3
+SHOW_SECRETS=0
+for arg in "$@"; do
+  case "$arg" in
+    --no-build) BUILD=0 ;;
+    --show-secrets) SHOW_SECRETS=1 ;;
+    -h|--help)
+      echo "用法: $0 [--no-build] [--show-secrets]"
+      echo "  --no-build      禁止重新构建镜像，严格复用 ARTEX_TAG 指定的已有镜像"
+      echo "  --show-secrets  成功后显示数据库密码（默认不显示任何凭据）"
+      exit 0
+      ;;
+    *) die "未知参数: $arg" ;;
+  esac
 done
 
-printf '\033[31m[x]\033[0m 健康检查在 %s 秒后仍未通过，诊断信息如下：\n' "$HEALTH_TIMEOUT" >&2
-show_diagnostics
-exit 1
+command -v docker >/dev/null 2>&1 || die "未找到 docker，请先安装 Docker。"
+docker compose version >/dev/null 2>&1 || die "未找到 docker compose 插件。"
+command -v curl >/dev/null 2>&1 || die "未找到 curl。"
+
+# 只读取 Compose 使用的键，不 source .env，避免把部署变量当作 Shell 代码执行。
+dotenv_value() {
+  local key="$1"
+  awk -v key="$key" '
+    index($0, key "=") == 1 {
+      sub(/^[^=]*=/, "")
+      sub(/\r$/, "")
+      print
+      exit
+    }
+  ' .env
+}
+
+unquote() {
+  local value="$1"
+  if [[ ${#value} -ge 2 && "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ ${#value} -ge 2 && "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+validate_existing_env() {
+  local pg_password pg_user pg_db
+  pg_password="$(unquote "$(dotenv_value POSTGRES_PASSWORD)")"
+  pg_user="$(unquote "$(dotenv_value POSTGRES_USER)")"
+  pg_db="$(unquote "$(dotenv_value POSTGRES_DB)")"
+  pg_user="${pg_user:-artex}"
+  pg_db="${pg_db:-artex}"
+
+  case "$pg_password" in
+    ""|artex|change-me-please|password|postgres)
+      die ".env 中 POSTGRES_PASSWORD 为空或仍是弱默认值。请先设置独立强密码；已有命名卷的真实密码不能被部署脚本擅自替换。"
+      ;;
+  esac
+  # Compose 将密码直接插入 postgres:// DSN，非 URL 安全字符会改变连接串含义。
+  [[ "$pg_password" =~ ^[A-Za-z0-9._~-]+$ ]] || die "Docker 部署的 POSTGRES_PASSWORD 只能包含字母、数字、点、下划线、波浪线和连字符，避免 DSN/Compose 转义歧义。"
+  [[ "$pg_user" =~ ^[A-Za-z0-9_-]+$ ]] || die "POSTGRES_USER 含 Docker DSN 不支持的字符。"
+  [[ "$pg_db" =~ ^[A-Za-z0-9_-]+$ ]] || die "POSTGRES_DB 含 Docker DSN 不支持的字符。"
+}
+
+if [ ! -f .env ]; then
+  info "首次部署：生成 .env（独立随机数据库密码）"
+  command -v openssl >/dev/null 2>&1 || die "未找到 openssl，无法生成随机密码。"
+  pg_pass="$(openssl rand -hex 32)"
+  umask 077
+  cat > .env <<EOF
+# 密码仅在首次部署时生成；修改它不会重置已有命名卷的数据库密码。
+# Docker DSN 使用 URL 安全字符，避免特殊字符被错误解析。
+POSTGRES_PASSWORD=${pg_pass}
+POSTGRES_USER=artex
+POSTGRES_DB=artex
+# 留空即使用最新正式版；指定版本可复现升级/回滚。
+ARTEX_TAG=
+EOF
+  chmod 600 .env
+  ok "已生成 .env（权限 600）"
+else
+  info "复用现有 .env 与数据库命名卷"
+  validate_existing_env
+  chmod 600 .env
+fi
+
+tag="$(unquote "$(dotenv_value ARTEX_TAG)")"
+tag="${tag:-local}"
+info "镜像标签：${tag}"
+
+# 启动前先展开并校验 Compose 配置，避免容器启动后才暴露 DSN/变量错误。
+docker compose config --quiet
+info "拉取数据库基础镜像"
+docker compose pull postgres
+
+up_args=(-d)
+if [ "$BUILD" -eq 1 ]; then
+  info "从当前源码构建并启动（tag=${tag}）"
+  up_args+=(--build)
+else
+  info "严格复用已有镜像启动（tag=${tag}，--no-build）"
+  up_args+=(--no-build)
+fi
+
+if ! docker compose up "${up_args[@]}"; then
+  warn "docker compose up 失败，输出最近容器日志："
+  docker compose ps >&2 || true
+  docker compose logs --no-color --tail 100 postgres artex >&2 || true
+  die "部署失败，请根据上方日志处理后重试。"
+fi
+
+info "等待后端健康检查和前端首页就绪"
+healthy=0
+for _ in $(seq 1 36); do
+  if curl -fsS --max-time 3 http://127.0.0.1:8787/api/health >/dev/null 2>&1 \
+    && curl -fsS --max-time 3 http://127.0.0.1:8787/ >/dev/null 2>&1; then
+    healthy=1
+    break
+  fi
+  sleep 5
+done
+
+if [ "$healthy" -ne 1 ]; then
+  warn "服务未在 180 秒内通过完整健康检查，输出容器状态和最近日志："
+  docker compose ps >&2 || true
+  docker compose logs --no-color --tail 150 postgres artex >&2 || true
+  die "健康检查失败（后端 /api/health 或前端首页 /）。"
+fi
+
+ok "部署完成，后端健康检查与前端首页均通过"
+echo ""
+echo "  访问地址:  http://<服务器IP>:8787/"
+echo "  首次使用:  打开页面注册管理员账号，并在「系统设置 → LLM」配置模型。"
+echo "  数据目录:  ./data（JWT 密钥 data/jwt.key 由服务自动管理并持久化）"
+echo "  数据库:    Docker 命名卷 pgdata"
+echo ""
+if [ "$SHOW_SECRETS" -eq 1 ]; then
+  warn "按 --show-secrets 要求显示数据库密码；请勿将此输出粘贴到公开日志。"
+  printf '  POSTGRES_PASSWORD=%s\n' "$(unquote "$(dotenv_value POSTGRES_PASSWORD)")"
+else
+  echo "  数据库密码保存在 .env（权限 600），默认不显示；如需查看请显式使用 --show-secrets。"
+fi
+echo ""
+echo "停止:  docker compose down        （数据保留）"
+echo "更新:  修改 ARTEX_TAG 后重新运行 ./deploy.sh（默认重新构建当前源码）"

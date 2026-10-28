@@ -158,6 +158,10 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if _, exists := disabledCoverage["denominator"]; exists {
 		t.Fatalf("coverage-disabled task unexpectedly exposed metrics: %#v", disabledCoverage)
 	}
+	disabledScope, ok := disabledCoverage["scope"].([]map[string]any)
+	if !ok || len(disabledScope) != 1 {
+		t.Fatalf("coverage-disabled task lost scope context: %#v", disabledCoverage)
+	}
 	if linked, err := assets.QueryByTask(disabledTask.ID, "root_domain", 10, 0); err != nil || len(linked) != 1 || linked[0].ID != assetID {
 		t.Fatalf("coverage-disabled task asset link=%+v err=%v", linked, err)
 	}

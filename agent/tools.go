@@ -68,9 +68,9 @@ type ToolSet struct {
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
-	// DB default (true). When true: graphOverviewData drops the coverage block, the
-	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
-	// are filtered out of the agent's tool list. The scope field stays regardless.
+	// DB default (true). When true: graphOverviewData drops coverage metrics while
+	// retaining scope/host context; auto-scope is skipped and scope-mutation tools
+	// are filtered out of the agent's tool list.
 	coverageDisabled bool
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
@@ -272,6 +272,7 @@ func (t *ToolSet) AddHintTool() actool.CoreTool            { return t.addHint() 
 // 【二开·P-INTENT·U22】起 —— 约束只读工具（跨任务只读委派：vuln_dispatcher 派发前读父任务约束）
 // ListConstraintsTool 只读列出本任务操作约束（allow/deny）。
 func (t *ToolSet) ListConstraintsTool() actool.CoreTool { return t.listTaskConstraints() }
+
 // 【二开·P-INTENT·U22】止
 
 // SetEnrich wires the async enrichment engine (DNS/HTTP auto-completion).
@@ -588,12 +589,19 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	out["related_tasks"] = t.relatedTaskOverviews()
 	// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
-	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
+	// 资产覆盖度功能关闭时(coverageDisabled)：保留 scope 与 host_count(目标主机数的感知信息)，
 	// 丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、也不诱导
 	// 已隐藏的 add_task_scope/list_untested_assets。
 	if t.as != nil && t.ts != nil && t.taskID > 0 {
 		{
 			m := map[string]any{}
+			if scope, total, truncated := t.currentTaskScopeOverview(); total > 0 {
+				m["scope"] = scope
+				m["scope_count"] = total
+				if truncated {
+					m["scope_truncated"] = true
+				}
+			}
 			if !t.coverageDisabled {
 				if cov, err := t.as.TaskCoverageWithSources(t.taskID); err == nil {
 					m["denominator"] = cov.Denominator
@@ -619,6 +627,94 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	return out
+}
+
+const (
+	graphOverviewMaxTaskScope    = 50
+	graphOverviewMaxCompanyScope = 100
+)
+
+// currentTaskScopeOverview exposes the task's persisted targeting context to the
+// planner. Company rows include their configured rules; otherwise a company ID
+// alone does not tell the model which domains, networks, ICPs, or keywords are in
+// scope. Caps bound prompt growth while the count/truncation fields preserve the
+// fact that only a window is being shown. Full rules remain available in the DB/UI.
+func (t *ToolSet) currentTaskScopeOverview() ([]map[string]any, int, bool) {
+	if t.as == nil || t.taskID <= 0 {
+		return nil, 0, false
+	}
+	rows, err := t.as.ListTaskScope(t.taskID)
+	if err != nil {
+		return nil, 0, false
+	}
+	total := len(rows)
+	truncated := total > graphOverviewMaxTaskScope
+	if truncated {
+		rows = rows[:graphOverviewMaxTaskScope]
+	}
+	out := make([]map[string]any, 0, len(rows))
+	companyScopeBudget := graphOverviewMaxCompanyScope
+	for _, row := range rows {
+		entry := map[string]any{"id": row.ID, "kind": row.Kind, "source": row.Source}
+		if value := taskScopeOverviewValue(row.Domain, row.Net, row.Value); value != "" {
+			entry["value"] = firstLine(value, 400)
+		}
+		if row.Reason != "" {
+			entry["reason"] = firstLine(row.Reason, 300)
+		}
+		if row.CompanyID != nil {
+			entry["company_id"] = *row.CompanyID
+			entry["company_name"] = row.CompanyName
+		}
+		if row.Kind == "company" && row.CompanyID != nil && t.cs != nil {
+			if rules, err := t.cs.GetScope(*row.CompanyID); err == nil {
+				totalRules := len(rules)
+				entry["company_scope_count"] = totalRules
+				shownRules := totalRules
+				if shownRules > companyScopeBudget {
+					shownRules = companyScopeBudget
+				}
+				rules = rules[:shownRules]
+				companyScopeBudget -= shownRules
+				if shownRules < totalRules {
+					entry["company_scope_truncated"] = true
+				}
+				companyScope := make([]map[string]any, 0, len(rules))
+				keywords := make([]string, 0)
+				for _, rule := range rules {
+					value := companyScopeOverviewValue(rule)
+					companyScope = append(companyScope, map[string]any{
+						"id": rule.ID, "kind": rule.Kind, "value": value,
+					})
+					if rule.Kind == "keyword" {
+						keywords = append(keywords, value)
+					}
+				}
+				entry["company_scope"] = companyScope
+				entry["company_keywords"] = keywords
+			}
+		}
+		out = append(out, entry)
+	}
+	return out, total, truncated
+}
+
+func companyScopeOverviewValue(rule db.ScopeRule) string {
+	value := rule.Raw
+	if value == "" {
+		value = taskScopeOverviewValue(rule.Domain, rule.Net, rule.Value)
+	}
+	return firstLine(value, 400)
+}
+
+func taskScopeOverviewValue(domain, network, value string) string {
+	if domain != "" {
+		return domain
+	}
+	if network != "" {
+		return network
+	}
+	return value
 }
 
 func inheritedMap(m map[string]any, sourceTaskID int64) map[string]any {
@@ -1152,9 +1248,11 @@ type intentItem struct {
 // 资产与血缘逻辑只有这一份——summary/priority 校验、parent_ids（必须是已存在的 fact/finding，
 // 只建 derived_from 血缘）、asset_ids（exploration_anchors 资产锚 + payload.asset_ids + 范围拦截）、
 // 空 parent 兜底连 origin fact。两条调用路径只在"是否送审"上分叉（§2.4）：
-//   proposed=false → AddIntent，永远创建 open（直投，不经过人工审核）
-//   proposed=true  → AddProposedIntent，永远创建 proposed 并强制 review_status=pending +
-//                    executor='review'（待审闸门双条件，§2.9.5；禁止 extraPayload 覆盖）
+//
+//	proposed=false → AddIntent，永远创建 open（直投，不经过人工审核）
+//	proposed=true  → AddProposedIntent，永远创建 proposed 并强制 review_status=pending +
+//	                 executor='review'（待审闸门双条件，§2.9.5；禁止 extraPayload 覆盖）
+//
 // extraPayload 只承载调用方白名单字段（pending_executor/replaces/review_reason），且必须
 // 先经服务端校验（如 target_executor 的 checkExecutor 校验在送审工具侧完成）。
 // origin 传空时兜底为 t.worker（实际调用方），不再硬编码 "planner"。
@@ -2003,23 +2101,9 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			if intentNode == nil || intentNode.Kind != db.KindIntent {
 				return actool.Errorf("intent_id 不属于本任务或其直接关联任务"), nil
 			}
-			acts, _, err := t.ts.ActivityListWithSources(id, 0, 1000)
+			pick, err := t.ts.LatestWorkerOutputWithSources(id)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
-			}
-			var chosen, fallback *db.Activity
-			for i := range acts {
-				switch acts[i].Kind {
-				case "result":
-					chosen = &acts[i]
-					fallback = &acts[i]
-				case "text":
-					fallback = &acts[i]
-				}
-			}
-			pick := chosen
-			if pick == nil {
-				pick = fallback
 			}
 			if pick == nil {
 				if intentNode.Inherited {
@@ -2029,7 +2113,10 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 				}
 				return actool.Text("（该 work 尚无任何输出）"), nil
 			}
-			detail, _ := t.ts.ActivityDetailWithSources(pick.ID)
+			detail, err := t.ts.ActivityDetailWithSources(pick.ID)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
 			if detail == "" {
 				detail = pick.Summary
 			}
