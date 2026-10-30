@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/xlog"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -74,6 +76,8 @@ type Worker struct {
 	// injected into the worker system prompt. Read per run so the settings toggle
 	// takes effect without rebuilding the agent. nil = inject (default).
 	injectConstraints func() bool
+	// taskPromptFn 返回本任务的 Worker 提示词快照；空值走全局/默认链。
+	taskPromptFn func() string
 	// nonStreamingFn resolves whether this run uses the non-streaming (Complete)
 	// path. Read per run so a profile/task toggle takes effect without rebuilding
 	// the agent. nil = streaming (default).
@@ -137,6 +141,16 @@ func (w *Worker) maxTokens() int {
 // SetConstraintInject wires a resolver deciding whether this task's operation
 // constraints get injected into the worker system prompt. nil = inject (default).
 func (w *Worker) SetConstraintInject(fn func() bool) { w.injectConstraints = fn }
+
+// SetTaskPromptOverride 注入任务级 Worker 提示词快照。
+func (w *Worker) SetTaskPromptOverride(fn func() string) { w.taskPromptFn = fn }
+
+func (w *Worker) taskPromptOverride() string {
+	if w.taskPromptFn == nil {
+		return ""
+	}
+	return w.taskPromptFn()
+}
 
 // wantConstraints reports whether constraint injection is enabled (default yes).
 func (w *Worker) wantConstraints() bool { return w.injectConstraints == nil || w.injectConstraints() }
@@ -227,6 +241,10 @@ func proxyEnv(proxyAddr, caCert string) []string {
 // prompt, seeded into agent_prompts. The trafficTool block and the 中间产物输出规约
 // are NOT here — they are code-owned and appended by workerSystem after rendering
 // (段 [B]/[C]), so editing the DB body can never drop them.
+// WorkerDeliveryFactSpec is the record_fact contract consumed by trace_cleaner.
+// There is deliberately no separate record_delivery tool: deliveries are facts.
+const WorkerDeliveryFactSpec = `- **投放登记 → record_fact（探索图，传 intent_id，强制）**：每次实际上传、写入或部署 WebShell、C2 木马、反弹脚本、代理/隧道工具及其他后续需要清理的文件后，必须立即登记；summary 以 ` + "`[投放]`" + ` 开头，detail 写明目标 host/容器、落地绝对路径、产物类型、上传方式、用途、关联 finding（如有）和可清理性；evidence 写实际上传/写入命令及成功回显，confidence=observed，能得 sha256 时一并记录。**每个投放物单独一条 ` + "`[投放]`" + ` 事实，这是“一意图通常只一条事实”的强制例外；report_finding 不能代替投放登记。失败或仅尝试上传不登记。**后续痕迹清理依赖这些事实，遗漏会导致产物无法销账。`
+
 const workerDefaultTmpl = `你是授权安全测试与分析系统的"执行者"(work agent)。你领到【一条意图】(一句话探索方向)，唯一职责：**完成这一条意图、把发现写回知识图谱、然后停止返回。**
 
 **场景知识不在你这里**：怎么打这个场景（渗透/代码审计/漏洞研究/……）由规划者决定，它已经写进你领到的意图里——意图怎么说你就怎么做。在意图之外瞥见值得深挖的线索、或遇到意图没说清的方法论问题（该不该换思路/换工具），在 fact 的 summary 里点一句交给规划者，不要自作主张扩展战场。
@@ -234,14 +252,15 @@ const workerDefaultTmpl = `你是授权安全测试与分析系统的"执行者"
 **边界（红线）**：
 1. **只做你领到的这一条意图**。
 2. 初次受阻不代表已探透——**穷尽本意图在你当前条件下的所有可用手段**再输出结论：在线目标就换 payload/编码/路径，代码目标就换入口/调用链/数据流，文档目标就换检索角度。
-3. 只在授权范围内操作。系统提示顶部若附【操作约束】，那是最高优先级红线：每条命令/探测执行前先自检，违反即不做（哪怕它落在你领到的意图里）。
+3. 禁止破坏性操作（删改业务数据、DoS、关闭审计、持久化后门）；除此之外可执行完成当前意图所需的探测、验证和利用。
 
-**webshell 纪律**：涉及 webshell 落地时，shell 一律用 mcp__godzilla__shell_create 生成（延迟加载工具：先 SearchExtraTools 搜 "godzilla" 再 ExecuteExtraTool 调用，传参带上目标语言/加密器/过滤特征），禁止手写硬编码。生成的 shell 写到本意图工作目录再走上传链；落地后用 mcp__godzilla__shell_add 登记、shell_test 实连，有回显才按 getshell 记 finding。MCP 不可用就记 fact 交规划者，不得退回手写。
+**webshell 纪律**：涉及 webshell 落地时，shell 一律用 mcp__godzilla__shell_create 生成（延迟加载工具：先 SearchExtraTools 搜 "godzilla" 再 ExecuteExtraTool 调用，传参带上目标语言/加密器/过滤特征），禁止手写硬编码。生成的 shell 写到本意图工作目录再走上传链；落地后用 mcp__godzilla__shell_add 登记、shell_test 实连，有回显才按 webshell 记 finding；若另有反弹 shell 等主机命令执行证据，则按 getshell 登记。MCP 不可用就记 fact 交规划者，不得退回手写。
 
 **边发现边写回**（写进图才算数，脑子/文字里的不算；每得一个结果立刻写，别攒到最后被步数耗尽丢掉）。三种写回，别串图：
 - **新资产/资源 → insert_assets（资产图）**：子域 / service / endpoint / 指纹 / 凭据，或代码场景的 仓库/模块/关键文件/入口函数 等一切资产【本身】。**这里只登记资产；探索结论/判断不写这里，用 record_fact。**
 - **探索结论/事实 → record_fact（探索图，传 intent_id）**：都用它。**多个观察汇总成【一条】事实**（summary 一句总结 + detail写对总结的拓展，依靠真实的执行过程），不要一个属性一条、一意图通常只一条，拆碎会让图谱无限膨胀——**默认就写一条，能并进 detail 的都并进去**；仅当确有【彼此完全独立、无法归并】的结论时才用 facts 数组分条，这是极少数例外，不是常规。**只写增量**：只记这次【新得到】的，别把已有事实换措辞重记（只印证已有、无新增就不必记）。**只写真实看到的**：给 evidence（一行：命令/操作+最能证明的一两行输出，简洁，细节在 detail）、标 confidence（observed=直接看到 / inferred=据现象推断）。
-- **确认漏洞 → report_finding（探索图，传 intent_id）**：**只有拿到可复现证据才算确认**。证据形态随场景：在线系统 → 你本次真实触发过的请求/响应或命令输出；代码 → 文件:行号 + 关键代码片段 + 可达性分析（入口到 sink 的链）。**版本/指纹/CVE 匹配、"看起来可注入"、文档/更新日志/代码 diff 推断——任何场景都不算确认**；触发/证实不了但有嫌疑 → 用 record_fact 记一条 inferred 事实（嫌疑点+为何未证实）交规划者，别硬记成 finding。**vulnclass 归类规范**（vulnclass 决定漏洞是否自动派发深度子任务，务必对号入座、不要随手写 other）：getshell=已获得主机命令执行权限（webshell 已连上/反弹 shell 成功）；rce=可在目标执行任意命令或代码（含表达式/模板/命令注入实证）；file_upload=任意文件上传且落地后可访问解析；deserialization=反序列化利用链实证；sqli=注入实证（报错/布尔/延时回显其一）；ssrf=目标服务器发出非预期请求的实证；logic_flaw=越权/支付/验证码绕过等业务逻辑实证；info_leak=实际拿到敏感数据内容（不是"可能存在"）；unauthorized_api=未授权接口实际调用成功且返回敏感数据；九类都不符才写 other。**严重档四类（getshell/rce/file_upload/deserialization）必须有「已执行/已控制」级证据**——只有理论可利用路径的，按上面规则记 inferred 事实而不是 finding。
+` + WorkerDeliveryFactSpec + `
+- **确认漏洞 → report_finding（探索图，传 intent_id）**：**只有拿到可复现证据才算确认**。证据形态随场景：在线系统 → 你本次真实触发过的请求/响应或命令输出；代码 → 文件:行号 + 关键代码片段 + 可达性分析（入口到 sink 的链）。**版本/指纹/CVE 匹配、"看起来可注入"、文档/更新日志/代码 diff 推断——任何场景都不算确认**；触发/证实不了但有嫌疑 → 用 record_fact 记一条 inferred 事实（嫌疑点+为何未证实）交规划者，别硬记成 finding。**vulnclass 归类规范**（vulnclass 决定漏洞是否自动派发深度子任务，务必对号入座、不要随手写 other）：getshell=已通过反弹 shell、命令 shell 等获得主机命令执行权限；webshell=Webshell 已上传且可访问或连接控制；获取目标权限=已获得目标系统或应用权限（如账户控制、登录成功、权限提升），且不属于更具体的 getshell/webshell；rce=可在目标执行任意命令或代码（含表达式/模板/命令注入实证）；file_upload=任意文件上传且落地后可访问解析；deserialization=反序列化利用链实证；sqli=注入实证（报错/布尔/延时回显其一）；ssrf=目标服务器发出非预期请求的实证；logic_flaw=越权/支付/验证码绕过等业务逻辑实证；info_leak=实际拿到敏感数据内容（不是"可能存在"）；unauthorized_api=未授权接口实际调用成功且返回敏感数据；十一类都不符才写 other。**立足点与严重档分类（getshell/webshell/获取目标权限/rce/file_upload/deserialization）必须有「已执行/已控制」级证据**——只有理论可利用路径的，按上面规则记 inferred 事实而不是 finding。
 
 完成本意图后用一句话总结你做了什么、写回了哪些事实。`
 
@@ -288,12 +307,47 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
-	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
-	// caCert is present only when the recording MITM is on, which is exactly when
-	// the traffic_* tools are registered — so it gates the traffic-tool note.
-	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
+func workerSystem(proxyAddr, caCert, dataDir, runDir, workerName, taskOverride string) string {
+	vars := WorkerVars{ProxyAddr: proxyAddr, WorkerName: workerName, DataDir: dataDir, Now: nowStr()}
+	tail := func(body string) string {
+		return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
+	}
+	// ① 任务创建时保存的 Worker 模板/手写提示词快照。
+	if strings.TrimSpace(taskOverride) != "" {
+		if out, err := renderTmpl(taskOverride, vars); err == nil {
+			xlog.Debugf("[worker] workerSystem 命中任务级覆盖：bytes=%d", len(taskOverride))
+			return tail(out)
+		} else {
+			log.Printf("[worker] workerSystem 任务级模板渲染失败，回退全局配置: %v", err)
+		}
+	}
+	// ② Agent 管理中保存的全局 Worker 提示词。
+	if PromptOverride != nil {
+		if tmpl, ok := PromptOverride("worker"); ok && tmpl != "" {
+			if out, err := renderTmpl(tmpl, vars); err == nil {
+				xlog.Debugf("[worker] workerSystem 命中全局 Agent 覆盖：bytes=%d", len(tmpl))
+				return tail(out)
+			} else {
+				log.Printf("[worker] workerSystem 全局模板渲染失败，回退默认模板: %v", err)
+			}
+		}
+	}
+	// ③ worker_templates 中唯一的默认模板。
+	if WorkerDefaultTemplateBodyFn != nil {
+		if tmpl := WorkerDefaultTemplateBodyFn(); tmpl != "" {
+			if out, err := renderTmpl(tmpl, vars); err == nil {
+				xlog.Debugf("[worker] workerSystem 命中默认 Worker 模板：bytes=%d", len(tmpl))
+				return tail(out)
+			} else {
+				log.Printf("[worker] workerSystem 默认模板渲染失败，回退内置模板: %v", err)
+			}
+		}
+	}
+	// ④ 不依赖数据库的内置 Worker 提示词。
+	if out, err := renderTmpl(workerDefaultTmpl, vars); err == nil {
+		return tail(out)
+	}
+	return tail(workerDefaultTmpl)
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -399,9 +453,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir, name, w.taskPromptOverride())
 	if w.wantConstraints() {
-		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
 	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
 	sysBody += RenderIntentTask(intent) // 【二开·P-EXEC·A1】导出改名
@@ -461,8 +514,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// 【二开·安全·修🔴-2】文件工具硬边界：Read/Write/Edit/MultiEdit/LS/Glob/Grep
 		// 一律钳在本实例数据目录树内（含本任务目录与共享 upload/ 等），注入诱导的
 		// /etc、~/.ssh、jwt.key 绝对路径在工具解析层直接拒绝。
-		Root: w.workDir,
-		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
+		Root:     w.workDir,
+		MaxTurns: w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// 墙钟预算,轮边界判,不打断半路;0 = 不限。有任务级 deadline 时夹逼到 min(自身预算,
 		// 距 deadline 剩余),让本 run 在任务到点时自然进收尾(见 taskclock.go)。
 		MaxDuration: maxDur,

@@ -17,6 +17,9 @@ var PromptOverride func(agentKey string) (string, bool)
 // nil 或返回 "" → 落第④级内置默认（plannerDefaultTmpl）。
 var PlannerDefaultTemplateBodyFn func() string
 
+// WorkerDefaultTemplateBodyFn 是 Worker 四级提示词链的模板库默认值。
+var WorkerDefaultTemplateBodyFn func() string
+
 // 【二开·P-TPL·A4】止
 
 // Prompt-variable structs — fields mirror each agent's catalog (docs §5a) so a

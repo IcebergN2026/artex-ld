@@ -1,56 +1,59 @@
-{"key":"add_company_scope","agents":["mainagent","planner","auto"],"enabled":true,"deferred":false}
+{"key":"add_company_scope","agents":["mainagent", "planner", "auto"],"enabled":true,"deferred":false}
 {"key":"add_hint","agents":["mainagent"],"enabled":true,"deferred":false}
-{"key":"add_intent","agents":["mainagent","planner"],"enabled":true,"deferred":false}
+{"key":"add_intent","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
 {"key":"add_review_intent","agents":["planner"],"enabled":true,"deferred":false}
 {"key":"add_task_hint","agents":["auto"],"enabled":true,"deferred":false}
-{"key":"add_task_scope","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"bind_finding_traffic","agents":["reporter","auto"],"enabled":true,"deferred":false}
-{"key":"cancel_intent","agents":["mainagent","planner"],"enabled":true,"deferred":false}
+{"key":"add_task_scope","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"append_finding_to_task","agents":["auto", "vuln_dispatcher"],"enabled":true,"deferred":false}
+{"key":"bind_finding_traffic","agents":["reporter", "auto"],"enabled":true,"deferred":false}
+{"key":"cancel_intent","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"check_internal_asset_task","agents":["auto", "vuln_dispatcher"],"enabled":true,"deferred":false}
 {"key":"create_custom_tool","agents":["auto"],"enabled":true,"deferred":false}
 {"key":"create_mcp","agents":["auto"],"enabled":true,"deferred":false}
 {"key":"create_skill","agents":["auto"],"enabled":true,"deferred":false}
 {"key":"delete_assets_by_host","agents":["auto"],"enabled":true,"deferred":false}
-{"key":"expand_digest","agents":["mainagent","planner"],"enabled":true,"deferred":false}
+{"key":"expand_digest","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
 {"key":"get_finding_retest_context","agents":["retester"],"enabled":true,"deferred":false}
-{"key":"get_finding_traffic","agents":["auto","reporter","worker","planner","mainagent","pentest"],"enabled":true,"deferred":false}
-{"key":"get_task_graph","agents":["auto","reporter","vuln_dispatcher","trace_cleaner"],"enabled":true,"deferred":false}
-{"key":"get_task_node_detail","agents":["auto","reporter","vuln_dispatcher","trace_cleaner"],"enabled":true,"deferred":false}
-{"key":"get_task_worker_trace","agents":["auto","reporter"],"enabled":true,"deferred":false}
-{"key":"get_worker_output","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"get_worker_trace","agents":["mainagent","planner","worker"],"enabled":true,"deferred":false}
+{"key":"get_finding_traffic","agents":["auto", "reporter", "worker", "planner", "mainagent", "pentest"],"enabled":true,"deferred":false}
+{"key":"get_task_graph","agents":["auto", "reporter", "vuln_dispatcher", "trace_cleaner"],"enabled":true,"deferred":false}
+{"key":"get_task_node_detail","agents":["auto", "reporter", "vuln_dispatcher", "trace_cleaner"],"enabled":true,"deferred":false}
+{"key":"get_task_worker_trace","agents":["auto", "reporter"],"enabled":true,"deferred":false}
+{"key":"get_worker_output","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"get_worker_trace","agents":["mainagent", "planner", "worker"],"enabled":true,"deferred":false}
 {"key":"goal_met","agents":[],"enabled":true,"deferred":false}
-{"key":"graph_overview","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"insert_assets","agents":["mainagent","worker","auto","pentest"],"enabled":true,"deferred":false}
+{"key":"graph_overview","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"insert_assets","agents":["mainagent", "worker", "auto", "pentest"],"enabled":true,"deferred":false}
 {"key":"kill_work","agents":["planner"],"enabled":true,"deferred":false}
-{"key":"list_assets","agents":["mainagent","planner","worker","auto","pentest"],"enabled":true,"deferred":false}
-{"key":"list_companies","agents":["planner","auto","pentest"],"enabled":true,"deferred":false}
-{"key":"list_facts","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"list_findings","agents":["mainagent","planner","worker","pentest"],"enabled":true,"deferred":false}
+{"key":"list_assets","agents":["mainagent", "planner", "worker", "auto", "pentest"],"enabled":true,"deferred":false}
+{"key":"list_companies","agents":["planner", "auto", "pentest"],"enabled":true,"deferred":false}
+{"key":"list_facts","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"list_findings","agents":["mainagent", "planner", "worker", "pentest"],"enabled":true,"deferred":false}
 {"key":"list_goals","agents":["planner"],"enabled":true,"deferred":false}
-{"key":"list_intents","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"list_llm_profiles","agents":["auto","vuln_dispatcher"],"enabled":true,"deferred":false}
-{"key":"list_task_constraints","agents":["auto","vuln_dispatcher"],"enabled":true,"deferred":false}
-{"key":"list_task_findings","agents":["auto","reporter","vuln_dispatcher","trace_cleaner"],"enabled":true,"deferred":false}
+{"key":"list_intents","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"list_llm_profiles","agents":["auto", "vuln_dispatcher"],"enabled":true,"deferred":false}
+{"key":"list_task_constraints","agents":["auto", "vuln_dispatcher"],"enabled":true,"deferred":false}
+{"key":"list_task_findings","agents":["auto", "reporter", "vuln_dispatcher", "trace_cleaner"],"enabled":true,"deferred":false}
 {"key":"list_tasks","agents":["auto"],"enabled":true,"deferred":false}
-{"key":"list_task_worker_traces","agents":["auto","reporter"],"enabled":true,"deferred":false}
-{"key":"list_untested_assets","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"node_detail","agents":["mainagent","planner","worker"],"enabled":true,"deferred":false}
+{"key":"list_task_worker_traces","agents":["auto", "reporter"],"enabled":true,"deferred":false}
+{"key":"list_untested_assets","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"node_detail","agents":["mainagent", "planner", "worker"],"enabled":true,"deferred":false}
 {"key":"pause_task","agents":["auto"],"enabled":true,"deferred":false}
 {"key":"prove_goal","agents":["planner"],"enabled":true,"deferred":false}
-{"key":"record_fact","agents":["mainagent","worker","trace_cleaner"],"enabled":true,"deferred":false}
+{"key":"record_fact","agents":["mainagent", "worker", "trace_cleaner"],"enabled":true,"deferred":false}
 {"key":"record_finding_retest_result","agents":["retester"],"enabled":true,"deferred":false}
-{"key":"report_finding","agents":["mainagent","planner","worker","auto","pentest"],"enabled":true,"deferred":false}
-{"key":"search_all_worker_traces","agents":["mainagent","planner","worker"],"enabled":true,"deferred":false}
-{"key":"search_task_worker_traces","agents":["auto","reporter"],"enabled":true,"deferred":false}
-{"key":"set_constraints","agents":["mainagent","goals"],"enabled":true,"deferred":false}
-{"key":"set_goals","agents":["mainagent","goals"],"enabled":true,"deferred":false}
-{"key":"spawn_task","agents":["auto","vuln_dispatcher"],"enabled":true,"deferred":false}
-{"key":"steer_work","agents":["mainagent","planner"],"enabled":true,"deferred":false}
-{"key":"traffic_blob","agents":["worker","reporter"],"enabled":true,"deferred":false}
-{"key":"traffic_get","agents":["worker","reporter"],"enabled":true,"deferred":false}
-{"key":"traffic_search","agents":["worker","reporter"],"enabled":true,"deferred":false}
+{"key":"record_topology_relation","agents":["worker"],"enabled":true,"deferred":false}
+{"key":"report_finding","agents":["mainagent", "planner", "worker", "auto", "pentest"],"enabled":true,"deferred":false}
+{"key":"search_all_worker_traces","agents":["mainagent", "planner", "worker"],"enabled":true,"deferred":false}
+{"key":"search_task_worker_traces","agents":["auto", "reporter"],"enabled":true,"deferred":false}
+{"key":"set_constraints","agents":["mainagent", "goals"],"enabled":true,"deferred":false}
+{"key":"set_goals","agents":["mainagent", "goals"],"enabled":true,"deferred":false}
+{"key":"spawn_task","agents":["auto", "vuln_dispatcher"],"enabled":true,"deferred":false}
+{"key":"steer_work","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
+{"key":"traffic_blob","agents":["worker", "reporter"],"enabled":true,"deferred":false}
+{"key":"traffic_get","agents":["worker", "reporter"],"enabled":true,"deferred":false}
+{"key":"traffic_search","agents":["worker", "reporter"],"enabled":true,"deferred":false}
 {"key":"update_custom_tool","agents":["auto"],"enabled":true,"deferred":false}
-{"key":"update_finding_report","agents":["auto","reporter"],"enabled":true,"deferred":false}
-{"key":"update_intent","agents":["mainagent","planner"],"enabled":true,"deferred":false}
+{"key":"update_finding_report","agents":["auto", "reporter"],"enabled":true,"deferred":false}
+{"key":"update_intent","agents":["mainagent", "planner"],"enabled":true,"deferred":false}
 {"key":"update_mcp","agents":["auto"],"enabled":true,"deferred":false}
 {"key":"update_skill_file","agents":["auto"],"enabled":true,"deferred":false}

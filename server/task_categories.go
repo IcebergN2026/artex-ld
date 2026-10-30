@@ -19,6 +19,7 @@ type taskCategoryRequest struct {
 	// 【二开·P-REVIEW·D12】分类预设包（m04039）：三预设字段，nil=不动
 	DefaultReviewEnabled     *bool   `json:"default_review_enabled"`
 	DefaultPlannerTemplateID *int64  `json:"default_planner_template_id"`
+	DefaultWorkerTemplateID  *int64  `json:"default_worker_template_id"`
 	AssetMode                *string `json:"asset_mode"`
 	DefaultDescription       *string `json:"default_description"`
 	// 【二开·P-SCENARIO·MERGE】种子意图预设（m03167 场景并入分类）
@@ -38,7 +39,7 @@ func decodeTaskCategoryRequest(w http.ResponseWriter, r *http.Request) (*taskCat
 		}
 		return nil, false
 	}
-	hasPreset := request.DefaultReviewEnabled != nil || request.DefaultPlannerTemplateID != nil || request.AssetMode != nil || request.DefaultDescription != nil || request.SeedFirstIntent != nil || request.SeedExecutor != nil
+	hasPreset := request.DefaultReviewEnabled != nil || request.DefaultPlannerTemplateID != nil || request.DefaultWorkerTemplateID != nil || request.AssetMode != nil || request.DefaultDescription != nil || request.SeedFirstIntent != nil || request.SeedExecutor != nil
 	if request.Name == nil && !hasPreset {
 		writeErr(w, http.StatusBadRequest, "至少需要提供 name 或预设字段")
 		return nil, false
@@ -136,7 +137,7 @@ func (s *Server) pgRenameTaskCategory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if request.DefaultReviewEnabled != nil || request.DefaultPlannerTemplateID != nil || request.AssetMode != nil || request.DefaultDescription != nil || request.SeedFirstIntent != nil || request.SeedExecutor != nil {
+	if request.DefaultReviewEnabled != nil || request.DefaultPlannerTemplateID != nil || request.DefaultWorkerTemplateID != nil || request.AssetMode != nil || request.DefaultDescription != nil || request.SeedFirstIntent != nil || request.SeedExecutor != nil {
 		// 【二开·P-SCENARIO·MERGE】种子执行器引用校验：非空须为已启用、非内置、已声明 executor_key 的自定义 agent
 		if request.SeedExecutor != nil && *request.SeedExecutor != "" {
 			ea, eaErr := s.m.PG().GetAgentByExecutorKey(*request.SeedExecutor)
@@ -145,7 +146,7 @@ func (s *Server) pgRenameTaskCategory(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if _, err := s.m.PG().UpdateTaskCategoryPresets(id, request.DefaultReviewEnabled, request.DefaultPlannerTemplateID, request.AssetMode, request.DefaultDescription, request.SeedFirstIntent, request.SeedExecutor); err != nil {
+		if _, err := s.m.PG().UpdateTaskCategoryPresets(id, request.DefaultReviewEnabled, request.DefaultPlannerTemplateID, request.DefaultWorkerTemplateID, request.AssetMode, request.DefaultDescription, request.SeedFirstIntent, request.SeedExecutor); err != nil {
 			writeTaskCategoryError(w, err)
 			return
 		}

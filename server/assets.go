@@ -334,6 +334,24 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
+	if typ == "host" {
+		companyID, _ := strconv.ParseInt(q.Get("company_id"), 10, 64)
+		taskID, _ := strconv.ParseInt(q.Get("task_id"), 10, 64)
+		dsl := q.Get("dsl")
+		if dsl != "" {
+			if err := db.ValidateDSL(dsl); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		hosts, total, err := as.QueryHosts(db.AssetHostFilter{CompanyID: companyID, TaskID: taskID, DSL: dsl, Limit: limit, Offset: offset})
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"count": len(hosts), "total": total, "hosts": hosts})
+		return
+	}
 
 	assets := []*db.Asset{}
 	var err error

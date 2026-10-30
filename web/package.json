@@ -1,6 +1,6 @@
 {
-  "name": "artex-web",
-  "version": "2.2.0",
+  "name": "artex-ld",
+  "version": "0.1.2",
   "private": true,
   "scripts": {
     "dev": "next dev",

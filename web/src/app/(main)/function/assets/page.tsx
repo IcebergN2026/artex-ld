@@ -60,8 +60,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
-import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
+import type { Asset, AssetHostRow, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import { HostAssets } from "./_components/host-assets";
 
 const METHOD_COLOR: Record<string, string> = {
   GET: "bg-emerald-100 text-emerald-700",
@@ -98,6 +100,7 @@ function statusTone(code: number) {
 const PAGE_SIZES = [25, 50, 100, 200];
 
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
+  { key: "host", label: "宿主", icon: NetworkIcon },
   { key: "company", label: "企业", icon: BuildingIcon },
   { key: "root_domain", label: "根域名", icon: GlobeIcon },
   { key: "ip", label: "IP", icon: NetworkIcon },
@@ -112,7 +115,7 @@ export default function AssetsPage() {
   const [total, setTotal] = React.useState(0);
   const [companies, setCompanies] = React.useState<Company[]>([]);
   const [counts, setCounts] = React.useState<Record<string, number>>({});
-  const [tab, setTab] = React.useState("company");
+  const [tab, setTab] = React.useState("host");
   const [query, setQuery] = React.useState("");
   const [loaded, setLoaded] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
@@ -122,6 +125,8 @@ export default function AssetsPage() {
   const [refreshKey, setRefreshKey] = React.useState(0);
   const assetsRequestRef = React.useRef(0);
   const [rowsTab, setRowsTab] = React.useState("");
+  const [hostRows, setHostRows] = React.useState<AssetHostRow[]>([]);
+  const [selectedHostKey, setSelectedHostKey] = React.useState<string | null>(null);
 
   // asset selection & delete
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -234,6 +239,8 @@ export default function AssetsPage() {
     setDslError("");
     setSelected(new Set());
     setRows([]);
+    setHostRows([]);
+    setSelectedHostKey(null);
     setRowsTab("");
     setTotal(0);
     setLoaded(false);
@@ -254,16 +261,29 @@ export default function AssetsPage() {
     const offset = page * size;
     const run = async () => {
       try {
-        const r = dsl ? await api.searchAssets(dsl, tab, size, offset) : await api.assets(tab, size, offset);
         if (assetsRequestRef.current !== request) return;
-        setRows(r.assets);
+        if (tab === "host") {
+          const r = await api.hostAssets(dsl, "", size, offset);
+          if (assetsRequestRef.current !== request) return;
+          setHostRows(r.hosts);
+          setRows([]);
+          setSelectedHostKey((current) => (r.hosts.some((row) => row.key === current) ? current : null));
+          setCounts((current) => ({ ...current, host: r.total }));
+          setTotal(r.total);
+        } else {
+          const r = dsl ? await api.searchAssets(dsl, tab, size, offset) : await api.assets(tab, size, offset);
+          if (assetsRequestRef.current !== request) return;
+          setRows(r.assets);
+          setHostRows([]);
+          setTotal(r.total);
+        }
         setRowsTab(tab);
-        setTotal(r.total);
         setDslError("");
       } catch (e) {
         if (assetsRequestRef.current !== request) return;
         setDslError(String((e as Error)?.message ?? e));
         setRows([]);
+        setHostRows([]);
         setRowsTab(tab);
         setTotal(0);
       } finally {
@@ -680,6 +700,66 @@ export default function AssetsPage() {
               );
             })}
           </AssetCard>
+        </TabsContent>
+
+        {/* 宿主：同一页面内的六列投影和发现列表 */}
+        <TabsContent value="host" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
+          {searchBox}
+          <Card className="flex min-h-0 flex-1 flex-col overflow-auto py-0">
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              {loaded && hostRows.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">暂无数据。</div>
+              ) : !loaded ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">加载中…</div>
+              ) : (
+                <HostAssets rows={hostRows} selectedKey={selectedHostKey} onSelect={setSelectedHostKey} />
+              )}
+            </div>
+            {total > 0 && (
+              <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
+                <Select value={String(size)} onValueChange={(value) => setSize(Number(value))}>
+                  <SelectTrigger size="sm" className="h-7 w-24">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {PAGE_SIZES.map((n) => (
+                        <SelectItem key={n} value={String(n)}>
+                          {n} / 页
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <span className="tabular-nums">
+                  {page * size + 1}–{Math.min((page + 1) * size, total)} / {total}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-7"
+                    disabled={page <= 0}
+                    onClick={() => setPage((value) => Math.max(0, value - 1))}
+                  >
+                    <ChevronLeftIcon />
+                  </Button>
+                  <span className="tabular-nums">
+                    {page + 1} / {Math.max(1, Math.ceil(total / size))}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-7"
+                    disabled={page + 1 >= Math.ceil(total / size)}
+                    onClick={() => setPage((value) => value + 1)}
+                  >
+                    <ChevronRightIcon />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
         </TabsContent>
 
         {/* 接口 */}

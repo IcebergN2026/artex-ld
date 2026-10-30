@@ -551,6 +551,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
 -- 【二开·P-TPL·D2】起 —— tasks 两新列：planner 提示词任务级快照 + 任务级 worker 池大小（0=跟随全局，1~16 专属）
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_prompt_override TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_count INT NOT NULL DEFAULT 0;
 -- 【二开·P-TPL·D2】止
 -- 【二开·P-REVIEW·D2b】起 —— 任务级自动审核开关：true=ReviewRunner 预审轮自动处置待审意图（明显安全放行/明显越界驳回/拿不准留人），false=人工面板处置（默认，零行为变化）
@@ -561,6 +562,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_enabled BOOLEAN NOT NULL DEFAU
 -- 【二开·P-REVIEW·D12】分类预设包（m04039）：分类只给建任务默认值（快照语义），改分类不影响在建任务。
 ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_review_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_planner_template_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_worker_template_id BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS asset_mode TEXT NOT NULL DEFAULT 'pentest';
 -- 【二开】分类预设包·默认描述：建任务且描述为空（占位「未命名任务」）时快照带出
 ALTER TABLE task_categories ADD COLUMN IF NOT EXISTS default_description TEXT NOT NULL DEFAULT '';
@@ -681,6 +683,23 @@ CREATE TRIGGER trg_planner_templates_upd BEFORE UPDATE ON planner_templates
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- 【二开·P-TPL·D11】止
 
+-- Worker 提示词模板与 Planner 一样在任务创建时渲染并保存快照。
+CREATE TABLE IF NOT EXISTS worker_templates (
+    id         BIGSERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    nkey       TEXT NOT NULL UNIQUE,
+    body       TEXT NOT NULL,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    is_default BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_worker_templates_default ON worker_templates(is_default) WHERE is_default;
+CREATE INDEX IF NOT EXISTS idx_worker_templates_updated ON worker_templates(updated_at DESC, id DESC);
+DROP TRIGGER IF EXISTS trg_worker_templates_upd ON worker_templates;
+CREATE TRIGGER trg_worker_templates_upd BEFORE UPDATE ON worker_templates
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 -- Direct, read-only task context inheritance. Relations are intentionally not
 -- recursive: a task sees only the source tasks explicitly chosen at creation.
 CREATE TABLE IF NOT EXISTS task_relations (
@@ -691,6 +710,16 @@ CREATE TABLE IF NOT EXISTS task_relations (
     CONSTRAINT ck_task_relation_not_self CHECK (task_id <> source_task_id)
 );
 CREATE INDEX IF NOT EXISTS idx_task_relations_source ON task_relations(source_task_id);
+
+-- Canonical host targeted by an internal-pentest dispatch. One row per host is
+-- the hard cross-parent dedupe guard; source inheritance assets are not targets.
+CREATE TABLE IF NOT EXISTS task_dispatch_targets (
+    asset_key   TEXT PRIMARY KEY,
+    task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    finding_id  BIGINT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_dispatch_targets_task ON task_dispatch_targets(task_id);
 
 -- Task/asset provenance supplements the legacy assets.task_ids association. The
 -- array remains the compatibility source for existing query and cleanup paths;
@@ -1463,3 +1492,31 @@ WHERE kind='intent' AND state='proposed' AND payload->>'executor'='review'
 -- 【二开·P-SCENARIO·MERGE】task_scenarios 平行实体已合并进 task_categories（种子两列），旧表清理：
 DROP TABLE IF EXISTS task_scenarios;
 -- 【二开·P-SCENARIO·D5】止
+
+-- 内网渗透拓扑：持久化人工关系、Agent证据关系和备注；节点由资产/发现投影，不自动生成无证据边。
+CREATE TABLE IF NOT EXISTS task_topology_overrides (
+    task_id       BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    node_ip       TEXT NOT NULL,
+    relation_kind TEXT NOT NULL DEFAULT '' CHECK (relation_kind IN ('', 'lateral', 'credential', 'unknown', 'evidence')),
+    relation_label TEXT NOT NULL DEFAULT '',
+    parent_ip     TEXT NOT NULL DEFAULT '',
+    evidence_ref  TEXT NOT NULL DEFAULT '',
+    entry_status  TEXT NOT NULL DEFAULT '' CHECK (entry_status IN ('', 'suspected', 'confirmed')),
+    display_label TEXT NOT NULL DEFAULT '',
+    updated_by    TEXT NOT NULL DEFAULT '',
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (task_id, node_ip)
+);
+ALTER TABLE task_topology_overrides ADD COLUMN IF NOT EXISTS display_label TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_topology_overrides ADD COLUMN IF NOT EXISTS relation_label TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_topology_overrides DROP CONSTRAINT IF EXISTS task_topology_overrides_relation_kind_check;
+ALTER TABLE task_topology_overrides ADD CONSTRAINT task_topology_overrides_relation_kind_check CHECK (relation_kind IN ('', 'lateral', 'credential', 'unknown', 'evidence'));
+CREATE TABLE IF NOT EXISTS task_topology_notes (
+    id         BIGSERIAL PRIMARY KEY,
+    task_id    BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    node_ip    TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_topology_notes_node ON task_topology_notes(task_id, node_ip, created_at DESC);

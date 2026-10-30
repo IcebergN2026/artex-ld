@@ -206,10 +206,10 @@ func (t *ToolSet) addReviewIntent() actool.CoreTool {
 	return t.writeExpTool("add_review_intent",
 		"【送审】提交一条意图进入人工审核：落 proposed + review_status=pending + executor='review' 占位，不会直接执行，只被审核面板/审核轮拾取；审核通过后同一节点转 open（资产与血缘保持不变）。与 add_intent（直投 open、立即执行）不同，本工具只送审。支持单条或 intents 数组批量。",
 		obj(map[string]any{
-			"summary":    str("意图描述（单条模式）：做什么+为什么"),
-			"priority":   intp("优先级 1-10，默认 5"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：目标资产 id（list_assets 返回的资产 id，不是探索节点 id）→ 资产锚点 + payload.asset_ids"},
-			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：上游锚点 id（只能填已存在的 fact/finding 节点 id），只建 derived_from 血缘，不产生资产锚点；顶层全新方向留空（自动挂 origin fact）"},
+			"summary":         str("意图描述（单条模式）：做什么+为什么"),
+			"priority":        intp("优先级 1-10，默认 5"),
+			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：目标资产 id（list_assets 返回的资产 id，不是探索节点 id）→ 资产锚点 + payload.asset_ids"},
+			"parent_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：上游锚点 id（只能填已存在的 fact/finding 节点 id），只建 derived_from 血缘，不产生资产锚点；顶层全新方向留空（自动挂 origin fact）"},
 			"replaces":        idp("可选：本条意图替代的旧意图 id（必须已存在）"),
 			"target_executor": str("可选：建议执行器标识（executor_key，必须是已注册且启用的自定义 agent）→ payload.pending_executor，审核通过时自动转正为正式 executor"),
 			"reason":          str("可选：送审理由/给审核人的说明（写入 payload.review_reason 供审核参考）"),
@@ -223,9 +223,9 @@ func (t *ToolSet) addReviewIntent() actool.CoreTool {
 			}
 			var req struct {
 				intentItem
-				Replaces     *int64           `json:"replaces"`
-				Reason       string           `json:"reason"`
-				Intents      []json.RawMessage `json:"intents"`
+				Replaces *int64            `json:"replaces"`
+				Reason   string            `json:"reason"`
+				Intents  []json.RawMessage `json:"intents"`
 			}
 			if err := json.Unmarshal(in, &req); err != nil {
 				return actool.Errorf(fmt.Sprintf("invalid input: %v", err)), nil
@@ -404,16 +404,16 @@ func parseReviewID(s string) (int64, bool) {
 
 // ReviewChatConfig 会话轮输入。Hooks 传任务 Guard.Hooks()（D9 ask 规则在此生效）。
 type ReviewChatConfig struct {
-	Store      *db.ExplorationStore
-	Goal       string
-	TaskID     string
-	Provider   llm.Provider
-	Message    string
-	Hooks      harness.HookRunner // 任务 Guard 的 hook 注册表（intercept ask 挂起点）
-	Emit       func(db.Activity)
-	Notify     func()               // 【二开·审核流 PR1】planner/worker 唤醒（批准放行后领取）
-	NotifyHint func([]string)
-	NotifyReview   func(taskID int64)            // 【二开·审核流 PR1/§2.6】ReviewRunner 专用唤醒
+	Store          *db.ExplorationStore
+	Goal           string
+	TaskID         string
+	Provider       llm.Provider
+	Message        string
+	Hooks          harness.HookRunner // 任务 Guard 的 hook 注册表（intercept ask 挂起点）
+	Emit           func(db.Activity)
+	Notify         func() // 【二开·审核流 PR1】planner/worker 唤醒（批准放行后领取）
+	NotifyHint     func([]string)
+	NotifyReview   func(taskID int64)                  // 【二开·审核流 PR1/§2.6】ReviewRunner 专用唤醒
 	NotifyRevision func(intentID int64, reason string) // 【二开·审核流 PR5/§4.2.3】revision_requested 触发
 	// 【二开·审核流 PR8/审核-2 P1】target_executor 校验器：review 对话里送审/修订也要
 	// 校验建议执行器（否则非法 pending_executor 落库后批准时无条件转正）。
@@ -492,7 +492,7 @@ func RunReviewAuto(ctx context.Context, cfg ReviewAutoConfig) ([]ReviewDecision,
 	input := fmt.Sprintf(`以下是本轮待审意图 id：%s。
 请用 list_intents(states=[\"proposed\"]) 拉取详情（审核模式下 proposed 即待审意图），结合 graph_overview 看任务全貌，然后对你能明确判断的每一条给出处置决定：
 - approve：明显安全且与任务目标强相关；
-- reject：明显越界（撞任务目标里的授权边界/禁止条款）、明显重复或明显危险（note 必填，写清需要优化的内容——会退回 planner 修订原稿后重新送审）；
+- reject：明显重复或明显危险（删改业务数据、DoS、关闭审计、持久化后门等，note 必填，写清需要优化的内容——会退回 planner 修订原稿后重新送审）；
 - 拿不准的【不要输出】该 id：未决不做任何写操作，留给人工。
 每个决定附 ≤200 字理由 note。
 最后只输出 JSON：{"<id>": {"action": "approve|reject", "note": "<理由>"}, ...}`,

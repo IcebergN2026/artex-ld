@@ -46,6 +46,7 @@ import { FindingsTab } from "./_tabs/findings-tab";
 import { GraphTab } from "./_tabs/graph-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
+import { PentestTopologyTab } from "./_tabs/pentest-topology-tab";
 import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
@@ -59,6 +60,7 @@ const TABS = [
   { value: "retests", label: "复测" },
   { value: "assets", label: "测试资产" },
   { value: "coverage", label: "资产覆盖图" },
+  { value: "topology", label: "内网拓扑" },
   { value: "intercept", label: "拦截审批" },
   { value: "report", label: "报告" },
 ];
@@ -340,6 +342,9 @@ function TaskDetailInner() {
     controlIcon = <PlayIcon data-icon="inline-start" />;
     controlLabel = "恢复";
   }
+  // 内网拓扑功能尚未完善，0.1.2 暂时隐藏 Tab 和对应内容。
+  const topologyEnabled = false;
+  const visibleTabs = TABS.filter((item) => item.value !== "topology" || topologyEnabled);
   const archiveTrigger = (
     <Button
       size="icon-sm"
@@ -405,7 +410,7 @@ function TaskDetailInner() {
         {/* Tabs */}
         <div className="no-scrollbar min-w-0 overflow-x-auto">
           <TabsList variant="default" className="min-w-max">
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <TabsTrigger key={t.value} value={t.value}>
                 {t.label}
                 {t.value === "intercept" && interceptPendingCount > 0 && (
@@ -445,6 +450,11 @@ function TaskDetailInner() {
         <TabsContent value="coverage" className="mt-0">
           <CoverageGraphTab taskId={id} coverageEnabled={task?.coverage_enabled !== false} />
         </TabsContent>
+        {topologyEnabled && (
+          <TabsContent value="topology" className="mt-0">
+            <PentestTopologyTab taskId={id} />
+          </TabsContent>
+        )}
         <TabsContent value="intercept" className="mt-0">
           <InterceptTab taskId={id} />
         </TabsContent>

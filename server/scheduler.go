@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/xlog" // 【P-LOG·M1】step 吞错修复
 )
@@ -151,6 +152,16 @@ func (sc *Scheduler) fireIntervals(triggers []*db.AgentTrigger) {
 	}
 }
 
+func findingTriggerContext(e db.TaskEvent) string {
+	mode := agent.ExecutionModeFromGoal(e.TaskGoal + "\n" + e.TaskDesc)
+	ctx := fmt.Sprintf("\n\n【本次由任务发现 finding 触发】\n执行模式: %s\n发现: [%s/%s] %s",
+		mode, e.VulnClass, e.Severity, e.Summary)
+	if e.FindingID > 0 {
+		ctx += fmt.Sprintf("\nfinding_id: %d", e.FindingID)
+	}
+	return ctx
+}
+
 // fireFindings fires on_finding triggers for findings above the persisted
 // watermark (monotonic node id → no double-fire across restarts).
 func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
@@ -176,8 +187,7 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 		if len(want) == 0 {
 			continue
 		}
-		msgCtx := fmt.Sprintf("\n\n【本次由任务发现 finding 触发】\n发现: [%s/%s] %s",
-			e.VulnClass, e.Severity, e.Summary)
+		msgCtx := findingTriggerContext(e)
 		for _, tr := range want {
 			// 【二开·P-LOG·O2】INFO 记命中（排障：finding 触发了哪个 agent）。
 			log.Printf("[scheduler] finding 触发命中：agent %s ← task#%d node#%d [%s/%s]", tr.AgentKey, e.TaskID, e.NodeID, e.VulnClass, e.Severity)

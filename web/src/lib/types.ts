@@ -9,6 +9,7 @@ export interface Task {
   name?: string; // 可选任务名称;空/缺省=未命名,展示时回退到描述
   category_id?: number;
   category_name?: string;
+  category_nkey?: string;
   pinned?: boolean;
   pinned_at?: string | null;
   description: string;
@@ -41,10 +42,11 @@ export interface Task {
   coverage_enabled?: boolean; // 资产覆盖度功能开关(创建时定,默认开)；false=不计算/不展示覆盖度
   // 【二开·P-INTENT·U5】起 —— 任务级新字段（00 册 U5 / D2 / D7）
   planner_prompt_override?: string; // planner 提示词任务级快照（D2 列；空=走全局/默认链）
-  worker_count?: number;            // 任务级 worker 池大小：0=跟随全局，1~16 专属
-  review_auto?: boolean;            // 自动审核开关（审核聊天窗 Switch；true=预审轮自动处置）
-  review_enabled?: boolean;         // 【二开·P-REVIEW·D2c】任务级审核总开关（m03934：默认关；开=审核 tab+runner+端点启用，LLM 随任务）
-  asset_mode?: string;              // 【二开·P-REVIEW·D12】资产图模式标签（m04039：pentest/vuln_research/code_audit）
+  worker_prompt_override?: string; // Worker 提示词任务级快照；创建后不受模板修改影响
+  worker_count?: number; // 任务级 worker 池大小：0=跟随全局，1~16 专属
+  review_auto?: boolean; // 自动审核开关（审核聊天窗 Switch；true=预审轮自动处置）
+  review_enabled?: boolean; // 【二开·P-REVIEW·D2c】任务级审核总开关（m03934：默认关；开=审核 tab+runner+端点启用，LLM 随任务）
+  asset_mode?: string; // 【二开·P-REVIEW·D12】资产图模式标签（m04039：pentest/vuln_research/code_audit）
   // 【二开·P-INTENT·U5】止
 }
 
@@ -54,6 +56,7 @@ export interface TaskCategory {
   // 【二开·P-REVIEW·D12】分类预设包（m04039）
   default_review_enabled?: boolean;
   default_planner_template_id?: number;
+  default_worker_template_id?: number;
   asset_mode?: string;
   default_description?: string;
   // 【二开·P-SCENARIO·MERGE】种子意图预设（m03167 场景并入分类）
@@ -86,6 +89,7 @@ export interface PlannerTemplate {
   updated_at: string;
 }
 // 【二开·P-TPL·U5】止
+export type WorkerTemplate = PlannerTemplate;
 
 export interface DeleteTaskOptions {
   delete_assets: boolean;
@@ -245,6 +249,30 @@ export interface TaskAssetView {
 
 // ---- New unified asset model (new backend) ----
 export type NewAssetType = "root_domain" | "ip" | "subdomain" | "app" | "service" | "endpoint";
+
+export interface AssetHostService {
+  asset_id: number;
+  type: "app" | "service" | "endpoint";
+  label: string;
+  url?: string;
+  method?: string;
+}
+
+export interface AssetHostRow {
+  key: string;
+  company_id?: number;
+  company_name?: string;
+  root_domain?: string;
+  subdomains: string[];
+  ip: string;
+  services: AssetHostService[];
+  asset_ids: number[];
+  finding_count: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
 
 export interface Asset {
   id: number;
@@ -608,6 +636,8 @@ export interface FindingQuery {
   sort?: "severity" | "time";
   // 资产树节点 key;选中一个节点 = 选中它的整棵子树。空 = 不按资产筛选。
   assetScope?: string;
+  // 宿主行聚合的精确资产 ID 集合；任一资产关联的发现都会命中。
+  assetIDs?: number[];
 }
 
 // ---- Findings by asset (资产视图) ----
@@ -1401,20 +1431,20 @@ export interface ReviewProposedIntent {
   priority?: number;
   origin?: string;
   pending_executor?: string | null; // 送审时预选执行器（K24），approve 时转正
-  review_note?: string | null;      // K20 预审摘要（≤200 字）
-  replaces?: number | null;         // 替代血缘（旧意图 id，K21）
-  created_at?: number;              // unix 秒
-  content_version?: number;         // PR3：批准/驳回时回传做 expected_version CAS
+  review_note?: string | null; // K20 预审摘要（≤200 字）
+  replaces?: number | null; // 替代血缘（旧意图 id，K21）
+  created_at?: number; // unix 秒
+  content_version?: number; // PR3：批准/驳回时回传做 expected_version CAS
 }
 /** 审核会话消息（GET /tasks/{id}/review/messages 行）。 */
 export interface ReviewMessage {
   id: number;
-  worker: string;      // "review"=agent / "user"=人
+  worker: string; // "review"=agent / "user"=人
   kind: string;
   summary: string;
-  detail?: string;     // 完整 agent 回复（summary 仅 200 字首行）
-  is_error: boolean;   // 错误红卡样式
-  created_at: number;  // unix 秒
+  detail?: string; // 完整 agent 回复（summary 仅 200 字首行）
+  is_error: boolean; // 错误红卡样式
+  created_at: number; // unix 秒
 }
 // 【二开·P-INTENT·U5】止
 
@@ -1667,4 +1697,45 @@ export interface InterceptExecution {
   session: string;
   seq: number;
   items: Activity[];
+}
+
+// ---- Task pentest topology ----
+export interface TaskTopologyNode {
+  key: string;
+  ip: string;
+  internal: boolean;
+  hostname?: string;
+  display_label?: string;
+  os?: string;
+  ports: Record<string, unknown>[];
+  accounts: string[];
+  asset_ids: number[];
+  entry_status?: "suspected" | "confirmed";
+  entry_sources: string[];
+  evidence_refs: string[];
+}
+export interface TaskTopologyEdge {
+  source: string;
+  target: string;
+  kind: "lateral" | "credential" | "unknown";
+  label?: string;
+  evidence_ref?: string;
+  manual: boolean;
+}
+export interface TaskTopologyNote {
+  id: number;
+  body: string;
+  created_by: string;
+  created_at: string;
+}
+export interface TaskTopology {
+  nodes: TaskTopologyNode[];
+  edges: TaskTopologyEdge[];
+  notes: Record<string, TaskTopologyNote[]>;
+  root_key: string;
+}
+export interface TaskTopologyNodeUpdate {
+  relation_label: string;
+  parent_ip: string;
+  display_label: string;
 }

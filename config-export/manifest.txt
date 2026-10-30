@@ -1,25 +1,20 @@
-ARTEX 可发布配置示例（已脱敏）
-
-来源：start.sh export-config；已排除 llm_profiles.jsonl。
-格式：PostgreSQL COPY text（每行一个转义后的 JSON 对象），请使用 start.sh import-config 导入。
-
-包含文件：
-  agent_prompt_vars.jsonl: 9 行
-  agent_prompts_current.jsonl: 11 行
-  agent_skill_visibility.jsonl: 3 行
-  agent_triggers.jsonl: 3 行
-  agent_visibility.jsonl: 2 行
-  agents_builtin_overrides.jsonl: 7 行
-  agents_custom.jsonl: 4 行
-  asset_intercept_rules_custom.jsonl: 0 行
-  intercept_rules_custom.jsonl: 0 行
-  mcp_servers.jsonl: 3 行
-  notification_channels.jsonl: 0 行
-  planner_templates_custom.jsonl: 0 行
-  task_categories.jsonl: 5 行
-  tools_bindings.jsonl: 56 行
-  tools_custom.jsonl: 0 行
-
-排除：llm_profiles.jsonl（LLM 配置/密钥）
-      companies.jsonl / company_scope.jsonl / task_templates.jsonl（测试与资产实例数据）
-MCP：全部禁用；认证值替换为 <REPLACE_ME>；内网地址替换为 mcp.example.internal。
+artex 平台配置导出
+时间: 2026-10-30T10:19:51-04:00
+主机: admin1-virtual-machine
+源库: artex
+cols[agent_prompt_vars]: id,agent_id,var_name,description,example,source
+cols[agent_prompts]: id,agent_id,version,template_text,note,updated_by,created_at
+cols[agent_skill_visibility]: agent_id,skill_name,enabled,created_at
+cols[agent_triggers]: id,agent_key,enabled,interval_sec,on_finding,on_goal_met,on_task_timeout,on_tool_call,on_task_create,interval_message,finding_message,goal_message,task_timeout_message,tool_call_message,task_create_message,tool_names,last_fire,created_at,updated_at
+cols[agent_visibility]: agent_id,resource_kind,resource_id,mcp_tool_name,enabled,created_at
+cols[agents]: id,key,name,description,role,builtin,enabled,llm_profile_id,current_prompt_id,max_turns,run_seconds,web_search,interactive_shell,wrapup_prompt,wrapup_max_turns,task_timeout_wrapup_prompt,task_timeout_wrapup_max_turns,trigger_run_mode,trigger_merge_mode,trigger_max_parallel,created_at,updated_at,executor_key
+cols[asset_intercept_rules]: id,enabled,kind,pattern,note,builtin,created_at,updated_at
+cols[intercept_rules]: id,name,enabled,priority,match_target,match_type,pattern,action,message,timeout_enabled,timeout_seconds,timeout_action,created_at,updated_at
+cols[llm_profiles]: id,name,format,base_url,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,thinking_type,is_default,priority,pool_exclude,streaming,max_tokens,max_tokens_field,session_header_key,retry_connect_attempts,retry_connect_interval_ms,retry_empty_attempts,retry_empty_interval_ms,retry_stream_attempts,retry_stream_interval_ms,created_at,updated_at
+cols[mcp_servers]: id,name,transport,command,args,env,url,enabled,insecure,created_at,updated_at
+cols[notification_channels]: id,name,kind,enabled,config,mode,filter,rate_per_min,created_at,updated_at
+cols[planner_templates]: id,name,nkey,body,builtin,is_default,created_at,updated_at
+cols[settings]: key,value,updated_at
+cols[task_categories]: id,name,nkey,created_at,updated_at,default_review_enabled,default_planner_template_id,asset_mode,default_description,seed_first_intent,seed_executor,default_worker_template_id
+cols[task_templates]: id,name,nkey,description,goal,category_id,intercept_rules,created_at,updated_at
+cols[tools]: key,system,description,schema,agents,enabled,kind,exec,deferred,updated_at

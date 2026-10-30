@@ -34,6 +34,7 @@ type Task struct {
 	Name         string `json:"name"` // 可选任务名称;空=未命名
 	CategoryID   *int64 `json:"category_id,omitempty"`
 	CategoryName string `json:"category_name,omitempty"`
+	CategoryNKey string `json:"category_nkey,omitempty"`
 	PinnedAt     int64  `json:"pinned_at,omitempty"`
 	Description  string `json:"description"`
 	Goal         string `json:"goal"`
@@ -63,6 +64,7 @@ type Task struct {
 	// 【二开·P-INTENT·D7】起 —— db.Task 镜像（taskFromPG 透传；S10 种子 executor / P3 模板快照 / 任务级 worker 池）
 	PreAgent              string `json:"pre_agent,omitempty"`               // 种子意图预选执行器 executor_key（空=默认 worker）
 	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"` // planner 提示词任务级快照（空=走全局/默认链）
+	WorkerPromptOverride  string `json:"worker_prompt_override,omitempty"`  // Worker 提示词任务级快照（空=走全局/默认链）
 	WorkerCount           int    `json:"worker_count"`                      // 任务级 worker 池：0=跟随全局，1~16 专属
 	ReviewAuto            bool   `json:"review_auto"`                       // 【二开·P-REVIEW·D2b】自动审核开关（审核聊天窗 Switch）
 	ReviewEnabled         bool   `json:"review_enabled"`                    // 【二开·P-REVIEW·D2c】任务级审核总开关（m03934）
@@ -130,6 +132,7 @@ type taskLifecycleState struct {
 	CompanyIDs    []int64
 	CategoryID    *int64
 	CategoryName  string
+	CategoryNKey  string
 }
 
 func (t *Task) lifecycleSnapshot() taskLifecycleState {
@@ -157,6 +160,7 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		CompanyIDs:    append([]int64(nil), t.CompanyIDs...),
 		CategoryID:    cloneInt64Ptr(t.CategoryID),
 		CategoryName:  t.CategoryName,
+		CategoryNKey:  t.CategoryNKey,
 	}
 }
 
@@ -181,6 +185,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.CompanyIDs = append(t.CompanyIDs[:0], state.CompanyIDs...)
 	t.CategoryID = cloneInt64Ptr(state.CategoryID)
 	t.CategoryName = state.CategoryName
+	t.CategoryNKey = state.CategoryNKey
 	t.lifecycleMu.Unlock()
 }
 
@@ -870,7 +875,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 	return &Task{
 		ID: strconv.FormatInt(pt.ID, 10), ExpID: pt.ExplorationID,
 		Name:       pt.Name,
-		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
+		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName, CategoryNKey: pt.CategoryNKey,
 		PinnedAt:    unixOrZero(pt.PinnedAt),
 		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
 		QueuedAt: unixNanoOrZero(pt.QueuedAt), QueueMode: pt.QueueMode,
@@ -886,6 +891,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		// 【二开·P-INTENT·D7】镜像：db.Task → server.Task（S10 种子 executor / P3 模板快照 / 任务级 worker 池）
 		PreAgent:              pt.PreAgent,
 		PlannerPromptOverride: pt.PlannerPromptOverride,
+		WorkerPromptOverride:  pt.WorkerPromptOverride,
 		WorkerCount:           pt.WorkerCount,
 		ReviewAuto:            pt.ReviewAuto,
 		ReviewEnabled:         pt.ReviewEnabled,
@@ -974,6 +980,7 @@ func (m *Manager) RenameTaskCategory(id int64, name string) (*pgdb.TaskCategory,
 		task.updateLifecycle(func(state *taskLifecycleState) {
 			if state.CategoryID != nil && *state.CategoryID == id {
 				state.CategoryName = category.Name
+				state.CategoryNKey = category.NKey
 			}
 		})
 	}
@@ -995,6 +1002,7 @@ func (m *Manager) DeleteTaskCategory(id int64) (bool, error) {
 			if state.CategoryID != nil && *state.CategoryID == id {
 				state.CategoryID = nil
 				state.CategoryName = ""
+				state.CategoryNKey = ""
 			}
 		})
 	}
@@ -1020,8 +1028,10 @@ func (m *Manager) SetTaskCategory(taskID string, categoryID *int64) (*pgdb.TaskC
 		task.updateLifecycle(func(state *taskLifecycleState) {
 			state.CategoryID = cloneInt64Ptr(categoryID)
 			state.CategoryName = ""
+			state.CategoryNKey = ""
 			if category != nil {
 				state.CategoryName = category.Name
+				state.CategoryNKey = category.NKey
 			}
 		})
 	}
@@ -1047,9 +1057,10 @@ func (m *Manager) SetTasksCategory(taskIDs []string, categoryID *int64) (map[str
 	if err != nil {
 		return nil, nil, err
 	}
-	categoryName := ""
+	categoryName, categoryNKey := "", ""
 	if category != nil {
 		categoryName = category.Name
+		categoryNKey = category.NKey
 	}
 	updated := make(map[string]bool, len(updatedIDs))
 	m.mu.RLock()
@@ -1066,6 +1077,7 @@ func (m *Manager) SetTasksCategory(taskIDs []string, categoryID *int64) (map[str
 		task.updateLifecycle(func(state *taskLifecycleState) {
 			state.CategoryID = cloneInt64Ptr(categoryID)
 			state.CategoryName = categoryName
+			state.CategoryNKey = categoryNKey
 		})
 	}
 	return updated, category, nil

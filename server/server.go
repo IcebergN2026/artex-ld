@@ -202,6 +202,14 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			}
 			return body
 		}
+		agent.WorkerDefaultTemplateBodyFn = func() string {
+			body, err := m.pg.DefaultWorkerTemplateBody()
+			if err != nil {
+				log.Printf("[task] workerSystem 默认模板读取失败: %v（使用内置兜底）", err)
+				return ""
+			}
+			return body
+		}
 		// 【二开·P-TPL·A4】止
 		// Wire DB-stored wrap-up (settlement) prompts. Empty column → built-in default.
 		agent.WrapupOverride = func(key string) (string, bool) {
@@ -241,7 +249,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// 【二开·P-REVIEW·D9】起 —— 审核写工具 intercept ask 化（启用集+三条内置规则，幂等）
 		s.seedReviewIntercept()
 		// 【二开·P-REVIEW·D9】止
-		s.seedOrchestrationTools() // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
+		s.seedOrchestrationTools()      // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
+		s.backfillTaskDispatchTargets() // 旧内网任务按 description 中 finding #N / finding_id=N 回填资产去重目标
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
@@ -718,6 +727,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/planner-templates/{id}/default", s.pgSetDefaultPlannerTemplate)
 	mux.HandleFunc("POST /api/planner-templates/validate", s.pgValidatePlannerTemplate)
 	// 【二开·P-TPL·S11】止
+	mux.HandleFunc("GET /api/worker-templates", s.pgListWorkerTemplates)
+	mux.HandleFunc("POST /api/worker-templates", s.pgCreateWorkerTemplate)
+	mux.HandleFunc("PATCH /api/worker-templates/{id}", s.pgUpdateWorkerTemplate)
+	mux.HandleFunc("DELETE /api/worker-templates/{id}", s.pgDeleteWorkerTemplate)
+	mux.HandleFunc("POST /api/worker-templates/{id}/default", s.pgSetDefaultWorkerTemplate)
+	mux.HandleFunc("POST /api/worker-templates/validate", s.pgValidateWorkerTemplate)
 	mux.HandleFunc("GET /api/tasks/{id}", s.getTask)
 	mux.HandleFunc("PATCH /api/tasks/{id}", s.updateTaskMetadata)
 	mux.HandleFunc("PATCH /api/tasks/{id}/category", s.updateTaskCategory)
@@ -745,6 +760,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/task-archives/delete/batch", s.deleteTaskArchivesBatch)
 	mux.HandleFunc("GET /api/tasks/{id}/coverage", s.taskCoverage)
 	mux.HandleFunc("GET /api/tasks/{id}/coverage-graph", s.taskCoverageGraph)
+	mux.HandleFunc("GET /api/tasks/{id}/pentest-topology", s.taskTopology)
+	mux.HandleFunc("PATCH /api/tasks/{id}/pentest-topology/nodes/{ip}", s.updateTaskTopologyNode)
+	mux.HandleFunc("POST /api/tasks/{id}/pentest-topology/nodes/{ip}/notes", s.addTaskTopologyNote)
 	mux.HandleFunc("GET /api/tasks/{id}/asset-refs", s.taskAssetRefs)
 	mux.HandleFunc("POST /api/tasks/{id}/assets", s.attachTaskAssets)
 	mux.HandleFunc("DELETE /api/tasks/{id}/assets/{assetID}", s.detachTaskAsset)
@@ -1521,6 +1539,8 @@ type createTaskReq struct {
 	PreAgent          string `json:"pre_agent,omitempty"`           // 种子意图预选执行器 executor_key（仅 seed_first_intent=true 时有意义）
 	PlannerPrompt     string `json:"planner_prompt,omitempty"`      // planner 提示词全文快照（≤32KB；与 planner_template_id 同传时本字段优先 K22）
 	PlannerTemplateID int64  `json:"planner_template_id,omitempty"` // 仅模板 id：建任务时取正文快照（03 册 S13）
+	WorkerPrompt      string `json:"worker_prompt,omitempty"`       // Worker 提示词全文快照；优先于 worker_template_id
+	WorkerTemplateID  int64  `json:"worker_template_id,omitempty"`  // Worker 模板 id：建任务时取正文快照
 	WorkerCount       int    `json:"worker_count,omitempty"`        // 任务级 worker 池：0=跟随全局，1~16 专属
 	ReviewEnabled     *bool  `json:"review_enabled,omitempty"`      // 任务级意图审核总开关（m03934/D2c；nil=未传→分类预设兜底→默认关）
 	AssetMode         string `json:"asset_mode,omitempty"`          // 资产图模式标签（m04039/D12；空=分类带出→pentest）
@@ -1577,6 +1597,9 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		if cat, catErr := s.m.PG().GetTaskCategory(*req.CategoryID); catErr == nil && cat != nil {
 			if req.PlannerTemplateID == 0 && cat.DefaultPlannerTemplateID > 0 {
 				req.PlannerTemplateID = cat.DefaultPlannerTemplateID
+			}
+			if req.WorkerTemplateID == 0 && cat.DefaultWorkerTemplateID > 0 {
+				req.WorkerTemplateID = cat.DefaultWorkerTemplateID
 			}
 			if strings.TrimSpace(req.AssetMode) == "" {
 				req.AssetMode = cat.AssetMode
@@ -1666,6 +1689,34 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		// 【二开·P-LOG·S13】快照来源=默认模板。
 		xlog.Debugf("[task] 提示词快照来源：默认模板（%dB）", len(body))
 	}
+	workerPrompt := strings.TrimSpace(req.WorkerPrompt)
+	if workerPrompt != "" {
+		if err := validateWorkerTemplateBody(workerPrompt); err != nil {
+			writeErr(w, 400, "Worker 提示词覆盖无效："+err.Error())
+			return
+		}
+		xlog.Debugf("[task] Worker 提示词快照来源：手改 worker_prompt（%dB）", len(workerPrompt))
+	} else if req.WorkerTemplateID > 0 {
+		tpl, err := pg.GetWorkerTemplate(req.WorkerTemplateID)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if tpl == nil {
+			writeErr(w, 400, fmt.Sprintf("Worker 模板 #%d 不存在", req.WorkerTemplateID))
+			return
+		}
+		workerPrompt = tpl.Body
+		log.Printf("[task] Worker 提示词快照：模板 #%d %q（%dB；此后模板改/删不影响本任务）", tpl.ID, tpl.Name, len(tpl.Body))
+	} else {
+		body, err := pg.DefaultWorkerTemplateBody()
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		workerPrompt = body
+		xlog.Debugf("[task] Worker 提示词快照来源：默认模板（%dB）", len(body))
+	}
 	if req.WorkerCount < 0 || req.WorkerCount > 16 {
 		writeErr(w, 400, "worker_count 取值 0~16（0=跟随全局）")
 		return
@@ -1682,6 +1733,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		// 【二开·P-TPL·S13】PlannerPrompt 改传快照链解析结果（手改/模板/默认模板正文）
 		PreAgent: req.PreAgent, PlannerPrompt: plannerPrompt,
 		PlannerTemplateID: req.PlannerTemplateID, WorkerCount: req.WorkerCount,
+		WorkerPrompt: workerPrompt, WorkerTemplateID: req.WorkerTemplateID,
 		ReviewEnabled: reviewEnabled, AssetMode: assetMode,
 	})
 	if err != nil {

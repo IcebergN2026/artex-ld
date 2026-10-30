@@ -113,7 +113,8 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
     () => templates.find((t) => t.id === selectedID) ?? null,
     [selectedID, templates],
   );
-  const readOnly = !!selected?.builtin; // 内置模板名称/正文只读（保 seed 幂等身份，D11-c Patch 守护）
+  // 内置正文可编辑；名称/nkey 保留 seed 与场景引用身份，删除保护不变。
+  const nameReadOnly = !!selected?.builtin;
   // 内置禁删（D11-c）、默认禁删（ErrPlannerTemplateDefaultProtected）——前端先拦，后端 409 兜底。
   const deleteDisabled = !selected || selected.builtin || selected.is_default;
 
@@ -130,10 +131,10 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
     setValidateErr("");
   };
 
-  // 变量 chip：插入到正文光标处（内置只读时禁用）。
+  // 变量 chip：插入到正文光标处；内置正文同样允许编辑。
   const insertVar = (v: string) => {
     const ta = bodyRef.current;
-    if (!ta || readOnly) return;
+    if (!ta) return;
     const s = ta.selectionStart ?? draft.body.length;
     const e = ta.selectionEnd ?? draft.body.length;
     setDraft((cur) => ({ ...cur, body: cur.body.slice(0, s) + v + cur.body.slice(e) }));
@@ -216,7 +217,7 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
   if (!saving && selectedID == null) saveLabel = "创建模板";
 
   let deleteHint = "";
-  if (selected?.builtin) deleteHint = "内置模板为只读，不可删除";
+  if (selected?.builtin) deleteHint = "内置模板不可删除，正文可直接编辑";
   else if (selected?.is_default) deleteHint = "默认模板不能删除，请先在另一模板上设默认";
 
   return (
@@ -284,12 +285,12 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
                     value={draft.name}
                     maxLength={120}
                     placeholder="例如：内网横向·谨慎"
-                    disabled={readOnly}
+                    disabled={nameReadOnly}
                     onChange={(event) => setDraft((cur) => ({ ...cur, name: event.target.value }))}
                   />
                   <FieldDescription>
                     名称归一化后唯一（防视觉等价重名）。
-                    {readOnly && "内置模板为只读，可点左侧「新建模板」以它为正本底稿另建。"}
+                    {nameReadOnly && "内置模板名称用于场景标识，不可修改；正文可直接编辑保存。"}
                   </FieldDescription>
                 </Field>
                 <Field>
@@ -301,7 +302,6 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
                     ref={bodyRef}
                     className="bg-muted/40 min-h-72 resize-y font-mono text-xs leading-relaxed"
                     value={draft.body}
-                    readOnly={readOnly}
                     onChange={(event) => setDraft((cur) => ({ ...cur, body: event.target.value }))}
                   />
                   {validateErr && <p className="text-destructive text-xs whitespace-pre-wrap">{validateErr}</p>}
@@ -316,12 +316,8 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
                       <button
                         key={v}
                         type="button"
-                        disabled={readOnly}
                         onClick={() => insertVar(v)}
-                        className={cn(
-                          "bg-accent rounded border px-1.5 py-0.5 font-mono text-[11px]",
-                          readOnly ? "opacity-50" : "hover:border-foreground cursor-pointer",
-                        )}
+                        className="bg-accent hover:border-foreground cursor-pointer rounded border px-1.5 py-0.5 font-mono text-[11px]"
                       >
                         {v}
                       </button>
@@ -351,7 +347,7 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
                     variant="outline"
                     size="sm"
                     className="w-fit"
-                    disabled={validating || readOnly}
+                    disabled={validating}
                     onClick={() => void validate()}
                   >
                     {validating ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
@@ -381,12 +377,10 @@ export function PlannerTemplateManager({ open, onOpenChange }: PlannerTemplateMa
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               关闭
             </Button>
-            {!readOnly && (
-              <Button type="button" disabled={saving} onClick={() => void save()}>
-                {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
-                {saveLabel}
-              </Button>
-            )}
+            <Button type="button" disabled={saving} onClick={() => void save()}>
+              {saving ? <Spinner data-icon="inline-start" /> : <SaveIcon data-icon="inline-start" />}
+              {saveLabel}
+            </Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>

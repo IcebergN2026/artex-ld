@@ -51,6 +51,7 @@ import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { TaskTemplateControls } from "@/components/task-template-controls";
 // 【二开·P-TPL·U2】起
 import { PlannerTemplateControls } from "@/components/planner-template-controls";
+import { WorkerTemplateControls } from "@/components/worker-template-controls";
 // 【二开·P-TPL·U2】止
 // 【二开·P-SCENARIO·U3】起 —— 任务管理页直接打开场景管理面板（场景=建任务预设打包）
 // 【二开·P-SCENARIO·U3】止
@@ -136,6 +137,7 @@ import type {
   DeleteTaskResult,
   LLMProfile,
   PlannerTemplate, // 【二开·P-REVIEW·D12】分类预设模板下拉
+  WorkerTemplate,
   Task,
   TaskArchive,
   TaskArchiveState,
@@ -2764,6 +2766,7 @@ function CategoryManagementSheet({
   // 【二开·P-REVIEW·D12】起 —— 分类预设包编辑态（m04039）
   const [draftReviewEnabled, setDraftReviewEnabled] = React.useState(false);
   const [draftTemplateID, setDraftTemplateID] = React.useState(0);
+  const [draftWorkerTemplateID, setDraftWorkerTemplateID] = React.useState(0);
   const [draftAssetMode, setDraftAssetMode] = React.useState("pentest");
   const [draftDescription, setDraftDescription] = React.useState("");
   // 【二开·P-SCENARIO·MERGE】种子意图预设编辑态（m03167 场景并入分类）
@@ -2771,10 +2774,13 @@ function CategoryManagementSheet({
   const [draftSeedExecutor, setDraftSeedExecutor] = React.useState("");
   const [presetAgents, setPresetAgents] = React.useState<Agent[]>([]);
   const [presetTemplates, setPresetTemplates] = React.useState<PlannerTemplate[]>([]);
+  const [presetWorkerTemplates, setPresetWorkerTemplates] = React.useState<WorkerTemplate[]>([]);
   React.useEffect(() => {
+    if (!open) return;
     api.plannerTemplates().then(setPresetTemplates).catch(() => {});
+    api.workerTemplates().then(setPresetWorkerTemplates).catch(() => {});
     api.agents().then((l) => setPresetAgents(l.filter((a) => a.executor_key))).catch(() => {});
-  }, []);
+  }, [open]);
   // 【二开·P-REVIEW·D12】止
   const [saving, setSaving] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
@@ -2826,6 +2832,7 @@ function CategoryManagementSheet({
     // 【二开·P-REVIEW·D12】带出预设包
     setDraftReviewEnabled(category.default_review_enabled ?? false);
     setDraftTemplateID(category.default_planner_template_id ?? 0);
+    setDraftWorkerTemplateID(category.default_worker_template_id ?? 0);
     setDraftAssetMode(category.asset_mode || "pentest");
     setDraftDescription(category.default_description ?? "");
     // 【二开·P-SCENARIO·MERGE】带出种子意图预设
@@ -2844,6 +2851,7 @@ function CategoryManagementSheet({
     // 【二开·P-REVIEW·D12】重置预设包
     setDraftReviewEnabled(false);
     setDraftTemplateID(0);
+    setDraftWorkerTemplateID(0);
     setDraftAssetMode("pentest");
     setDraftDescription("");
     setDraftSeedFirstIntent(false);
@@ -2861,6 +2869,7 @@ function CategoryManagementSheet({
         await api.renameTaskCategory(created.id, {
           default_review_enabled: draftReviewEnabled,
           default_planner_template_id: draftTemplateID,
+          default_worker_template_id: draftWorkerTemplateID,
           asset_mode: draftAssetMode,
           default_description: draftDescription,
           seed_first_intent: draftSeedFirstIntent,
@@ -2874,6 +2883,7 @@ function CategoryManagementSheet({
           name,
           default_review_enabled: draftReviewEnabled,
           default_planner_template_id: draftTemplateID,
+          default_worker_template_id: draftWorkerTemplateID,
           asset_mode: draftAssetMode,
           default_description: draftDescription,
           seed_first_intent: draftSeedFirstIntent,
@@ -3043,6 +3053,22 @@ function CategoryManagementSheet({
                           <SelectContent>
                             <SelectItem value="0">不指定（走默认模板链）</SelectItem>
                             {presetTemplates.map((t) => (
+                              <SelectItem key={t.id} value={String(t.id)}>
+                                {t.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label className="text-muted-foreground text-xs">默认 Worker 模板</Label>
+                        <Select value={String(draftWorkerTemplateID)} onValueChange={(v) => setDraftWorkerTemplateID(Number(v))}>
+                          <SelectTrigger id="default-worker-template" className="w-full">
+                            <SelectValue placeholder="不指定" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="0">不指定（走默认模板链）</SelectItem>
+                            {presetWorkerTemplates.map((t) => (
                               <SelectItem key={t.id} value={String(t.id)}>
                                 {t.name}
                               </SelectItem>
@@ -3230,6 +3256,8 @@ function CreateTaskSheet({
   // 【二开·P-TPL·U2】起 —— planner 模板/提示词覆盖/worker 数三控件状态
   const [plannerTemplateID, setPlannerTemplateID] = React.useState<number | null>(null); // 选中的规划模板；null=跟随模板库默认
   const [plannerPrompt, setPlannerPrompt] = React.useState(""); // 规划提示词覆盖；''=不覆盖（选模板后自动灌入正文，可再手改）
+  const [workerTemplateID, setWorkerTemplateID] = React.useState<number | null>(null);
+  const [workerPrompt, setWorkerPrompt] = React.useState("");
   const [workerCount, setWorkerCount] = React.useState(""); // 任务级 worker 数输入态；''=0=跟随全局默认
   // 【二开·P-TPL·U2】止
   // 【二开·P-INTENT·U2】起 —— 种子意图预选执行器（K23 opt-in，默认 worker；m00973：种子不送审，选中即直发）
@@ -3312,6 +3340,8 @@ function CreateTaskSheet({
         // 【二开·P-TPL·U2】起
         plannerPrompt: plannerPrompt.trim(),
         plannerTemplateId: plannerTemplateID ?? 0,
+        workerPrompt: workerPrompt.trim(),
+        workerTemplateId: workerTemplateID ?? 0,
         workerCount: Math.max(0, Math.min(16, Math.floor(Number(workerCount) || 0))),
         // 【二开·P-TPL·U2】止
         reviewEnabled, // 【二开·P-REVIEW·D2c】
@@ -3334,6 +3364,8 @@ function CreateTaskSheet({
       // 【二开·P-TPL·U2】起
       setPlannerTemplateID(null);
       setPlannerPrompt("");
+      setWorkerTemplateID(null);
+      setWorkerPrompt("");
       setWorkerCount("");
       // 【二开·P-TPL·U2】止
       setReviewEnabled(false); // 【二开·P-REVIEW·D2c】
@@ -3417,6 +3449,9 @@ function CreateTaskSheet({
                     }
                     if (!plannerPrompt.trim() && (cat.default_planner_template_id ?? 0) > 0) {
                       setPlannerTemplateID(cat.default_planner_template_id ?? null);
+                    }
+                    if (!workerPrompt.trim() && (cat.default_worker_template_id ?? 0) > 0) {
+                      setWorkerTemplateID(cat.default_worker_template_id ?? null);
                     }
                     // 【二开·P-SCENARIO·MERGE】种子意图预设带出（m03167 场景并入分类）
                     setSeedFirstIntent(cat.seed_first_intent ?? false);
@@ -3588,6 +3623,13 @@ function CreateTaskSheet({
                   onPlannerPromptChange={setPlannerPrompt}
                   workerCount={workerCount}
                   onWorkerCountChange={setWorkerCount}
+                  portalContainer={sheetContentRef}
+                />
+                <WorkerTemplateControls
+                  workerTemplateID={workerTemplateID}
+                  onWorkerTemplateIDChange={setWorkerTemplateID}
+                  workerPrompt={workerPrompt}
+                  onWorkerPromptChange={setWorkerPrompt}
                   portalContainer={sheetContentRef}
                 />
                 {/* 【二开·P-TPL·U2】止 */}

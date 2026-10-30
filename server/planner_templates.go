@@ -93,7 +93,7 @@ func writePlannerTemplateErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, db.ErrPlannerTemplateNameConflict):
 		writeErr(w, http.StatusConflict, "模板名称已存在")
 	case errors.Is(err, db.ErrPlannerTemplateBuiltin):
-		writeErr(w, http.StatusConflict, "内置模板为只读：可「另存为新模板」后修改，不能直接改/删")
+		writeErr(w, http.StatusConflict, "内置模板正文可编辑，但名称/nkey不可修改，且内置模板不能删除")
 	case errors.Is(err, db.ErrPlannerTemplateDefaultProtected):
 		writeErr(w, http.StatusConflict, "默认模板不能删除，请先把默认让给别的模板")
 	case errors.Is(err, db.ErrPlannerTemplateNotFound):

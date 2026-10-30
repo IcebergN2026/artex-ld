@@ -50,7 +50,7 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	PromptOverride = func(k string) (string, bool) {
 		return "{{if .ProxyAddr}}走代理 {{.ProxyAddr}}{{else}}手动{{end}}", true
 	}
-	recording := workerSystem("127.0.0.1:8080", "/ca.pem", "/data", "/data")
+	recording := workerSystem("127.0.0.1:8080", "/ca.pem", "/data", "/data", "worker-1", "")
 	if !strings.HasPrefix(recording, "走代理 127.0.0.1:8080") {
 		t.Fatalf("worker proxy branch body: %q", recording)
 	}
@@ -65,14 +65,14 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 	// Egress proxy set but capture OFF (no CA): the ProxyAddr template branch still
 	// renders, but the trafficTool block must NOT — those tools are not registered.
-	egressOnly := workerSystem("127.0.0.1:8080", "", "/data", "/data")
+	egressOnly := workerSystem("127.0.0.1:8080", "", "/data", "/data", "worker-1", "")
 	if !strings.HasPrefix(egressOnly, "走代理 127.0.0.1:8080") {
 		t.Fatalf("worker egress-only branch body: %q", egressOnly)
 	}
 	if strings.Contains(egressOnly, "traffic_search") {
 		t.Fatalf("worker without recording must NOT inject trafficTool: %q", egressOnly)
 	}
-	noProxy := workerSystem("", "", "/data", "/data")
+	noProxy := workerSystem("", "", "/data", "/data", "worker-1", "")
 	if !strings.HasPrefix(noProxy, "手动") {
 		t.Fatalf("worker no-proxy branch body: %q", noProxy)
 	}

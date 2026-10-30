@@ -16,6 +16,7 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  AssetHostRow,
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
@@ -30,6 +31,8 @@ import type {
   ConvTokenSummary,
   CoverageAssetRefs,
   CoverageGraphData,
+  TaskTopology,
+  TaskTopologyNodeUpdate,
   DailyTokenBucket,
   DeleteTaskOptions,
   DeleteTaskResult,
@@ -94,6 +97,7 @@ import type {
   TaskScopeRow,
   TaskTemplate,
   PlannerTemplate, // 【二开·P-TPL·U5】
+  WorkerTemplate,
   TokenTotal,
   TokenUsage,
   Tool,
@@ -227,6 +231,7 @@ function findingFilterParams(q: Omit<FindingQuery, "page" | "pageSize">): URLSea
   if (q.query?.trim()) p.set("q", q.query.trim());
   if (q.sort) p.set("sort", q.sort);
   if (q.assetScope) p.set("asset_scope", q.assetScope);
+  if (q.assetIDs?.length) p.set("asset_ids", q.assetIDs.join(","));
   return p;
 }
 
@@ -266,12 +271,14 @@ export const api = {
     coverageEnabled?: boolean;
     interceptRules?: AssetInterceptRuleInput[];
     // 【二开·P-INTENT·U1】起 —— createTask 四新字段透传（00 册 S7）
-    preAgent?: string;          // 种子意图预选执行器 executor_key（配合 seedFirstIntent）
-    plannerPrompt?: string;     // planner 提示词全文快照（≤32KB；同传 plannerTemplateId 时本字段优先 K22）
+    preAgent?: string; // 种子意图预选执行器 executor_key（配合 seedFirstIntent）
+    plannerPrompt?: string; // planner 提示词全文快照（≤32KB；同传 plannerTemplateId 时本字段优先 K22）
     plannerTemplateId?: number; // 仅模板 id：后端取正文快照（03 册 S13）
-    workerCount?: number;       // 任务级 worker 池：0=跟随全局，1~16 专属
-    reviewEnabled?: boolean;    // 【二开·P-REVIEW·D2c】任务级意图审核总开关（m03934；默认关）
-    assetMode?: string;         // 【二开·P-REVIEW·D12】资产图模式（m04039；空=分类带出）
+    workerPrompt?: string; // Worker 提示词全文快照；优先于 workerTemplateId
+    workerTemplateId?: number; // Worker 模板 id：创建时保存正文快照
+    workerCount?: number; // 任务级 worker 池：0=跟随全局，1~16 专属
+    reviewEnabled?: boolean; // 【二开·P-REVIEW·D2c】任务级意图审核总开关（m03934；默认关）
+    assetMode?: string; // 【二开·P-REVIEW·D12】资产图模式（m04039；空=分类带出）
     // 【二开·P-INTENT·U1】止
   }) =>
     post<Task>("/tasks", {
@@ -291,6 +298,8 @@ export const api = {
       pre_agent: input.preAgent || undefined,
       planner_prompt: input.plannerPrompt || undefined,
       planner_template_id: input.plannerTemplateId || undefined,
+      worker_prompt: input.workerPrompt || undefined,
+      worker_template_id: input.workerTemplateId || undefined,
       worker_count: input.workerCount ?? 0,
       review_enabled: input.reviewEnabled ?? false, // 【二开·P-REVIEW·D2c】
       asset_mode: input.assetMode || undefined, // 【二开·P-REVIEW·D12】
@@ -315,13 +324,27 @@ export const api = {
     get<{ messages: ReviewMessage[] }>(`/tasks/${taskId}/review/messages`).then((r) => arr(r.messages)),
   // 【二开·P-INTENT·U1】止
   taskCategories: () => get<{ categories: TaskCategory[] }>("/task-categories").then((r) => arr(r.categories)),
-  updateTask: (id: string, input: { name?: string; pinned?: boolean; review_auto?: boolean; review_enabled?: boolean }) => patch<Task>(`/tasks/${id}`, input),
+  updateTask: (
+    id: string,
+    input: { name?: string; pinned?: boolean; review_auto?: boolean; review_enabled?: boolean },
+  ) => patch<Task>(`/tasks/${id}`, input),
   renameTask: (id: string, name: string) => patch<Task>(`/tasks/${id}`, { name }),
   pinTask: (id: string, pinned: boolean) => patch<Task>(`/tasks/${id}`, { pinned }),
   createTaskCategory: (name: string) => post<TaskCategory>("/task-categories", { name }),
   renameTaskCategory: (
     id: number,
-    input: string | { name?: string; default_review_enabled?: boolean; default_planner_template_id?: number; asset_mode?: string; default_description?: string; seed_first_intent?: boolean; seed_executor?: string },
+    input:
+      | string
+      | {
+          name?: string;
+          default_review_enabled?: boolean;
+          default_planner_template_id?: number;
+          default_worker_template_id?: number;
+          asset_mode?: string;
+          default_description?: string;
+          seed_first_intent?: boolean;
+          seed_executor?: string;
+        },
   ) =>
     // 【二开·P-REVIEW·D12】兼容字符串（仅改名）与对象（改名+预设包，m04039）
     patch<TaskCategory>(`/task-categories/${id}`, typeof input === "string" ? { name: input } : input),
@@ -344,17 +367,20 @@ export const api = {
   ) => patch<TaskTemplate>(`/task-templates/${id}`, input),
   deleteTaskTemplate: (id: number) => del<{ deleted: number }>(`/task-templates/${id}`),
   // 【二开·P-TPL·U1】起 —— planner 模板库六封装（03 册 S11 五端点 + S11-v 试渲染干跑）
-  plannerTemplates: () =>
-    get<{ templates: PlannerTemplate[] }>("/planner-templates").then((r) => arr(r.templates)),
-  createPlannerTemplate: (input: { name: string; body: string }) =>
-    post<PlannerTemplate>("/planner-templates", input),
+  plannerTemplates: () => get<{ templates: PlannerTemplate[] }>("/planner-templates").then((r) => arr(r.templates)),
+  createPlannerTemplate: (input: { name: string; body: string }) => post<PlannerTemplate>("/planner-templates", input),
   updatePlannerTemplate: (id: number, input: { name?: string; body?: string }) =>
     patch<PlannerTemplate>(`/planner-templates/${id}`, input),
   deletePlannerTemplate: (id: number) => del<{ deleted: number }>(`/planner-templates/${id}`),
-  setDefaultPlannerTemplate: (id: number) =>
-    post<PlannerTemplate>(`/planner-templates/${id}/default`, {}),
-  validatePlannerTemplate: (body: string) =>
-    post<{ ok: boolean }>("/planner-templates/validate", { body }),
+  setDefaultPlannerTemplate: (id: number) => post<PlannerTemplate>(`/planner-templates/${id}/default`, {}),
+  validatePlannerTemplate: (body: string) => post<{ ok: boolean }>("/planner-templates/validate", { body }),
+  workerTemplates: () => get<{ templates: WorkerTemplate[] }>("/worker-templates").then((r) => arr(r.templates)),
+  createWorkerTemplate: (input: { name: string; body: string }) => post<WorkerTemplate>("/worker-templates", input),
+  updateWorkerTemplate: (id: number, input: { name?: string; body?: string }) =>
+    patch<WorkerTemplate>(`/worker-templates/${id}`, input),
+  deleteWorkerTemplate: (id: number) => del<{ deleted: number }>(`/worker-templates/${id}`),
+  setDefaultWorkerTemplate: (id: number) => post<WorkerTemplate>(`/worker-templates/${id}/default`, {}),
+  validateWorkerTemplate: (body: string) => post<{ ok: boolean }>("/worker-templates/validate", { body }),
   // 【二开·P-TPL·U1】止
   updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>
     put<{
@@ -435,6 +461,11 @@ export const api = {
     }>(`/tasks/${id}/coverage`),
   // 资产覆盖图：范围内全部资产 + 连接用的根域名/公司节点，含 tested/in_scope。
   taskCoverageGraph: (id: string) => get<CoverageGraphData>(`/tasks/${id}/coverage-graph`),
+  taskTopology: (id: string) => get<TaskTopology>(`/tasks/${id}/pentest-topology`),
+  updateTaskTopologyNode: (id: string, ip: string, input: TaskTopologyNodeUpdate) =>
+    patch<TaskTopology>(`/tasks/${id}/pentest-topology/nodes/${encodeURIComponent(ip)}`, input),
+  addTaskTopologyNote: (id: string, ip: string, body: string) =>
+    post<TaskTopology>(`/tasks/${id}/pentest-topology/nodes/${encodeURIComponent(ip)}/notes`, { body }),
   // 全局 llm_usage 聚合（仪表盘新版 token 视图）：按 profile 总量 + 按天分桶。
   usageStats: (days = 365) => get<UsageStats>(`/tokens/usage?days=${days}`),
   // ---- 目标管理（总览）----
@@ -536,6 +567,15 @@ export const api = {
     get<{ count: number; total: number; assets: Asset[] }>(`/assets?type=${type}&limit=${limit}&offset=${offset}`).then(
       (r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 }),
     ),
+  hostAssets: (dsl = "", companyID = "", limit = 50, offset = 0) => {
+    const p = new URLSearchParams({ type: "host", limit: String(limit), offset: String(offset) });
+    if (dsl) p.set("dsl", dsl);
+    if (companyID) p.set("company_id", companyID);
+    return get<{ count: number; total: number; hosts: AssetHostRow[] }>(`/assets?${p.toString()}`).then((r) => ({
+      hosts: r?.hosts ?? [],
+      total: r?.total ?? r?.count ?? 0,
+    }));
+  },
   searchAssets: (dsl: string, type = "", limit = 50, offset = 0) =>
     get<{ count: number; total: number; assets: Asset[] }>(
       `/assets?dsl=${encodeURIComponent(dsl)}${type ? `&type=${encodeURIComponent(type)}` : ""}&limit=${limit}&offset=${offset}`,
@@ -882,8 +922,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;

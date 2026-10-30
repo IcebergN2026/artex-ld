@@ -159,6 +159,9 @@ type FindingFilter struct {
 	// AssetScope 是资产树的节点 key(a:<id> / c:<id> / r:<domain> / __none__),
 	// 选中一个节点等于选中它的整棵子树。空 = 不按资产筛选。
 	AssetScope string
+	// AssetIDs selects findings linked to any of these exact assets. It is used
+	// by host rows that aggregate several assets without a synthetic tree node.
+	AssetIDs []int64
 
 	// 下面三个由 applyAssetScope 从 AssetScope 解析而来,调用方不用设置。
 	assetIDs  []int64 // 子树里所有资产 id

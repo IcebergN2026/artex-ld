@@ -35,6 +35,7 @@ type TaskDTO struct {
 	Name               string             `json:"name"` // 可选任务名称;空=未命名
 	CategoryID         *int64             `json:"category_id,omitempty"`
 	CategoryName       string             `json:"category_name,omitempty"`
+	CategoryNKey       string             `json:"category_nkey,omitempty"`
 	Pinned             bool               `json:"pinned"`
 	PinnedAt           string             `json:"pinned_at,omitempty"`
 	Description        string             `json:"description"`
@@ -118,6 +119,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		Name:               lifecycle.Name,
 		CategoryID:         lifecycle.CategoryID,
 		CategoryName:       lifecycle.CategoryName,
+		CategoryNKey:       lifecycle.CategoryNKey,
 		Pinned:             lifecycle.PinnedAt > 0,
 		PinnedAt:           completedRFC(lifecycle.PinnedAt),
 		Description:        t.Description,
@@ -578,7 +580,7 @@ func agentDTO(a *db.Agent) AgentDTO {
 		WebSearch:          a.WebSearch,
 		InteractiveShell:   a.InteractiveShell,
 		LLMProfileID:       a.LLMProfileID,
-		ExecutorKey:         a.ExecutorKey,
+		ExecutorKey:        a.ExecutorKey,
 		TriggerRunMode:     a.TriggerRunMode,
 		TriggerMergeMode:   a.TriggerMergeMode,
 		TriggerMaxParallel: a.TriggerMaxParallel,

@@ -31,10 +31,11 @@ type TaskCategory struct {
 	NKey      string `json:"-"`
 	TaskCount int    `json:"task_count"`
 	// 【二开·P-REVIEW·D12】分类预设包（m04039）：建任务选中本分类时带出三默认（快照进任务，人可再改）
-	DefaultReviewEnabled     bool      `json:"default_review_enabled"`
-	DefaultPlannerTemplateID int64     `json:"default_planner_template_id"`
-	AssetMode                string    `json:"asset_mode"`
-	DefaultDescription       string    `json:"default_description"`
+	DefaultReviewEnabled     bool   `json:"default_review_enabled"`
+	DefaultPlannerTemplateID int64  `json:"default_planner_template_id"`
+	DefaultWorkerTemplateID  int64  `json:"default_worker_template_id"`
+	AssetMode                string `json:"asset_mode"`
+	DefaultDescription       string `json:"default_description"`
 	// 【二开·P-SCENARIO·MERGE】种子意图预设（m03167 场景并入分类）：建任务带出 seed_first_intent/pre_agent 默认
 	SeedFirstIntent bool      `json:"seed_first_intent"`
 	SeedExecutor    string    `json:"seed_executor"` // ''=默认 worker；否则=自定义 agent 的 executor_key
@@ -44,13 +45,13 @@ type TaskCategory struct {
 
 const taskCategoryCols = `category.id, category.name, category.nkey,
        count(task.id) FILTER (WHERE task.deleted_at IS NULL),
-       category.default_review_enabled, category.default_planner_template_id, category.asset_mode,
+       category.default_review_enabled, category.default_planner_template_id, default_worker_template_id, category.asset_mode,
        category.default_description, category.seed_first_intent, category.seed_executor,
        category.created_at, category.updated_at` // 【二开·P-REVIEW·D12】加预设三列；【P-SCENARIO·MERGE】加种子两列
 
 func scanTaskCategory(row interface{ Scan(...any) error }) (TaskCategory, error) {
 	var category TaskCategory
-	err := row.Scan(&category.ID, &category.Name, &category.NKey, &category.TaskCount, &category.DefaultReviewEnabled, &category.DefaultPlannerTemplateID, &category.AssetMode, &category.DefaultDescription, &category.SeedFirstIntent, &category.SeedExecutor, &category.CreatedAt, &category.UpdatedAt)
+	err := row.Scan(&category.ID, &category.Name, &category.NKey, &category.TaskCount, &category.DefaultReviewEnabled, &category.DefaultPlannerTemplateID, &category.DefaultWorkerTemplateID, &category.AssetMode, &category.DefaultDescription, &category.SeedFirstIntent, &category.SeedExecutor, &category.CreatedAt, &category.UpdatedAt)
 	return category, err
 }
 
@@ -82,7 +83,7 @@ WITH inserted AS (
     ON CONFLICT (nkey) DO NOTHING
     RETURNING *
 )
-SELECT inserted.id, inserted.name, inserted.nkey, 0, inserted.default_review_enabled, inserted.default_planner_template_id, inserted.asset_mode, inserted.default_description, inserted.seed_first_intent, inserted.seed_executor, inserted.created_at, inserted.updated_at
+SELECT inserted.id, inserted.name, inserted.nkey, 0, inserted.default_review_enabled, inserted.default_planner_template_id, default_worker_template_id, inserted.asset_mode, inserted.default_description, inserted.seed_first_intent, inserted.seed_executor, inserted.created_at, inserted.updated_at
 FROM inserted`, name, nkey))
 	if err == sql.ErrNoRows {
 		return nil, ErrTaskCategoryNameConflict
@@ -117,16 +118,17 @@ ORDER BY category.name, category.id`)
 
 // UpdateTaskCategoryPresets 部分更新分类预设包（nil=不动）。【二开·P-REVIEW·D12】
 // 【二开·P-SCENARIO·MERGE】加种子意图两参（m03167 场景并入分类）。
-func (d *DB) UpdateTaskCategoryPresets(id int64, reviewEnabled *bool, plannerTemplateID *int64, assetMode *string, defaultDescription *string, seedFirstIntent *bool, seedExecutor *string) (*TaskCategory, error) {
+func (d *DB) UpdateTaskCategoryPresets(id int64, reviewEnabled *bool, plannerTemplateID *int64, workerTemplateID *int64, assetMode *string, defaultDescription *string, seedFirstIntent *bool, seedExecutor *string) (*TaskCategory, error) {
 	res, err := d.Exec(`UPDATE task_categories SET
 	default_review_enabled = CASE WHEN $2::boolean THEN $3 ELSE default_review_enabled END,
 	default_planner_template_id = CASE WHEN $4::boolean THEN $5 ELSE default_planner_template_id END,
-	asset_mode = CASE WHEN $6::boolean THEN $7 ELSE asset_mode END,
-	default_description = CASE WHEN $8::boolean THEN $9 ELSE default_description END,
-	seed_first_intent = CASE WHEN $10::boolean THEN $11 ELSE seed_first_intent END,
-	seed_executor = CASE WHEN $12::boolean THEN $13 ELSE seed_executor END,
+	default_worker_template_id = CASE WHEN $6::boolean THEN $7 ELSE default_worker_template_id END,
+	asset_mode = CASE WHEN $8::boolean THEN $9 ELSE asset_mode END,
+	default_description = CASE WHEN $10::boolean THEN $11 ELSE default_description END,
+	seed_first_intent = CASE WHEN $12::boolean THEN $13 ELSE seed_first_intent END,
+	seed_executor = CASE WHEN $14::boolean THEN $15 ELSE seed_executor END,
 	updated_at = now()
-WHERE id=$1`, id, reviewEnabled != nil, reviewEnabled, plannerTemplateID != nil, plannerTemplateID, assetMode != nil, assetMode, defaultDescription != nil, defaultDescription, seedFirstIntent != nil, seedFirstIntent, seedExecutor != nil, seedExecutor)
+WHERE id=$1`, id, reviewEnabled != nil, reviewEnabled, plannerTemplateID != nil, plannerTemplateID, workerTemplateID != nil, workerTemplateID, assetMode != nil, assetMode, defaultDescription != nil, defaultDescription, seedFirstIntent != nil, seedFirstIntent, seedExecutor != nil, seedExecutor)
 	if err != nil {
 		return nil, err
 	}
@@ -175,13 +177,21 @@ func (d *DB) RenameTaskCategory(id int64, name string) (*TaskCategory, error) {
 	if err != nil {
 		return nil, err
 	}
+	current, err := d.GetTaskCategory(id)
+	if err != nil {
+		return nil, err
+	}
+	// 内网拓扑等场景能力以 nkey 为稳定标识；显示名可改，内网场景键不可随重命名漂移。
+	if current.NKey == "内网渗透" {
+		nkey = current.NKey
+	}
 	category, err := scanTaskCategory(d.QueryRow(`
 WITH updated AS (
     UPDATE task_categories SET name=$2, nkey=$3 WHERE id=$1 RETURNING *
 )
 SELECT updated.id, updated.name, updated.nkey,
        (SELECT count(*) FROM tasks WHERE category_id=updated.id AND deleted_at IS NULL),
-       updated.default_review_enabled, updated.default_planner_template_id, updated.asset_mode,
+       updated.default_review_enabled, updated.default_planner_template_id, default_worker_template_id, updated.asset_mode,
        updated.default_description, updated.seed_first_intent, updated.seed_executor,
        updated.created_at, updated.updated_at
 FROM updated`, id, name, nkey))
@@ -199,13 +209,13 @@ FROM updated`, id, name, nkey))
 
 // SeedTaskCategoryPresetIfEmpty 幂等首插带预设包的分类（内置五领域场景，m03167 场景并入分类）。
 // ON CONFLICT (nkey) DO NOTHING：用户已有同名分类时不覆盖其预设。
-func (d *DB) SeedTaskCategoryPresetIfEmpty(name string, reviewEnabled bool, plannerTemplateID int64, seedFirstIntent bool, seedExecutor string) (bool, error) {
+func (d *DB) SeedTaskCategoryPresetIfEmpty(name string, reviewEnabled bool, plannerTemplateID, workerTemplateID int64, seedFirstIntent bool, seedExecutor string) (bool, error) {
 	name, nkey, err := normalizeTaskCategoryName(name)
 	if err != nil {
 		return false, err
 	}
-	res, err := d.Exec(`INSERT INTO task_categories(name, nkey, default_review_enabled, default_planner_template_id, seed_first_intent, seed_executor)
-VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (nkey) DO NOTHING`, name, nkey, reviewEnabled, plannerTemplateID, seedFirstIntent, seedExecutor)
+	res, err := d.Exec(`INSERT INTO task_categories(name, nkey, default_review_enabled, default_planner_template_id, default_worker_template_id, seed_first_intent, seed_executor)
+VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (nkey) DO NOTHING`, name, nkey, reviewEnabled, plannerTemplateID, workerTemplateID, seedFirstIntent, seedExecutor)
 	if err != nil {
 		return false, err
 	}
@@ -253,7 +263,7 @@ WITH selected AS (
 )
 SELECT selected.id, selected.name, selected.nkey,
        (SELECT count(*) FROM tasks WHERE category_id=selected.id AND deleted_at IS NULL),
-       selected.default_review_enabled, selected.default_planner_template_id, selected.asset_mode,
+       selected.default_review_enabled, selected.default_planner_template_id, default_worker_template_id, selected.asset_mode,
        selected.default_description, selected.seed_first_intent, selected.seed_executor,
        selected.created_at, selected.updated_at
 FROM selected, updated`, taskID, *categoryID))

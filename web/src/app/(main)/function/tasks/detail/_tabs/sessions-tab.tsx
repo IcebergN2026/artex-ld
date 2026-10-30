@@ -1797,12 +1797,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           side={side}
           label={active.role === "worker" ? `Worker #${active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
         >
-          <div className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card">
             {/* 【二开·P-INTENT·U3】起 —— 审核会话内容区整体由 ReviewPanel 接管（消息流+确认卡+composer 全在面板内） */}
             {isReview ? (
               <ReviewPanel taskId={taskId} />
             ) : (
-            <>
+            <div className="flex min-h-0 min-w-0 flex-col">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b px-3 py-2 sm:px-4 sm:py-2.5">
               {(() => {
                 const isWorker = active.role === "worker";
@@ -2167,7 +2167,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 />
               </div>
             )}
-            </>
+            </div>
             )}
             {/* 【二开·P-INTENT·U3】止 */}
           </div>

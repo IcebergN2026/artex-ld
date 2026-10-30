@@ -15,6 +15,7 @@ type Task struct {
 	Name          string     `json:"name"` // 可选任务名称;空=未命名
 	CategoryID    *int64     `json:"category_id,omitempty"`
 	CategoryName  string     `json:"category_name,omitempty"`
+	CategoryNKey  string     `json:"category_nkey,omitempty"`
 	Pinned        bool       `json:"pinned"`
 	PinnedAt      *time.Time `json:"pinned_at,omitempty"`
 	Description   string     `json:"description"`
@@ -53,6 +54,8 @@ type Task struct {
 	// 【二开·P-TPL·D2】起 —— tasks 两新列（planner 提示词快照 + 任务级 worker 池大小）
 	// PlannerPromptOverride 是 planner 提示词的任务级快照（建任务时由模板/手填灌入，之后与模板库脱钩；空=走全局/默认链）。
 	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"`
+	// WorkerPromptOverride 是 Worker 提示词任务级快照；空值走全局 Agent/默认模板链。
+	WorkerPromptOverride string `json:"worker_prompt_override,omitempty"`
 	// WorkerCount 任务级 worker 池大小：0=跟随全局并发，1~16=本任务专属 worker 数。
 	WorkerCount int `json:"worker_count"`
 	// ReviewAuto 任务级自动审核开关（01 册 S5 自动处置分支）：true=预审轮自动放行/驳回/留人；false=人工面板处置。
@@ -177,12 +180,20 @@ type TaskCreateOptions struct {
 	PlannerPrompt string
 	// PlannerTemplateID 仅选模板 id：建任务时取正文试渲染后【快照】进 PlannerPromptOverride（03 册 S13）。
 	PlannerTemplateID int64
+	// WorkerPrompt 是 Worker 提示词全文快照，优先于 WorkerTemplateID。
+	WorkerPrompt string
+	// WorkerTemplateID 仅选模板 id；服务端渲染后快照进 WorkerPrompt。
+	WorkerTemplateID int64
 	// WorkerCount 0=跟随全局；1~16=任务级 worker 池。
 	WorkerCount int
 	// ReviewEnabled 任务级意图审核总开关（m03934/D2c）；false=默认关。
 	ReviewEnabled bool
 	// AssetMode 资产图模式标签（m04039/D12）；空=建任务时从分类带出再兜底 pentest。
 	AssetMode string
+	// DispatchAssetKeys 是内网子任务实际目标的规范化主机键，不是继承资产。
+	// 与任务创建在同一事务写入，唯一键阻止跨父任务/并发的同资产重复派发。
+	DispatchAssetKeys []string
+	DispatchFindingID int64
 	// 【二开·P-INTENT·D7】止
 }
 
@@ -226,12 +237,12 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	}
 	opts.PlanHeartbeatSeconds = normalizeHeartbeat(opts.PlanHeartbeatSeconds)
 	coverageEnabled := opts.CoverageEnabled == nil || *opts.CoverageEnabled
-	var categoryName string
+	var categoryName, categoryNKey string
 	if opts.CategoryID != nil {
 		if *opts.CategoryID <= 0 {
 			return nil, fmt.Errorf("%w: category id must be positive", ErrTaskCategoryInvalid)
 		}
-		if err := tx.QueryRow(`SELECT name FROM task_categories WHERE id=$1`, *opts.CategoryID).Scan(&categoryName); err != nil {
+		if err := tx.QueryRow(`SELECT name, nkey FROM task_categories WHERE id=$1`, *opts.CategoryID).Scan(&categoryName, &categoryNKey); err != nil {
 			if err == sql.ErrNoRows {
 				return nil, ErrTaskCategoryNotFound
 			}
@@ -244,7 +255,7 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		active = &id
 	}
 	t := &Task{
-		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
+		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName, CategoryNKey: categoryNKey,
 		Description: description, Goal: goal, ExplorationID: expID,
 		LLMProfileID: active, ActiveLLMProfileID: active,
 		LLMProfileIDs:  append([]int64(nil), opts.LLMProfileIDs...),
@@ -254,14 +265,21 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CoverageEnabled: coverageEnabled,
 		// 【二开·P-INTENT·D7】透传：prompt 快照优先于模板 id（K22）；WorkerCount 原样落列
 		PlannerPromptOverride: opts.PlannerPrompt,
+		WorkerPromptOverride:  opts.WorkerPrompt,
 		WorkerCount:           opts.WorkerCount,
 		ReviewEnabled:         opts.ReviewEnabled,
 		AssetMode:             opts.AssetMode,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_count, review_enabled, asset_mode)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.PlannerPrompt, opts.WorkerCount, opts.ReviewEnabled, opts.AssetMode).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_prompt_override, worker_count, review_enabled, asset_mode)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.PlannerPrompt, opts.WorkerPrompt, opts.WorkerCount, opts.ReviewEnabled, opts.AssetMode).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+		return nil, err
+	}
+	if len(opts.DispatchAssetKeys) > 0 && categoryNKey != "内网渗透" {
+		return nil, fmt.Errorf("dispatch asset targets require the internal-pentest category")
+	}
+	if err := insertTaskDispatchTargets(tx, t.ID, opts.DispatchFindingID, opts.DispatchAssetKeys); err != nil {
 		return nil, err
 	}
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
@@ -377,11 +395,12 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), COALESCE(worker_count,0), COALESCE(review_auto,false), COALESCE(review_enabled,false), COALESCE(asset_mode,'pentest')` // 【二开·P-TPL·D2】尾部追加两列【二开·P-REVIEW·D2b】再追加 review_auto【二开·P-REVIEW·D2c】再追加 review_enabled【二开·P-REVIEW·D12】再追加 asset_mode
+COALESCE((SELECT category.nkey FROM task_categories category WHERE category.id=tasks.category_id),''),
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), COALESCE(worker_prompt_override,''), COALESCE(worker_count,0), COALESCE(review_auto,false), COALESCE(review_enabled,false), COALESCE(asset_mode,'pentest')` // 【二开·P-TPL·D2】尾部追加两列【二开·P-REVIEW·D2b】再追加 review_auto【二开·P-REVIEW·D2c】再追加 review_enabled【二开·P-REVIEW·D12】再追加 asset_mode
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.WorkerCount, &t.ReviewAuto, &t.ReviewEnabled, &t.AssetMode); err != nil { // 【二开·P-TPL·D2】尾部追加两个 Scan 目标【二开·P-REVIEW·D2b】再追加 ReviewAuto【二开·P-REVIEW·D2c】再追加 ReviewEnabled【二开·P-REVIEW·D12】再追加 AssetMode
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryNKey, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.WorkerPromptOverride, &t.WorkerCount, &t.ReviewAuto, &t.ReviewEnabled, &t.AssetMode); err != nil { // 【二开·P-TPL·D2】尾部追加两个 Scan 目标【二开·P-REVIEW·D2b】再追加 ReviewAuto【二开·P-REVIEW·D2c】再追加 ReviewEnabled【二开·P-REVIEW·D12】再追加 AssetMode
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -732,7 +751,7 @@ func (d *DB) TasksWithProposed() (map[int64]int, error) {
 JOIN exploration_nodes n ON n.exploration_id=t.exploration_id
 WHERE t.deleted_at IS NULL
   AND t.review_enabled
-  AND `+proposedPendingCols("n")+`
+  AND ` + proposedPendingCols("n") + `
 GROUP BY t.id`)
 	if err != nil {
 		return nil, err

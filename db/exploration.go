@@ -185,6 +185,12 @@ func (d *DB) Exploration(id int64) *ExplorationStore { return &ExplorationStore{
 
 func (s *ExplorationStore) ID() int64 { return s.expID }
 
+// RecordTopologyRelation keeps the agent tool on the same validation and
+// persistence path as the topology API without exposing the store's DB handle.
+func (s *ExplorationStore) RecordTopologyRelation(taskID int64, override TaskTopologyOverride, actor string) (*TaskTopology, error) {
+	return s.db.RecordTaskTopologyRelation(taskID, override, actor)
+}
+
 // Root returns the exploration's description and goal.
 func (s *ExplorationStore) Root() (description, goal string, err error) {
 	var d sql.NullString

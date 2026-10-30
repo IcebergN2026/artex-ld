@@ -205,15 +205,20 @@ func seedPrompts(pg *db.DB) {
 	// 【二开·P-TPL·D11】起 —— 内置默认规划模板 seed：首插入 only，与上面 agent_prompts 的
 	// SeedPromptIfEmpty 同区同模式；正文单源=agent/planner.go plannerDefaultTmpl
 	// （BuiltinPromptSeeds()["planner"] 透出），db 层不复制、不反向 import agent。
-	// 【二开·P-LOG·S11】INFO 仅首插记一条（排障：模板库里"内置默认"是哪次启动进来的）。
+	// 【二开·P-LOG·S11】INFO 仅首插记一条（排障：模板库里"外网渗透"是哪次启动进来的）。
 	if inserted, err := pg.SeedPlannerTemplateIfEmpty(db.PlannerTemplateBuiltinName, db.PlannerTemplateBuiltinNKey, agent.BuiltinPromptSeeds()["planner"], true); err != nil {
 		log.Printf("[prompts] seed planner_templates 内置默认模板失败: %v", err)
 	} else if inserted {
-		log.Printf("[tpl] planner 模板首插：内置默认（nkey=%s）", db.PlannerTemplateBuiltinNKey)
+		log.Printf("[tpl] planner 模板首插：外网渗透（nkey=%s）", db.PlannerTemplateBuiltinNKey)
+	}
+	if inserted, err := pg.SeedWorkerTemplateIfEmpty(db.WorkerTemplateBuiltinName, db.WorkerTemplateBuiltinNKey, agent.BuiltinPromptSeeds()["worker"], true); err != nil {
+		log.Printf("[prompts] seed worker_templates 外网渗透默认模板失败: %v", err)
+	} else if inserted {
+		log.Printf("[tpl] worker 模板首插：外网渗透（nkey=%s）", db.WorkerTemplateBuiltinNKey)
 	}
 	// 【二开·P-TPL·D11】止
 	// 【二开·P-TPL·DOMAIN】起 —— 五领域 planner 模板 seed（内网渗透/权限提升/漏洞利用/漏洞挖掘/代码审计）：
-	// builtin=true、is_default=false（默认仍是「内置默认」）；ON CONFLICT (nkey) DO NOTHING 幂等，
+	// builtin=true、is_default=false（默认仍是「外网渗透」）；ON CONFLICT (nkey) DO NOTHING 幂等，
 	// 同名自定义模板已存在时静默跳过、不覆盖用户改动。正文单源=agent/planner_domain_templates.go。
 	for name, body := range agent.PlannerDomainSeeds() {
 		if inserted, err := pg.SeedPlannerTemplateIfEmpty(name, name, body, false); err != nil {
@@ -222,9 +227,27 @@ func seedPrompts(pg *db.DB) {
 			log.Printf("[tpl] planner 领域模板首插：%s", name)
 		}
 	}
+	// Worker 与 Planner 使用同一组场景 nkey；正文保存完整 Worker 提示词，
+	// 首插后不覆盖管理员对内置场景模板的修改。
+	for _, seed := range agent.WorkerDomainSeeds() {
+		if inserted, err := pg.SeedWorkerTemplateIfEmpty(seed.NKey, seed.NKey, seed.Body, false); err != nil {
+			log.Printf("[prompts] seed worker 场景模板 %s 失败: %v", seed.NKey, err)
+		} else if inserted {
+			log.Printf("[tpl] worker 场景模板首插：%s", seed.NKey)
+		}
+	}
 	// 【二开·P-TPL·DOMAIN】止
-	// 【二开·P-SCENARIO·MERGE】起 —— 内置五领域场景 seed 为「分类预设包」（m03167 场景并入 task_categories）：
-	// 模板按 nkey 解析 id（领域模板 seed 就在上方，天然有序）；攻击面三类默认开审核，
+	if err := upgradeScopeAuthorizationPrompts(pg); err != nil {
+		log.Printf("[prompts] 授权范围提示词迁移失败: %v", err)
+	}
+	if err := upgradeWorkerDeliveryFacts(pg); err != nil {
+		log.Printf("[prompts] Worker 投放事实提示词迁移失败: %v", err)
+	}
+	if err := upgradeInternalWorkerTopologyPrompt(pg); err != nil {
+		log.Printf("[prompts] 内网 Worker 拓扑提示词迁移失败: %v", err)
+	}
+	// 【二开·P-SCENARIO·MERGE】起 —— 外网渗透 + 内置五领域场景 seed 为「分类预设包」：
+	// 模板按 nkey 解析 id（模板 seed 就在上方，天然有序）；外网及攻击面三类默认开审核，
 	// 只读两类（漏洞挖掘/代码审计）默认关；种子意图默认关。ON CONFLICT (nkey) DO NOTHING 幂等：
 	// 用户已有同名分类或改过预设时重启不覆盖。
 	catScenarios := []struct {
@@ -232,6 +255,7 @@ func seedPrompts(pg *db.DB) {
 		tplKey string
 		review bool
 	}{
+		{"外网渗透", "外网渗透", true},
 		{"内网渗透", "内网渗透", true},
 		{"权限提升", "权限提升", true},
 		{"漏洞利用", "漏洞利用", true},
@@ -239,11 +263,14 @@ func seedPrompts(pg *db.DB) {
 		{"代码审计", "代码审计", false},
 	}
 	for _, sc := range catScenarios {
-		var tplID int64
+		var tplID, workerTplID int64
 		if tpl, err := pg.GetPlannerTemplateByNKey(sc.tplKey); err == nil && tpl != nil {
 			tplID = tpl.ID
 		}
-		if inserted, err := pg.SeedTaskCategoryPresetIfEmpty(sc.name, sc.review, tplID, false, ""); err != nil {
+		if tpl, err := pg.GetWorkerTemplateByNKey(sc.tplKey); err == nil && tpl != nil {
+			workerTplID = tpl.ID
+		}
+		if inserted, err := pg.SeedTaskCategoryPresetIfEmpty(sc.name, sc.review, tplID, workerTplID, false, ""); err != nil {
 			log.Printf("[prompts] seed 场景分类 %s 失败: %v", sc.name, err)
 		} else if inserted {
 			log.Printf("[tpl] 场景分类首插：%s（review=%v）", sc.name, sc.review)

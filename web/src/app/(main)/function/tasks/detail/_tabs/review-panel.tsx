@@ -11,6 +11,7 @@ import {
 	Loader2Icon,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { InterceptPending, ReviewMessage, ReviewProposedIntent as ProposedIntent } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,7 @@ function fmtTime(unixSec: number): string {
 export function ReviewPanel({ taskId }: { taskId: string }) {
 	const [messages, setMessages] = useState<ReviewMessage[]>([]);
 	const [proposed, setProposed] = useState<ProposedIntent[]>([]);
+	const [selectedProposedID, setSelectedProposedID] = useState<number | null>(null);
 	const [pending, setPending] = useState<InterceptPending[]>([]);
 	const [pendingHasMore, setPendingHasMore] = useState(false);
 	const [input, setInput] = useState("");
@@ -83,6 +85,7 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 	useEffect(() => {
 		setMessages([]);
 		setProposed([]);
+		setSelectedProposedID(null);
 		setPending([]);
 		setPendingHasMore(false);
 		setInput("");
@@ -240,6 +243,9 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 		}
 	};
 
+	const selectedProposed = proposed.find((it) => it.id === selectedProposedID) ?? proposed[0] ?? null;
+	const selectedProposedIndex = selectedProposed ? proposed.findIndex((it) => it.id === selectedProposed.id) : -1;
+
 	// 未开启审核的任务：常驻空态（所有 hooks 已执行完毕，此处早退安全）。
 	if (taskReviewEnabled === false) {
 		return (
@@ -254,11 +260,29 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 		<div className="flex min-h-0 flex-1 flex-col">
 			{/* ── 工具行：待审计数/模式说明 + 自动处置开关（与其他会话窗一致的素面风格，无图标） ── */}
 			<div className="flex items-center justify-between gap-3 border-b px-4 py-2">
-				<div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+				<div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
 					{proposed.length > 0 && (
-						<Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
-							待审 {proposed.length}
-						</Badge>
+						<>
+							<Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-400">
+								待审 {proposed.length}
+							</Badge>
+							<div className="flex flex-wrap items-center gap-1" role="group" aria-label="选择待审意图">
+								{proposed.map((it, index) => (
+									<Button
+										key={it.id}
+										type="button"
+										size="sm"
+										variant={it.id === selectedProposed?.id ? "default" : "outline"}
+										className="h-6 min-w-6 px-1.5 text-[11px]"
+										aria-label={`审核第 ${index + 1} 项，意图 #${it.id}`}
+										aria-pressed={it.id === selectedProposed?.id}
+										onClick={() => setSelectedProposedID(it.id)}
+									>
+										{index + 1}
+									</Button>
+								))}
+							</div>
+						</>
 					)}
 					{reviewAuto && (
 						<Badge variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400">
@@ -272,17 +296,17 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 				</div>
 			</div>
 
-			{/* ── 待审意图卡片区（置顶独立区；卡片用原版虚线琥珀风格） ── */}
+			{/* ── 当前待审意图卡片区：用上方编号切换，不再纵向堆叠多张卡片。 ── */}
 			{proposed.length > 0 && (
 				<div className="border-b">
 					<div className="px-4 pt-2.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-						待审意图（{proposed.length}）
+						待审意图（{selectedProposedIndex + 1} / {proposed.length}）
 						<span className="ml-2 font-normal text-muted-foreground">批准后按预选执行器立即派发</span>
 					</div>
-					<div className="max-h-64 space-y-2 overflow-y-auto px-4 py-2.5">
-						{proposed.map((it) => (
-							<div key={it.id} className="rounded-lg border border-dashed border-amber-500 bg-amber-50 px-3.5 py-2.5 dark:bg-amber-950/20">
-								<div className="flex items-center gap-2">
+					<div className="px-4 py-2.5">
+						{proposed.filter((it) => it.id === selectedProposed?.id).map((it) => (
+							<div key={it.id} data-testid="review-proposed-card" className="rounded-lg border border-dashed border-amber-500 bg-amber-50 px-3.5 py-2.5 dark:bg-amber-950/20">
+								<div className="flex flex-wrap items-center gap-2">
 									<span className="font-mono text-sm font-bold text-blue-600 dark:text-blue-400">#{it.id}</span>
 									<Badge className="bg-amber-600 text-white">pri={it.priority ?? "?"}</Badge>
 									<Badge variant="destructive" className="animate-pulse">待审</Badge>

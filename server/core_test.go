@@ -23,6 +23,11 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	defer m.Close()
+	// Goal seeding must not depend on an enabled test LLM left by another package.
+	// The fallback single-goal path is the behavior under test here.
+	if _, err := m.pg.Exec(`UPDATE llm_profiles SET is_default=false, pool_exclude=true`); err != nil {
+		t.Fatalf("disable test LLM profiles: %v", err)
+	}
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()

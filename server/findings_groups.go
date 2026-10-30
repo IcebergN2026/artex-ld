@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -28,6 +29,12 @@ func findingPaginationParam(raw string, fallback, upperBound int) int {
 // findingFilterFromQuery builds the shared findings filter from a request's
 // query string. 列表 / 分组 / 资产树 / 导出走同一份解析,新增筛选项只改这里。
 func findingFilterFromQuery(q url.Values) db.FindingFilter {
+	var assetIDs []int64
+	for _, raw := range strings.Split(q.Get("asset_ids"), ",") {
+		if id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil && id > 0 && len(assetIDs) < 1000 {
+			assetIDs = append(assetIDs, id)
+		}
+	}
 	return db.FindingFilter{
 		Severity:  normFilter(q.Get("severity")),
 		Status:    normFilter(q.Get("status")),
@@ -37,6 +44,7 @@ func findingFilterFromQuery(q url.Values) db.FindingFilter {
 		Query:      q.Get("q"),
 		Sort:       q.Get("sort"),
 		AssetScope: strings.TrimSpace(q.Get("asset_scope")),
+		AssetIDs:   assetIDs,
 	}
 }
 

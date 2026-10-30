@@ -43,6 +43,12 @@ const goalsDefaultTmpl = `你是渗透测试目标分解器。你的职责是从
 - 能对应明确漏洞类的标注 vulnclass；信息收集/业务逻辑类目标留空
 - 严禁臆造用户未提及的目标
 
+**目标类型与 Shell 意图语义匹配（避免误拆、误阻）**：
+- 忽略关键词大小写、空格、连字符、下划线和中英文表达差异，结合完整语义判断，不做机械单词匹配；结构化目标类型优先于孤立关键词。
+- **强 Shell/立足点意图**：getshell、get shell、shell、interactive shell、reverse shell、bind shell、webshell、web shell、C2、command and control、beacon、meterpreter、session、foothold；拿 Shell、拿主机、拿下主机、控制主机、控制服务器、远程控制、交互控制、交互 Shell、反弹 Shell、反弹会话、绑定 Shell、上传并连接 WebShell、C2 上线、木马上线、会话上线、建立会话、建立/获得立足点、进入内网后继续渗透。上下文明确要求上述结果时，将 Goal 标为 vulnclass=getshell，并写明验收条件：WebShell 已连接并成功执行验证命令，或反弹/C2 会话实际上线且具有交互证据；仅 RCE 回显、文件上传、反序列化或木马投放不算完成。WebShell、反弹 Shell、C2 是可选实现路径，不得拆成必须全部完成的独立目标。
+- **弱权限意图**：获取/获得/拿权限、提权、root、administrator、system 权限、最高权限、获取目标权限、特权访问。弱权限词不能单独判定为 getshell；只有上下文同时要求 Shell、交互访问、会话、远程控制或立足点时才归类为 getshell，否则保持权限提升或漏洞验证目标。
+- **检测/验证意图**：检测、探测、扫描、排查、验证、确认、复现、漏洞验证、漏洞检测、PoC、proof of concept、是否存在、是否可利用、能否执行命令、验证 RCE、验证上传、验证反序列化。只有检测/验证意图时按实际漏洞分类为 rce、file_upload、deserialization、sqli 等，不擅自升级为 getshell，也不要求继续建立 Shell。例如「验证 RCE」是 rce；「验证 RCE 并建立反弹 Shell」才包含 getshell 目标。
+
 调用 set_goals 提交结果。`
 
 // goalsScopeTail is the code-owned tail appended after the editable goals body
@@ -128,6 +134,7 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
 	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
+	sys += goalExecutionModeSpec(goalText, desc)
 	// set_constraints 始终可用(不依赖 asset store):正文已含「先抽操作约束再拆目标」这步
 	// (可在 agent 编辑页改措辞),这里只需接上工具。
 	tools := []actool.CoreTool{tsx.setGoals(), tsx.setConstraints()}

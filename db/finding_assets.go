@@ -619,7 +619,7 @@ func truncateFindingAssetTree(tree *FindingAssetTree, maxNodes int) {
 // 一个节点等于选中它的整棵子树,所以要先把树建出来再收集子孙。
 func (d *DB) applyAssetScope(f FindingFilter) (FindingFilter, error) {
 	scope := strings.TrimSpace(f.AssetScope)
-	f.assetIDs, f.assetNone, f.assetMiss = nil, false, false
+	f.assetIDs, f.assetNone, f.assetMiss = f.AssetIDs, false, false
 	if scope == "" {
 		return f, nil
 	}

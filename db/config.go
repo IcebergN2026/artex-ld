@@ -1148,8 +1148,8 @@ const (
 	MaxPlannerTemplateBodyBytes = 32 << 10 // 32KB 上限（按字节计，含中文）；S11 试渲染同口径
 	// PlannerTemplateBuiltinName/NKey 内置默认模板的固定身份——builtin 行名称只读，
 	// nkey 恒定，seed 才能用 ON CONFLICT (nkey) DO NOTHING 幂等（改名会换 nkey 导致重复 seed）。
-	PlannerTemplateBuiltinName = "内置默认"
-	PlannerTemplateBuiltinNKey = "内置默认" // taskTemplateNKey 对中文是恒等映射，直接写死
+	PlannerTemplateBuiltinName = ExternalPentestTemplateName
+	PlannerTemplateBuiltinNKey = ExternalPentestTemplateName
 )
 
 var (
@@ -1313,20 +1313,21 @@ func (d *DB) UpdatePlannerTemplate(id int64, in PlannerTemplateInput) (*PlannerT
 }
 
 // PatchPlannerTemplate 单 UPDATE 原子合并所给字段（并发 disjoint PATCH 不丢改动）。
-// builtin 行整体只读（名称也不许改——改名会换 nkey，破坏 seed 幂等身份）。
+// builtin 行允许编辑正文；名称/nkey 保持 seed 和场景引用身份，内置行仍禁止删除。
 func (d *DB) PatchPlannerTemplate(id int64, patch PlannerTemplatePatch) (*PlannerTemplate, error) {
 	patch, nkey, err := normalizePlannerTemplatePatch(patch)
 	if err != nil {
 		return nil, err
 	}
 	var builtin bool
-	if err := d.QueryRow(`SELECT builtin FROM planner_templates WHERE id=$1`, id).Scan(&builtin); err != nil {
+	var existingName string
+	if err := d.QueryRow(`SELECT builtin,name FROM planner_templates WHERE id=$1`, id).Scan(&builtin, &existingName); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrPlannerTemplateNotFound
 		}
 		return nil, err
 	}
-	if builtin {
+	if builtin && patch.Name != nil && *patch.Name != existingName {
 		return nil, ErrPlannerTemplateBuiltin
 	}
 	t, err := scanPlannerTemplate(d.QueryRow(`UPDATE planner_templates
