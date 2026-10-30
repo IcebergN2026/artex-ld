@@ -46,6 +46,7 @@
 - Review 会话恢复原有上下布局，不再把审核操作框错误显示到 Planner、系统审计和普通 Worker 会话。
 - 待审队列由多卡片纵向滚动改为 `1、2、3…` 编号切换，一次只显示当前待审意图；保留通过、驳回、修订和 Review 对话。
 - 修复会话内容区 flex 高度和静态导出缓存问题，确保部署的前端资源与源码一致。
+- 内网拓扑在本版关闭入口与内容（`web/src/app/(main)/function/tasks/detail/page.tsx` 的 `topologyEnabled = false`）；拓扑组件、接口和数据表保留，待功能完善后再开启。
 
 ### MCP 与配置迁移
 
@@ -59,6 +60,7 @@
 - 恢复 `evidence/store.go`、`evidence/store_test.go` 和 `evidence/testmain_test.go`，解决源码仍引用 evidence 包但目录缺失导致的构建阻塞。
 - 明确前端静态构建使用 `NEXT_EXPORT=1`；清理旧 `.next/out` 后重建，避免旧 Review 分栏资源混入新部署包。
 - 修复漏洞派发提示词导入时的 PostgreSQL 角色环境问题，导入失败使用单文件事务回滚，成功后再重启验证。
+- 发布物合并为单一整合包 `artex-ld-0.1.2-full.tar.gz`：源码、预编译二进制、Agent / Tool / MCP 配置、部署文档一次分发；包内 `SHA256SUMS` 覆盖二进制与全部配置文件。
 
 ### 数据库与升级注意事项
 
