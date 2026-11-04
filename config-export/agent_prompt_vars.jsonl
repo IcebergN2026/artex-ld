@@ -1,0 +1,9 @@
+{"agent_key":"goals","var_name":"EngagementDescription","description":"任务描述（测试对象/背景）","example":"测试 example.com 站点","source":"exploration"}
+{"agent_key":"planner","var_name":"Goal","description":"任务总目标","example":"拿下 example.com 的管理员权限","source":"exploration"}
+{"agent_key":"planner","var_name":"AssetSummary","description":"资产计数/类型分布摘要(可选)","example":"domain:3 ip:5 site:2","source":"distilled"}
+{"agent_key":"mainagent","var_name":"Goal","description":"当前任务目标","example":"拿下 example.com 的管理员权限","source":"exploration"}
+{"agent_key":"mainagent","var_name":"AssetSummary","description":"开局态势摘要(可选)","example":"domain:3 ip:5","source":"distilled"}
+{"agent_key":"mainagent","var_name":"FindingsSummary","description":"已确认漏洞摘要(可选)","example":"high:1 medium:2","source":"distilled"}
+{"agent_key":"worker","var_name":"ProxyAddr","description":"记录代理地址(驱动 if 双文案)","example":"127.0.0.1:8080","source":"runtime"}
+{"agent_key":"worker","var_name":"WorkerName","description":"worker 自我标识(可选)","example":"worker-1","source":"runtime"}
+{"agent_key":"review","var_name":"Goal","description":"当前任务目标","example":"拿下 example.com 的管理员权限","source":"exploration"}

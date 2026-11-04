@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">artex</title>
+  <defs>
+    <linearGradient id="bg" x1="72" y1="48" x2="440" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="0.52" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#0891B2"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(403 101) rotate(135) scale(235)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A5F3FC" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#A5F3FC" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#glow)"/>
+  <rect x="22" y="22" width="468" height="468" rx="106" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="4"/>
+  <text x="250" y="326" text-anchor="middle" fill="#FFFFFF" font-family="Segoe UI, Arial, sans-serif" font-size="220" font-weight="700" letter-spacing="-12">LD</text>
+  <path d="M184 380H328" fill="none" stroke="#CFFAFE" stroke-width="10" stroke-linecap="round"/>
+</svg>

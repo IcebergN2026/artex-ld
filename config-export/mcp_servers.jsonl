@@ -1,0 +1,3 @@
+{"name":"ScopeSentry","transport":"http","command":"","args":[],"env":{"X-API-Key": ""},"url":null,"enabled":false,"insecure":false}
+{"name":"browser","transport":"stdio","command":"npx","args":["@playwright/mcp", "--headless"],"env":{},"url":null,"enabled":false,"insecure":false}
+{"name":"godzilla","transport":"sse","command":"","args":[],"env":{"Authorization": ""},"url":"http://127.0.0.1:9123/sse","enabled":true,"insecure":false}
