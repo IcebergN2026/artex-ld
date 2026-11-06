@@ -14,12 +14,12 @@
 ```bash
 # 1. 新建目录并下载 Release 部署包
 mkdir artex && cd artex
-wget https://github.com/IcebergN2026/artex-ld/releases/download/v0.1.3/artex-0.1.3-linux-amd64.deploy.tar.gz
+wget https://github.com/IcebergN2026/artex-ld/releases/download/0.1.4/artex-0.1.4-linux-amd64.deploy.tar.gz
 
 # 2. 解压并一键安装（自动注册 systemd 服务、初始化数据库）
-tar xzf artex-0.1.3-linux-amd64.deploy.tar.gz
+tar xzf artex-0.1.4-linux-amd64.deploy.tar.gz
 chmod +x install.sh
-sudo bash install.sh --server artex-0.1.3-linux-amd64.deploy.tar.gz
+sudo bash install.sh --server artex-0.1.4-linux-amd64.deploy.tar.gz
 ```
 
 ### 方式二：Docker Compose（从源码构建）
