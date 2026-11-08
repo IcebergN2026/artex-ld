@@ -71,9 +71,7 @@ func assetInputLabel(item assetInputItem) string {
 	return target
 }
 
-// =====================================================================
 // Unified asset insertion tools
-// =====================================================================
 
 // SetAssetStore wires the asset store and company store onto this ToolSet
 // so the insert_assets, add_company_scope, and list_assets tools are active.
@@ -438,7 +436,7 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 func (t *ToolSet) addTaskScope() actool.CoreTool {
 	return writeTool(
 		"add_task_scope",
-		"把资产加入【本任务】——用于资产测试覆盖度统计，不构成网络执行限制。\n"+
+		"把测试范围加入【本任务】——这是本任务的授权边界，也是资产测试覆盖度的分母。\n"+
 			"kind 支持：company(整个公司名下资产) / root_domain(整个根域，含所有子域) / subdomain(单个精确子域) / ip / cidr / icp / keyword。\n"+
 			"说明：worker 逐个碰到的主机会被系统【自动】加进范围(精确子域)；本工具用于【主动扩大】——把整个根域/整个公司纳入，或补充指定某子域/IP。\n"+
 			"value：company 传公司名或 id(公司须已存在)；root_domain/subdomain 传域名；ip/cidr 传 IP 或网段；icp/keyword 传备案号或企业关键词。\n"+
@@ -667,6 +665,12 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 	}
 }
 
+// CustomExecutorTools 在 Worker 工具底座上增加自定义执行器的查询与领取能力。
+// 默认 Worker 不注入这些工具，避免普通 Worker 绕过既有调度路径。
+func (t *ToolSet) CustomExecutorTools() []actool.CoreTool {
+	return append(t.WorkerTools(), t.listIntents(), t.claimExecutorIntent())
+}
+
 // MainAgentTools returns the human-interface tool set.
 func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 	return []actool.CoreTool{
@@ -698,7 +702,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 func (t *ToolSet) AllDomainTools() []actool.CoreTool {
 	seen := map[string]bool{}
 	var out []actool.CoreTool
-	all := append(append(t.MainAgentTools(), t.PlannerTools()...), t.WorkerTools()...)
+	all := append(append(append(t.MainAgentTools(), t.PlannerTools()...), t.WorkerTools()...), t.CustomExecutorTools()...)
 	for _, tool := range all {
 		if !seen[tool.Name()] {
 			seen[tool.Name()] = true

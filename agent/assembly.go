@@ -3,6 +3,7 @@
 //   - DeferredInfo / ToolAugment：声明延迟工具接线结构与服务端注入的工具增强钩子。
 //   - AugmentTools：在基础工具上叠加技能/MCP 工具，并套用 DB 工具表覆盖与 finding 工作流改写。
 //   - guardPanic / guardedTool.Call：把工具 handler 的 panic 降级为普通工具错误，避免拖垮进程。
+
 package agent
 
 import (

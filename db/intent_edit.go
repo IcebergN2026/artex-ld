@@ -4,9 +4,10 @@
 //   - UpdateIntent：可修订状态的原子补丁更新，版本 CAS + 产出锁 + 同事务审计。
 //   - SoftDeleteIntentAt：软删除意图（写删除原因）并返回原 summary 供通知。
 //   - int64Slice / eqInt64s / containsStr：payload 字段解析与切片比较的辅助函数。
+
 package db
 
-// ═══ ARTEX 二开 · 审核流 PR4 ═══
+// 【二开·审核流 PR4 意图修订/取消存储层】
 // update_intent / cancel_intent 的存储层（§5/§6/§9）：
 //   - UpdateIntent：可修订状态（open / rejected 驳回稿）的原子补丁更新，版本 CAS +
 //     产出锁 + 审核重送（rejected→pending）+ 同事务审计 activity，全在一个事务里。

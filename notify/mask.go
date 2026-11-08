@@ -4,6 +4,7 @@
 //   - PrepareConfigUpdate：更新配置时校验——改投递地址必须对凭据显式重填。
 //   - MergeConfig：合并更新，掩码值保留原值、空串清空、其余覆盖。
 //   - ErrDestinationChangedWithoutCredentials：改了地址但凭据未表态的错误。
+
 package notify
 
 import (

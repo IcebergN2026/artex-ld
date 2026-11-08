@@ -1,5 +1,8 @@
 // trace_cleaner.go：预置痕迹清理 Agent 的幂等种子。
 // Agent、提示词、工具绑定和显式派发触发器在同一事务中创建。
+// 主要函数/类型：
+//   - seedTraceCleanerAgent：按一次性 settings flag 在单事务中种入 cleaner agent 及其提示词/绑定/触发器。
+
 package server
 
 import (

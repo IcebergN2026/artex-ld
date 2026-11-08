@@ -4,7 +4,6 @@ package server
 // 覆盖人工审核 HTTP 面：approve（pending_executor 转正 + expected_version CAS）、
 // reject（退回修订三件套）、待审列表 DTO（content_version）、关闭审核守卫（409+数量）。
 // 需要 ARTEX_PG_DSN（无则 skip）。
-// 二开日期：2026-10-27
 
 import (
 	"encoding/json"

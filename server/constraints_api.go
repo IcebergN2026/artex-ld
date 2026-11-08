@@ -3,10 +3,10 @@
 //   - listConstraints / addConstraint / editConstraint / deleteConstraint：约束列表/新增/编辑/删除。
 //   - constraintInjectPlanner / constraintInjectWorker：约束是否注入 planner / worker prompt 的开关。
 //   - normalizeConstraintKind / constraintDTOs：约束类型归一 / DTO 转换。
+
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,8 +69,7 @@ func (s *Server) addConstraint(w http.ResponseWriter, r *http.Request) {
 		Text string `json:"text"`
 		Kind string `json:"kind"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, 400, "invalid JSON")
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	text := strings.TrimSpace(body.Text)
@@ -113,8 +112,7 @@ func (s *Server) editConstraint(w http.ResponseWriter, r *http.Request) {
 		Text string `json:"text"`
 		Kind string `json:"kind"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, 400, "invalid JSON")
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	text := strings.TrimSpace(body.Text)

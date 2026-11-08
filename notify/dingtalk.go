@@ -3,6 +3,7 @@
 //   - dingTalkChannel：渠道实现，Send 按单条/汇总渲染 actionCard 或 markdown 并投递。
 //   - dingTalkSignedURL：用 HMAC-SHA256 对 webhook 加签生成带时间戳的签名地址。
 //   - validateHTTPURL：校验 webhook 必须是 http/https 地址。
+
 package notify
 
 import (

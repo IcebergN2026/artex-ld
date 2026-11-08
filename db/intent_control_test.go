@@ -138,7 +138,7 @@ func TestCancelIntentPreservesTokenMeteringWithoutDoubleCount(t *testing.T) {
 	if err := store.SetIntentState(intentID, "paused"); err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := store.CancelIntent(intentID)
+	cleanup, err := store.CancelIntent(intentID, "paused")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestCancelIntentPreservesTokenMeteringWithoutDoubleCount(t *testing.T) {
 	if rollups != 3 || datedRollups != rollups {
 		t.Fatalf("token rollups=%d dated=%d, want three correctly dated rows", rollups, datedRollups)
 	}
-	if _, err := store.CancelIntent(intentID); err == nil {
+	if _, err := store.CancelIntent(intentID, "paused"); err == nil {
 		t.Fatal("second cancellation unexpectedly succeeded")
 	}
 	afterRetry, err := store.TokenTotal()
@@ -269,7 +269,7 @@ func TestCancelIntentPreservesOutputsYieldedByAnotherIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := store.CancelIntent(first)
+	cleanup, err := store.CancelIntent(first, "paused")
 	if err != nil {
 		t.Fatal(err)
 	}

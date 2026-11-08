@@ -18,14 +18,21 @@ import (
 )
 
 type scriptedLLMProvider struct {
-	events []llm.StreamEvent
-	err    error
-	calls  int
+	events        []llm.StreamEvent
+	err           error
+	calls         int
+	claimIntentID int64
 }
 
 func (p *scriptedLLMProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		p.calls++
+		if p.calls == 1 && p.claimIntentID > 0 {
+			yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil)
+			yield(llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: "claim-1", ToolName: "claim_executor_intent"}, nil)
+			yield(llm.StreamEvent{Type: llm.SEToolInputJSON, Text: fmt.Sprintf(`{"intent_id":%d}`, p.claimIntentID)}, nil)
+			yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "tool_use"}, nil)
+		}
 		for _, event := range p.events {
 			if !yield(event, nil) {
 				return

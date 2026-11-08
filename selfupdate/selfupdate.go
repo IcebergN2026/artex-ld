@@ -4,27 +4,11 @@
 //   - marker / readMarker / writeMarker / cleanStaged：跨进程传递升级状态并清理暂存件。
 //   - CompareVersions / parseVersion：语义化版本比较（major.minor.patch）。
 //   - InDocker：检测当前是否运行在 Docker 容器中。
-//
+// 升级流程：旧版收到 /api/update/apply → 下载校验暂存 artex.new → exit 75；脚本拉起后
+// Bootstrap 换装并冒烟，失败回滚 artex.old。易错逻辑集中在本包，启动脚本只做守护循环。
+
 // Package selfupdate implements ARTEX 的页面一键更新：从 GitHub Release 拉取新版
 // 二进制、校验、暂存，并在下次启动时原子换装。
-//
-// 整体分工（见 start.sh / start.bat）：
-//
-//	启动脚本  = 傻瓜守护循环，只负责"进程退出后按退出码决定是否再拉起"
-//	本包      = 全部易错逻辑（下载 / SHA256 校验 / 冒烟 / 换装 / 失败回滚）
-//
-// 之所以把换装放在 Go 而不是脚本里，是因为 sha256 校验和冒烟测试在 sh 和 bat 上
-// 要写两套（sha256sum / shasum / certutil），而这恰恰是最不能出错的一环——换上一个
-// 跑不起来的二进制，守护进程会忠实地反复拉起它，用户只能上机器手工救。
-//
-// 一次完整升级经过三次进程启动：
-//
-//	① 旧版 server 收到 /api/update/apply → 下载校验 → 暂存 artex.new → exit 75
-//	② 脚本重新拉起旧版 → Bootstrap 发现 artex.new → 校验+冒烟 → 换装 → exit 75
-//	③ 脚本重新拉起，此时已是新版 → Bootstrap 记一次尝试 → 启动成功后清除标记
-//
-// 任何一步失败都退回旧版：② 校验不过就删掉暂存件继续跑旧版；③ 连续 3 次没活到
-// 清除标记（起不来就崩）则自动把 artex.old 换回去。
 package selfupdate
 
 import (
@@ -120,7 +104,7 @@ func cleanStaged(p Paths) {
 }
 
 // CompareVersions 比较两个版本号，返回 -1/0/1（a<b / a==b / a>b）。
-// ok=false 表示至少一边不是可比较的版本号（例如本地开发构建的 "dev" 或
+// ok=false 表示至少一边不是可比较的版本号（例如旧本地构建的 "dev" 或
 // git describe 产出的 "0.3.7-2-gabc1234-dirty"），此时调用方应禁用一键更新，
 // 否则会把开发中的构建"升级"成正式版、覆盖掉未提交的改动。
 func CompareVersions(a, b string) (int, bool) {

@@ -2,10 +2,10 @@
 // 主要函数/类型：
 //   - sendWorkerMessage：校验 request_id 与消息体，经 resume-from-transcript 路径把人工消息注入暂停的意图，并在独立 goroutine 中立即续跑。
 //   - validWorkerMessageRequestID：校验 request_id 的字符集与长度。
+
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -50,18 +50,11 @@ func (s *Server) sendWorkerMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad intent id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxWorkerMessageBytes)
 	var req struct {
 		Message   string `json:"message"`
 		RequestID string `json:"request_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求体过大")
-			return
-		}
-		writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
+	if !decodeJSON(w, r, &req, maxWorkerMessageBytes) {
 		return
 	}
 	message := strings.TrimSpace(req.Message)

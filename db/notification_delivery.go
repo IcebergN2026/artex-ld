@@ -4,6 +4,7 @@
 //   - ClaimRealtimeDeliveries / ClaimDigestBatch / DigestBatchDue：租约式领取实时投递与汇总批次。
 //   - MarkDeliveriesSent / RescheduleDeliveries / FailDeliveries / DeferDeliveries：送达、重试退避、最终失败与跳过更新。
 //   - RetryNotificationDelivery：投递历史里的人工重发（失败/跳过可重置为待发）。
+
 package db
 
 import (

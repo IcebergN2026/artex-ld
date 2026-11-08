@@ -436,9 +436,9 @@ export function PromptTemplateManager({ open, onOpenChange, adapter }: PromptTem
 // ── planner / worker 适配器与固定出口 ──────────────────────────────────────────
 // 两域此前为两份近 400 行的孪生组件，仅下列差异不同（CRUD 端点、变量目录、文案）。
 
-// 合法变量目录 = 00 册 A4 PlannerVars 五字段（agent/prompt.go:18）；与后端 S11 试渲染同目录。
+// 合法变量目录 = 00 册 A4 PlannerVars 五字段（agent/prompt.go#PlannerVars）；与后端 S11 试渲染同目录。
 const PLANNER_VARS = ["{{.Goal}}", "{{.Scope}}", "{{.AssetSummary}}", "{{.DataDir}}", "{{.Now}}"] as const;
-// 合法变量目录 = agent/prompt.go WorkerVars 四字段（agent/prompt.go:18）；与后端 S11 试渲染同目录。
+// 合法变量目录 = agent/prompt.go WorkerVars 四字段（agent/prompt.go#WorkerVars）；与后端 S11 试渲染同目录。
 const WORKER_VARS = ["{{.WorkerName}}", "{{.ProxyAddr}}", "{{.DataDir}}", "{{.Now}}"] as const;
 
 const plannerTemplateAdapter: PromptTemplateManagerAdapter = {

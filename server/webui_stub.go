@@ -3,6 +3,7 @@
 // webui_stub.go：默认（非 embedui）构建下前端未内嵌时的 404 桩 handler。
 // 主要函数/类型：
 //   - webuiHandler：返回「前端未内嵌」404 提示的占位实现。
+
 package server
 
 import "net/http"

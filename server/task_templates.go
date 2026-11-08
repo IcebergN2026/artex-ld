@@ -3,13 +3,13 @@
 //   - taskTemplateRequest / decodeTaskTemplateRequest：模板请求体解码并返回 JSON 键集（PATCH 置空检测）。
 //   - validateTaskTemplateRequest / stringValue：模板字段长度校验与取值辅助。
 //   - pgListTaskTemplates / pgCreateTaskTemplate / pgUpdateTaskTemplate / pgDeleteTaskTemplate：模板的查/建/改/删。
+
 package server
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -34,24 +34,18 @@ type taskTemplateRequest struct {
 // decodeTaskTemplateRequest decodes the body into req and returns the set of
 // top-level keys present in the JSON (for PATCH presence detection).
 func decodeTaskTemplateRequest(w http.ResponseWriter, r *http.Request, req *taskTemplateRequest) (map[string]struct{}, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskTemplateRequestBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := readJSONBody(w, r, maxTaskTemplateRequestBytes)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
+		writeJSONBodyError(w, err)
 		return nil, false
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeJSONBodyError(w, err)
 		return nil, false
 	}
 	if err := json.Unmarshal(body, req); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeJSONBodyError(w, err)
 		return nil, false
 	}
 	present := make(map[string]struct{}, len(raw))

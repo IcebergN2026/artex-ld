@@ -4,6 +4,7 @@
 // 主要函数/类型：
 //   - webuiDist：内嵌的前端静态产物 embed.FS。
 //   - webuiHandler / serveFileIfExists：SPA 路由服务（按路由出 index.html，未知路径回退首页）。
+
 package server
 
 import (

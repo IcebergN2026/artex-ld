@@ -4,6 +4,7 @@
 //   - feishuSign / feishuSeverityTemplate：加签计算与级别对应的卡片配色模板。
 //   - feishuCard：构造卡片 JSON（有 24000 字节上限保护）。
 //   - feishuItemLines / feishuBatchLine / feishuMarkdownDiv / feishuButton：卡片内条目与控件渲染。
+
 package notify
 
 import (

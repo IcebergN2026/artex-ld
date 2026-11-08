@@ -5,6 +5,7 @@
 //   - Settle / settle：新版启动成功后延迟清除确认标记，没活到清除即触发回滚。
 //   - Rollback / HasBackup：手动把 artex.old 换回当前可执行文件。
 //   - swap / rollback / fileSHA256 / smokeTest：底层换装、回滚、SHA256 校验与冒烟测试。
+
 package selfupdate
 
 import (

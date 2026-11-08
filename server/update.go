@@ -4,6 +4,7 @@
 //   - releaseCache / get：GitHub 最新版本查询结果缓存，防未认证 API 配额耗尽。
 //   - updateHub / updateProgress：更新进度广播中心（begin/finish/publish/subscribe/snapshot）。
 //   - updateCheck / updateApply / updateRollback / updateStream：检查、应用、回滚与 SSE 进度推送端点。
+
 package server
 
 import (

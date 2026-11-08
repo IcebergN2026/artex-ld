@@ -3,6 +3,7 @@
 //   - EvidenceExchange：一条流量证据（元信息+请求/响应内容）的数据结构。
 //   - ReadEvidence / readEvidence：按 ID 列表顺序读取证据并交给消费回调。
 //   - splitLegacyEvidence：兼容拆分旧格式存储的证据文件头与正文。
+
 package traffic
 
 import (

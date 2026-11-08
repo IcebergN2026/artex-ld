@@ -3,6 +3,7 @@
 //   - webhookChannel：渠道实现，Send 支持 GET/POST 等方法，非 GET 用模板渲染请求体。
 //   - renderWebhookBody / parseWebhookTemplate：请求体模板渲染与解析（含内置模板函数）。
 //   - webhookTemplateData / newWebhookTemplateData：暴露给模板的结构化消息数据。
+
 package notify
 
 import (

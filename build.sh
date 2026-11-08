@@ -94,7 +94,7 @@ if [ -z "${ARTEX_BUILD_VERSION:-}" ]; then
   if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     ARTEX_BUILD_VERSION="$(git describe --tags --always --dirty)"
   else
-    ARTEX_BUILD_VERSION="dev"
+    ARTEX_BUILD_VERSION="0.1.5"
   fi
 fi
 # Release tags are commonly passed as v0.3.3; keep the binary version consistent.

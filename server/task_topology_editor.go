@@ -1,11 +1,13 @@
 // task_topology_editor.go：内网拓扑编辑器的节点/边/分组/便签编辑 HTTP 端点。
 // 主要函数/类型：
-//   - topologyTask / topologyEditorBody：任务存在性与「内网渗透」类目校验、限长 JSON 解码。
+//   - topologyTask：任务存在性与「内网渗透」类目校验。
 //   - topologyEditorGet / seedTopologyEditor：读取整张拓扑图与种子初始化。
 //   - addTopologyEditorNode / patchTopologyEditorNode / deleteTopologyEditorNode：节点建/改/删（含资产回填）。
 //   - addTopologyEditorEdge / patchTopologyEditorEdge / deleteTopologyEditorEdge：边的增删改。
 //   - upsertTopologyEditorGroup / deleteTopologyEditorGroup：分组（大框）的写入与删除。
 //   - topologyNodeGroupPatch：区分 group_id 缺省/null/数字三种语义。
+// 相关文件：jsonbody.go#decodeJSON（限长 JSON 解码，各 editor 端点共用）。
+
 package server
 
 import (
@@ -41,15 +43,6 @@ func (s *Server) topologyTask(r *http.Request) (int64, string) {
 	return id, ""
 }
 
-// topologyEditorBody decodes a bounded JSON body for the editor endpoints.
-func topologyEditorBody(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTopologyEditorBytes)).Decode(v); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid JSON")
-		return false
-	}
-	return true
-}
-
 func (s *Server) topologyEditorGet(w http.ResponseWriter, r *http.Request) {
 	taskID, reason := s.topologyTask(r)
 	if reason != "" {
@@ -76,7 +69,7 @@ func (s *Server) addTopologyEditorNode(w http.ResponseWriter, r *http.Request) {
 		Node      db.TopologyNode `json:"node"`
 		FirstEdge db.TopologyEdge `json:"first_edge"`
 	}
-	if !topologyEditorBody(w, r, &input) {
+	if !decodeJSON(w, r, &input, maxTopologyEditorBytes) {
 		return
 	}
 	if net.ParseIP(strings.TrimSpace(input.Node.IP)) == nil {
@@ -144,7 +137,7 @@ func (s *Server) patchTopologyEditorNode(w http.ResponseWriter, r *http.Request)
 		Color        *string         `json:"color"`
 		Description  *string         `json:"description"`
 	}
-	if !topologyEditorBody(w, r, &input) {
+	if !decodeJSON(w, r, &input, maxTopologyEditorBytes) {
 		return
 	}
 	groupID, clearGroup, err := topologyNodeGroupPatch(input.GroupID)
@@ -201,7 +194,7 @@ func (s *Server) addTopologyEditorEdge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input db.TopologyEdge
-	if !topologyEditorBody(w, r, &input) {
+	if !decodeJSON(w, r, &input, maxTopologyEditorBytes) {
 		return
 	}
 	g, err := s.m.pg.AddTopologyEdge(taskID, "ARTEX", input)
@@ -230,7 +223,7 @@ func (s *Server) patchTopologyEditorEdge(w http.ResponseWriter, r *http.Request)
 		Kind  *string `json:"kind"`
 		Color *string `json:"color"`
 	}
-	if !topologyEditorBody(w, r, &input) {
+	if !decodeJSON(w, r, &input, maxTopologyEditorBytes) {
 		return
 	}
 	g, err := s.m.pg.PatchTopologyEdge(taskID, edgeID, "ARTEX", db.TopologyEdgePatch{
@@ -274,7 +267,7 @@ func (s *Server) upsertTopologyEditorGroup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var input db.TopologyGroup
-	if !topologyEditorBody(w, r, &input) {
+	if !decodeJSON(w, r, &input, maxTopologyEditorBytes) {
 		return
 	}
 	if gid := r.PathValue("gid"); gid != "" {
@@ -326,7 +319,7 @@ func (s *Server) addTopologyEditorNote(w http.ResponseWriter, r *http.Request) {
 		NodeIP string `json:"node_ip"`
 		Body   string `json:"body"`
 	}
-	if !topologyEditorBody(w, r, &input) {
+	if !decodeJSON(w, r, &input, maxTopologyEditorBytes) {
 		return
 	}
 	g, err := s.m.pg.AddTopologyNote(taskID, input.NodeIP, input.Body, "ARTEX")

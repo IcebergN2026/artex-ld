@@ -3,6 +3,7 @@
 //   - validateTaskInterceptRuleReq / buildTaskInterceptRules：规则请求归一校验并转为 db 输入形态。
 //   - taskInterceptListRules / taskInterceptCreateRule / taskInterceptUpdateRule：规则的查/建/改。
 //   - taskInterceptDeleteRule / taskInterceptToggleRule：规则的删除与启停切换。
+
 package server
 
 import (
@@ -93,8 +94,7 @@ func (s *Server) taskInterceptCreateRule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req taskInterceptRuleReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := validateTaskInterceptRuleReq(&req); err != nil {
@@ -125,8 +125,7 @@ func (s *Server) taskInterceptUpdateRule(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var req taskInterceptRuleReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := validateTaskInterceptRuleReq(&req); err != nil {
@@ -182,8 +181,7 @@ func (s *Server) taskInterceptToggleRule(w http.ResponseWriter, r *http.Request)
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := pg.Assets().ToggleTaskInterceptRule(taskID, ruleID, req.Enabled); err != nil {

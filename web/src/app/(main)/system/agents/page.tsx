@@ -47,10 +47,10 @@ import type { Agent } from "@/lib/types";
 
 // 【二开·P-TPL·U8】止
 
-// ═══ ARTEX 二开 · [P-TPL·U8 AgentGridCard planner 瓦片入口 chip] ═══
+// 【二开·P-TPL·U8 AgentGridCard planner 瓦片入口 chip】
 // 功能介绍：AgentGridCard 加 onOpenPlannerTemplates 可选属性——仅 planner 瓦片传入，
 //           在统计行渲染「提示词：模板库 →」chip，点击打开 planner模板管理 Sheet（U8-c）
-// 二开日期：2026-10-21
+
 // AgentGridCard is one clickable tile opening the agent's editor drawer. Custom
 // (non-builtin) agents get a delete button.
 function AgentGridCard({

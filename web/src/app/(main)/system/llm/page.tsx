@@ -108,9 +108,7 @@ function healthOf(p: LLMProfile, m?: LLMPoolMember): Health {
   return { label: "正常", cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400" };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // 轮询配置抽屉
-// ─────────────────────────────────────────────────────────────────────────────
 
 function PoolSheet({
   open,
@@ -303,9 +301,7 @@ function PoolSheet({
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
 // 模型配置抽屉（新建 / 编辑共用同一套表单）
-// ─────────────────────────────────────────────────────────────────────────────
 
 function ProfileSheet({
   profile,
@@ -791,8 +787,6 @@ function ProfileSheet({
     </Sheet>
   );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 export default function LLMPage() {
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);

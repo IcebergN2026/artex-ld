@@ -4,6 +4,7 @@
 //   - addCompanyScope：为公司添加资产作用域（自定义 JSON 解析）。
 //   - reattribute：把资产从一家公司改挂到另一家公司。
 //   - listAssets / insertAssets / deleteAssets / assetCounts：资产列表/批量导入/删除/计数统计。
+
 package server
 
 import (
@@ -23,20 +24,6 @@ import (
 type companyScopeInputs []db.ScopeInput
 
 const maxCompanyMutationBodyBytes = 2 << 20
-
-func decodeCompanyMutationRequest(w http.ResponseWriter, r *http.Request, value any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxCompanyMutationBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(value); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		}
-		return false
-	}
-	return true
-}
 
 func (items *companyScopeInputs) UnmarshalJSON(data []byte) error {
 	var rawItems []json.RawMessage
@@ -76,9 +63,7 @@ func (s *Server) companyStore() *db.CompanyStore {
 	return s.m.pg.Companies()
 }
 
-// =====================================================================
 // GET /api/companies
-// =====================================================================
 
 func (s *Server) listCompanies(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
@@ -94,9 +79,7 @@ func (s *Server) listCompanies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, companies)
 }
 
-// =====================================================================
 // POST /api/companies
-// =====================================================================
 
 func (s *Server) createCompany(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
@@ -109,7 +92,7 @@ func (s *Server) createCompany(w http.ResponseWriter, r *http.Request) {
 		Logo  string             `json:"logo"`
 		Scope companyScopeInputs `json:"scope"`
 	}
-	if !decodeCompanyMutationRequest(w, r, &req) {
+	if !decodeJSON(w, r, &req, maxCompanyMutationBodyBytes) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -148,9 +131,7 @@ func (s *Server) createCompany(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, out)
 }
 
-// =====================================================================
 // GET /api/companies/{id}
-// =====================================================================
 
 func (s *Server) getCompany(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
@@ -180,9 +161,7 @@ func (s *Server) getCompany(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"company": c, "scope": scope})
 }
 
-// =====================================================================
 // POST /api/companies/{id}/scope
-// =====================================================================
 
 func (s *Server) addCompanyScope(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
@@ -200,7 +179,7 @@ func (s *Server) addCompanyScope(w http.ResponseWriter, r *http.Request) {
 		Reason string             `json:"reason"`
 		Reset  bool               `json:"reset"` // if true, replace existing scope
 	}
-	if !decodeCompanyMutationRequest(w, r, &req) {
+	if !decodeJSON(w, r, &req, maxCompanyMutationBodyBytes) {
 		return
 	}
 	if err := db.ValidateCompanyScopeInputBounds(req.Scope); err != nil {
@@ -246,9 +225,7 @@ func (s *Server) addCompanyScope(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// =====================================================================
 // DELETE /api/companies/{id}
-// =====================================================================
 
 func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
@@ -265,11 +242,12 @@ func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 		DeleteAssets bool `json:"delete_assets"`
 	}
 	// The body is optional. Only an actual empty body is ignored; malformed or
-	// trailing JSON is a client error.
-	decoder := json.NewDecoder(r.Body)
+	// trailing JSON is a client error. This endpoint deliberately keeps strict
+	// single-value semantics, unlike the other bounded decoders.
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSmallJSONBodyBytes))
 	if err := decoder.Decode(&req); err != nil {
 		if !errors.Is(err, io.EOF) {
-			writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			writeJSONBodyError(w, err)
 			return
 		}
 	} else {
@@ -278,7 +256,7 @@ func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				writeErr(w, http.StatusBadRequest, "invalid JSON: multiple values")
 			} else {
-				writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+				writeJSONBodyError(w, err)
 			}
 			return
 		}
@@ -296,9 +274,7 @@ func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"deleted": 1, "assets_deleted": assetsDeleted})
 }
 
-// =====================================================================
 // POST /api/companies/reattribute
-// =====================================================================
 
 func (s *Server) reattribute(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
@@ -313,9 +289,7 @@ func (s *Server) reattribute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
-// =====================================================================
 // GET /api/assets
-// =====================================================================
 
 const (
 	defaultAssetPageSize = 50
@@ -413,9 +387,7 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// =====================================================================
 // GET /api/assets/counts
-// =====================================================================
 
 func (s *Server) assetCounts(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
@@ -437,9 +409,7 @@ func (s *Server) assetCounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, counts)
 }
 
-// =====================================================================
 // DELETE /api/assets
-// =====================================================================
 
 func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
@@ -450,8 +420,7 @@ func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs []int64 `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "invalid JSON: "+err.Error())
+	if !decodeJSON(w, r, &req, maxLargeJSONBodyBytes) {
 		return
 	}
 	if len(req.IDs) == 0 {
@@ -466,9 +435,7 @@ func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"deleted": deleted})
 }
 
-// =====================================================================
 // POST /api/assets
-// =====================================================================
 
 func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
@@ -512,8 +479,7 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 			Params []map[string]any `json:"params"`
 		} `json:"assets"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "invalid JSON: "+err.Error())
+	if !decodeJSON(w, r, &req, maxLargeJSONBodyBytes) {
 		return
 	}
 

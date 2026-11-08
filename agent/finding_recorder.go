@@ -3,6 +3,7 @@
 //   - FindingRecorder：report_finding 落库时的上报/登记回调接口。
 //   - findingTrafficGuidance：report_finding 流量证据可选绑定的模型指引文案。
 //   - SetFindingRecorder（ToolSet / Worker / Planner / MainAgent）：向各 agent 注入 recorder。
+
 package agent
 
 import (

@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - SideQuestionService：旁路问答服务，包装一个 LLM Provider。
 //   - Answer：执行一次旁路问答，流式拼接文本、检测工具调用意图并累计用量。
+
 package sidequestion
 
 import (

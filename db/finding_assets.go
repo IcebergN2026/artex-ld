@@ -16,14 +16,12 @@ import (
 	"time"
 )
 
-// ---------------------------------------------------------------------------
 // Finding asset tree — the「按资产」view of the global findings list.
 //
 // 层级与 BuildCoverageGraph 同源(company → root_domain/ip/app → subdomain →
 // service → endpoint),但那份是「某个任务的范围内资产」的力导向图,这份是
 // 「全库有发现的资产」的树:只收有发现的资产及其祖先链,节点带子树聚合计数。
 // 两者的父子优先级规则必须保持一致,改一处请对照 task_scope.go 改另一处。
-// ---------------------------------------------------------------------------
 
 // FindingUnassignedAsset 是「未关联资产」的节点 key,也是列表接口的筛选哨兵:
 // 命中 asset_ids 为空、或所指资产已被删除的发现。

@@ -6,6 +6,7 @@
 //   - taskRuntimeAvailable：判定任务各角色是否都能解析到可用 provider。
 //   - emitTaskLLMTransition / emitManualTaskLLMSwitch：故障转移与手动切换的活动审计记录。
 //   - CompactionWindow：取任务配置链各 profile 压缩窗口的最小值。
+
 package server
 
 import (

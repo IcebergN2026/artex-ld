@@ -5,13 +5,13 @@
 //   - pgSetDefaultPlannerTemplate：设置默认 planner 模板。
 //   - pgValidatePlannerTemplate：模板试渲染校验端点入口。
 
-// ═══ ARTEX 二开 · [P-TPL·S11 planner 模板库服务层] ═══
+// 【二开·P-TPL·S11 planner 模板库服务层】
 // 功能介绍：planner 模板试渲染校验（P2 先落地，供 S8 spawn_task 模板 id 分支复用；
 //
 //	P3 起 /api/planner-templates 五端点 + 试渲染干跑端点经 plannerTemplatesAPI
 //	（template_handlers.go 参数化实现）挂出；本文件只保留 planner 侧参数与差异项）。
 //
-// 二开日期：2026-10-21
+
 package server
 
 import (

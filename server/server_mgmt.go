@@ -6,7 +6,9 @@
 //   - pgListMCP / pgSaveMCP / pgDeleteMCP / pgRefreshMCP / pgMCPTools：MCP server 管理接口。
 //   - pgDeleteTask / beginTaskDelete / abortTaskDelete / waitTaskQuiescent：任务删除的串行化、静默等待与落库。
 //   - fsListSkills / fsSkillUsage / fsMissingSkills：技能目录、用量与缺失技能查询。
-//   - validSkillName / canonicalTaskID / decode / pathInt：通用入参校验与解析辅助。
+//   - validSkillName / canonicalTaskID / pathInt：通用入参校验与解析辅助。
+// 相关文件：jsonbody.go#decodeJSON / decodeJSONBounded（限长 JSON 解码，本文件 handler 共用）。
+
 package server
 
 import (
@@ -73,7 +75,7 @@ func validSkillName(name string) bool {
 // lowercase letters / digits / underscores.
 var reAgentKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// pgReady returns the PG handle, or writes 503 and returns nil if unavailable.
+// pg returns the PG handle, or writes 503 and returns nil if unavailable.
 func (s *Server) pg(w http.ResponseWriter) *db.DB {
 	if s.m.pg == nil {
 		writeErr(w, 503, "管理后台数据源(PostgreSQL)未连接")
@@ -86,8 +88,6 @@ func pathInt(r *http.Request, name string) (int64, bool) {
 	n, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	return n, err == nil
 }
-
-func decode(r *http.Request, v any) error { return json.NewDecoder(r.Body).Decode(v) }
 
 // ---------- tasks (delete) ----------
 
@@ -146,8 +146,7 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var opts DeleteTaskOptions
-	if err := decode(r, &opts); err != nil && err != io.EOF {
-		writeErr(w, 400, "invalid JSON: "+err.Error())
+	if !decodeJSONOptional(w, r, &opts, maxSmallJSONBodyBytes) {
 		return
 	}
 	if !s.beginTaskDelete(id) {
@@ -259,8 +258,7 @@ func (s *Server) pgCreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Key, Name, Description string }
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	req.Key, req.Name = strings.TrimSpace(req.Key), strings.TrimSpace(req.Name)
@@ -299,8 +297,7 @@ func (s *Server) pgUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct{ Name, Description string }
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
@@ -379,9 +376,10 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 		TriggerMaxParallel *int    `json:"trigger_max_parallel"`
 		// 【二开·P-EXEC·U7】执行器标识：缺省=不动；""=清除；非空=声明（K18 仅自定义 agent）
 		ExecutorKey *string `json:"executor_key"`
+		// 【二开·首个 custom seed 门控】缺省=不动；true/false 仅自定义 agent 可写（指针 PATCH，与 web_search 同模式）。
+		PlannerControlled *bool `json:"planner_controlled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	profileChanged := false
@@ -436,7 +434,7 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 【二开·P-EXEC·U7】executor_key 持久化（m05023 bug：前端透传但 server 无接收入口）。
-	// 校验与 db/schema.sql:862 agents_executor_key_ck 同口径；唯一性预检换友好 409。
+	// 校验与 db/schema.sql#agents_executor_key_ck 同口径；唯一性预检换友好 409。
 	if req.ExecutorKey != nil {
 		ek := strings.TrimSpace(*req.ExecutorKey)
 		if ek != "" {
@@ -453,7 +451,19 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := pg.SetAgentExecutorKey(a.Key, ek); err != nil { // 既有 setter（config.go:543）：格式/内置校验+NULLIF 清除
+		if err := pg.SetAgentExecutorKey(a.Key, ek); err != nil { // 既有 setter（db/config.go#SetAgentExecutorKey）：格式/内置校验+NULLIF 清除
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	// 【二开·全局 custom intent 门控】planner_controlled 持久化：缺省=不动；仅自定义 agent（内置 400）。
+	// 修改后立即影响该 Agent 的所有现有和后续 custom intent。
+	if req.PlannerControlled != nil {
+		if a.Builtin {
+			writeErr(w, 400, "内置 agent 不可修改 planner_controlled（仅自定义 agent）")
+			return
+		}
+		if err := pg.SetAgentPlannerControlled(a.Key, *req.PlannerControlled); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -550,8 +560,7 @@ func (s *Server) pgSavePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct{ Template, Note string }
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	vars, _ := pg.PromptVars(a.ID)
@@ -599,8 +608,7 @@ func (s *Server) pgSaveWrapup(w http.ResponseWriter, r *http.Request) {
 		Prompt   string `json:"prompt"`
 		MaxTurns *int   `json:"max_turns"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := pg.SetAgentWrapupPrompt(a.Key, body.Prompt); err != nil {
@@ -653,8 +661,7 @@ func (s *Server) pgSaveTaskTimeoutWrapup(w http.ResponseWriter, r *http.Request)
 		Prompt   string `json:"prompt"`
 		MaxTurns *int   `json:"max_turns"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	turns := a.TaskTimeoutWrapupMaxTurns // 未传则保留原值
@@ -723,7 +730,9 @@ func (s *Server) pgPreviewPrompt(w http.ResponseWriter, r *http.Request) {
 		Template string            `json:"template"`
 		Sample   map[string]string `json:"sample"`
 	}
-	_ = decode(r, &body)
+	// Preview intentionally ignores decode errors and falls back to the saved
+	// prompt; the bounded reader still caps the body and writes no response.
+	_ = decodeJSONBounded(w, r, &body, maxMediumJSONBodyBytes)
 	vars, _ := pg.PromptVars(a.ID)
 	if body.Template == "" {
 		body.Template, _ = pg.CurrentPrompt(a.ID)
@@ -758,8 +767,7 @@ func (s *Server) pgSetAgentVisibility(w http.ResponseWriter, r *http.Request) {
 		MCP   []int64  `json:"mcp"`
 		Skill []string `json:"skill"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.SetAgentVisibilityKind(a.ID, "mcp", body.MCP); err != nil {
@@ -826,8 +834,7 @@ func (s *Server) pgUpdateTool(w http.ResponseWriter, r *http.Request) {
 		Agents      []string        `json:"agents"`
 		Enabled     bool            `json:"enabled"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	agents, _ := json.Marshal(body.Agents)
@@ -901,8 +908,7 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var m db.MCPServer
-	if err := decode(r, &m); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &m, maxLargeJSONBodyBytes) {
 		return
 	}
 	isNew := m.ID == 0
@@ -1116,8 +1122,7 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 		MCPs          []string `json:"mcps"`          // optional; MCP servers this skill unlocks
 		Instructions  string   `json:"instructions"`  // optional; scaffolded if empty
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxFileWriteJSONBodyBytes) {
 		return
 	}
 	if !validSkillName(body.Name) {
@@ -1189,8 +1194,7 @@ func (s *Server) fsUpdateSkillMeta(w http.ResponseWriter, r *http.Request) {
 		License       *string   `json:"license"`
 		Compatibility *string   `json:"compatibility"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	skillMD := filepath.Join(s.skillDir, name, "SKILL.md")
@@ -1655,8 +1659,7 @@ func (s *Server) fsWriteFile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Content string `json:"content"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxFileWriteJSONBodyBytes) {
 		return
 	}
 	skillPath := filepath.Join(s.skillDir, name)
@@ -1686,8 +1689,7 @@ func (s *Server) fsCreateDir(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path string `json:"path"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	dir, errMsg := skillRelPath(body.Path)
@@ -1755,8 +1757,7 @@ func (s *Server) pgToggleSkillVisibility(w http.ResponseWriter, r *http.Request)
 		SkillName string `json:"skill_name"`
 		Visible   bool   `json:"visible"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.ToggleSkillVisibility(body.AgentID, body.SkillName, body.Visible); err != nil {
@@ -1793,8 +1794,7 @@ func (s *Server) pgToggleVisibility(w http.ResponseWriter, r *http.Request) {
 		ResourceID int64  `json:"resource_id"`
 		Visible    bool   `json:"visible"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.ToggleVisibility(body.AgentID, body.Kind, body.ResourceID, body.Visible); err != nil {
@@ -1834,8 +1834,7 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		APIKey    string `json:"api_key"`
 		Streaming *bool  `json:"streaming"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	p := body.LLMProfile
@@ -1885,8 +1884,7 @@ func (s *Server) pgSaveLLMRetryPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var pol db.LLMRetryPolicy
-	if err := decode(r, &pol); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &pol, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.SetLLMRetryPolicy(pol); err != nil {
@@ -1957,8 +1955,7 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID int64 `json:"id"`
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.SetActiveProfile(body.ID); err != nil {
@@ -1990,8 +1987,7 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID int64 `json:"id"` // 0 / omitted = all
 	}
-	if err := decode(r, &body); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	if body.ID > 0 {
@@ -2016,8 +2012,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		Proxy     string `json:"proxy"`
 		ProfileID *int64 `json:"profile_id"` // fallback: use stored key from this profile
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
 	}
 	// Resolve API key: form input > profile stored key.

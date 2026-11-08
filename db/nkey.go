@@ -4,6 +4,7 @@
 //   - PortKey / ServiceKey / SiteKey / EndpointKey / ParameterKey / TechKey：各层实体的复合键构造。
 //   - NormalizeParamName / TemplatePath：参数名归一化与 URL 路径模板化（/user/123→/user/{id}）。
 //   - SplitURL：把 URL 拆成站点与端点键所需的 scheme/host/port/模板/参数。
+
 package db
 
 import (

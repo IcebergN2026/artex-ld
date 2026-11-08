@@ -4,6 +4,7 @@
 //   - RetryOverride / LLMRetryPolicy：按配置 profile 的覆盖项与全局五层重试策略。
 //   - LLMRetryPolicy / SetLLMRetryPolicy：读取全局策略 / 持久化（写入前先 clamp）。
 //   - RetryRule.Interval / Or / Clamped：间隔换算、继承合并与安全区间钳制。
+
 package db
 
 import (

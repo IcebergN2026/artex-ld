@@ -4,6 +4,7 @@
 //   - signJWT / verifyJWT / extractToken：签发 / 校验 / 从请求提取 JWT。
 //   - requireAuth：鉴权中间件，拦截未认证请求。
 //   - authInit / authLogin / authChangePassword / authStatus：初始化 / 登录 / 改密 / 认证状态接口。
+
 package server
 
 import (
@@ -178,7 +179,13 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil || req.Password == "" {
+	if err := decodeJSONBounded(w, r, &req, maxAuthJSONBodyBytes); err != nil {
+		if !writeJSONBodyTooLarge(w, err) {
+			writeErr(w, 400, "密码不能为空")
+		}
+		return
+	}
+	if req.Password == "" {
 		writeErr(w, 400, "密码不能为空")
 		return
 	}
@@ -227,8 +234,10 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if err := decodeJSONBounded(w, r, &req, maxAuthJSONBodyBytes); err != nil {
+		if !writeJSONBodyTooLarge(w, err) {
+			writeErr(w, 400, "请求格式错误")
+		}
 		return
 	}
 	if req.NewPassword == "" {
@@ -274,8 +283,10 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if err := decodeJSONBounded(w, r, &req, maxAuthJSONBodyBytes); err != nil {
+		if !writeJSONBodyTooLarge(w, err) {
+			writeErr(w, 400, "请求格式错误")
+		}
 		return
 	}
 	if req.Username != "ARTEX" {

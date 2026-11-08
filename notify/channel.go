@@ -3,6 +3,7 @@
 //   - Channel / Get / ValidKind / Kinds：渠道适配器接口与注册表查询（实现必须无状态，凭据从 cfg 传入）。
 //   - PermanentError / Permanent / IsPermanent：标记不该重试的投递失败并在错误链上识别。
 //   - cfgString / cfgInt / cfgBool / cfgStrings / cfgMap：从 map[string]any 配置里安全读各类型的辅助函数。
+
 package notify
 
 import (

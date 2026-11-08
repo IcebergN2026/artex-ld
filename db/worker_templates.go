@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// 【二开·P-TPL·D11-1 Worker 模板类型与声明】起 —— 常量、哨兵错、行类型与归一化辅助
 const (
 	MaxWorkerTemplateNameRunes = 120
 	MaxWorkerTemplateBodyBytes = 32 << 10 // 32KB 上限（按字节计，含中文）；S11 试渲染同口径
@@ -80,6 +81,9 @@ func normalizeWorkerTemplatePatch(patch WorkerTemplatePatch) (WorkerTemplatePatc
 	return patch, nkey, nil
 }
 
+// 【二开·P-TPL·D11-1 Worker 模板类型与声明】止
+
+// 【二开·P-TPL·D11-2 Worker 模板读方法】起 —— List/Get/GetByNKey
 // 【方法 1/7】ListWorkerTemplates 最近维护在前（与 ListTaskTemplates 同序）。
 func (d *DB) ListWorkerTemplates() ([]*WorkerTemplate, error) {
 	rows, err := listTemplateRows(d, "worker_templates")
@@ -114,6 +118,9 @@ func (d *DB) GetWorkerTemplateByNKey(nkey string) (*WorkerTemplate, error) {
 	return &converted, nil
 }
 
+// 【二开·P-TPL·D11-2 Worker 模板读方法】止
+
+// 【二开·P-TPL·D11-3 Worker 模板写方法】起 —— Create/Update/Patch/Delete
 // 【方法 3/7】CreateWorkerTemplate 插入一套预设；nkey 冲突（视觉等价重名）→ ErrWorkerTemplateNameConflict。
 func (d *DB) CreateWorkerTemplate(in WorkerTemplateInput) (*WorkerTemplate, error) {
 	in, nkey, err := normalizeWorkerTemplateInput(in)
@@ -160,6 +167,9 @@ func (d *DB) DeleteWorkerTemplate(id int64) (bool, error) {
 	return deleteTemplateRow(d, "worker_templates", id, ErrWorkerTemplateBuiltin, ErrWorkerTemplateDefaultProtected)
 }
 
+// 【二开·P-TPL·D11-3 Worker 模板写方法】止
+
+// 【二开·P-TPL·D11-4 Worker 模板默认与 seed】起 —— SetDefault/DefaultBody/Seed
 // 【方法 6/7】SetDefaultWorkerTemplate 事务内先清后设，全库唯一默认；部分唯一索引 uq_worker_templates_default 兜底并发。
 func (d *DB) SetDefaultWorkerTemplate(id int64) (*WorkerTemplate, error) {
 	t, err := setDefaultTemplateRow(d, "worker_templates", id, ErrWorkerTemplateNotFound)
@@ -186,4 +196,4 @@ func (d *DB) SeedWorkerTemplateIfEmpty(name, nkey, body string, isDefault bool) 
 	return seedTemplateIfEmptyRow(d, "worker_templates", name, nkey, body, isDefault)
 }
 
-// 【二开·P-TPL·D11】止
+// 【二开·P-TPL·D11-4 Worker 模板默认与 seed】止

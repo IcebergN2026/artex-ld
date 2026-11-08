@@ -6,6 +6,7 @@
 //   - Attach / save / Finish：包装模型调用捕获快照，任务结束时完成并发布。
 //   - Bind / boundProvider：把模型与快照绑定、记录用量的 Provider 包装。
 //
+
 // Package sidequestion captures immutable main-agent checkpoints. It never owns
 // an agent session or a tool executor.
 package sidequestion

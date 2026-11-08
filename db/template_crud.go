@@ -16,7 +16,6 @@ import (
 	"unicode/utf8"
 )
 
-// ═══ planner/worker 模板 CRUD 共享 helper ═══
 // db/config.go 与 db/worker_templates.go 的 scan/normalize/CRUD/seed 同构实现收敛于此；
 // 公开类型与 sentinel error 不变，差异项（表名、上限常量、sentinel error）经参数注入。
 

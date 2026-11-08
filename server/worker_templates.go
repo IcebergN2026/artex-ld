@@ -5,13 +5,13 @@
 //   - pgListWorkerTemplates / pgCreateWorkerTemplate / pgUpdateWorkerTemplate / pgDeleteWorkerTemplate：模板查/建/改/删端点薄封装。
 //   - pgSetDefaultWorkerTemplate / pgValidateWorkerTemplate：设默认与试渲染干跑端点。
 
-// ═══ ARTEX 二开 · [P-TPL·S11 worker 模板库服务层] ═══
+// 【二开·P-TPL·S11 worker 模板库服务层】
 // 功能介绍：worker 模板试渲染校验（P2 先落地，供 S8 spawn_task 模板 id 分支复用；
 //
 //	P3 起 /api/worker-templates 五端点 + 试渲染干跑端点经 workerTemplatesAPI
 //	（template_handlers.go 参数化实现）挂出；本文件只保留 worker 侧参数与差异项）。
 //
-// 二开日期：2026-10-21
+
 package server
 
 import (

@@ -19,9 +19,7 @@ import (
 	"strings"
 )
 
-// =====================================================================
 // 统一资产表
-// =====================================================================
 
 // Asset is a row in the assets table.
 type Asset struct {
@@ -139,9 +137,7 @@ func (s *AssetStore) resolveCompanyWithICP(rootDomain, ipStr, icp string) (*int6
 	return s.company.ResolveCompanyWithICP(rootDomain, ipStr, icp)
 }
 
-// =====================================================================
 // Helpers
-// =====================================================================
 
 // calcCSegment computes the /24 (IPv4) or /48 (IPv6) network for an IP string.
 func calcCSegment(ipStr string) string {
@@ -240,7 +236,7 @@ func marshalPortServices(ps []PortService) (string, error) {
 	return marshalJSONBArray(items)
 }
 
-// nullableInt64 returns sql.NullInt64.
+// nullableInt maps 0 to SQL NULL; non-zero values pass through.
 func nullableInt(v int) interface{} {
 	if v == 0 {
 		return nil
@@ -248,9 +244,7 @@ func nullableInt(v int) interface{} {
 	return v
 }
 
-// =====================================================================
 // UpsertRootDomain
-// =====================================================================
 
 // UpsertRootDomainReq is the input for UpsertRootDomain.
 type UpsertRootDomainReq struct {
@@ -330,9 +324,7 @@ func ValidateAssetIP(value string) error {
 		ErrAssetIPInvalid, value)
 }
 
-// =====================================================================
 // UpsertIP
-// =====================================================================
 
 // UpsertIPReq is the input for UpsertIP.
 type UpsertIPReq struct {
@@ -443,9 +435,7 @@ WHERE type = 'ip' AND ip = $2`, domain, ipStr)
 	return err
 }
 
-// =====================================================================
 // UpsertSubdomain
-// =====================================================================
 
 // UpsertSubdomainReq is the input for UpsertSubdomain.
 type UpsertSubdomainReq struct {
@@ -557,9 +547,7 @@ RETURNING id`, domain, rootDomain, recordType, recordValueArr, ipVal, csegVal, i
 	return id, err
 }
 
-// =====================================================================
 // UpsertApp
-// =====================================================================
 
 // UpsertAppReq is the input for UpsertApp.
 type UpsertAppReq struct {
@@ -669,9 +657,7 @@ RETURNING id`, req.Name, catVal, descVal, icpVal, companyIDVal, companySource, t
 	return id, err
 }
 
-// =====================================================================
 // UpsertHTTPService
-// =====================================================================
 
 // UpsertHTTPServiceReq is the input for UpsertHTTPService.
 type UpsertHTTPServiceReq struct {
@@ -810,9 +796,7 @@ RETURNING id`,
 	return id, nil
 }
 
-// =====================================================================
 // UpsertOtherService
-// =====================================================================
 
 // UpsertOtherServiceReq is the input for UpsertOtherService.
 type UpsertOtherServiceReq struct {
@@ -953,9 +937,7 @@ func (s *AssetStore) linkHostAssets(domain, rootDomain string, taskID int64) {
 	}
 }
 
-// =====================================================================
 // UpsertEndpoint
-// =====================================================================
 
 // UpsertEndpointReq is the input for UpsertEndpoint.
 type UpsertEndpointReq struct {
@@ -1067,9 +1049,7 @@ RETURNING id`,
 	return id, nil
 }
 
-// =====================================================================
 // Query helpers
-// =====================================================================
 
 // QueryByType returns assets rows of a given type, newest first.
 func (s *AssetStore) QueryByType(typ string, limit, offset int) ([]*Asset, error) {

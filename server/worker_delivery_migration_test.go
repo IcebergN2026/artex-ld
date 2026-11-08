@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -21,21 +20,4 @@ func TestInjectWorkerDeliveryFactSpec(t *testing.T) {
 	if got := injectWorkerDeliveryFactSpec(custom); got != custom {
 		t.Fatal("custom prompt must remain unchanged")
 	}
-}
-
-func TestWorkerDeliveryConfigExportMatchesDefault(t *testing.T) {
-	for _, line := range readExportLines(t, "../config-export/agent_prompts_current.jsonl") {
-		var row struct {
-			Key          string `json:"agent_key"`
-			TemplateText string `json:"template_text"`
-		}
-		if json.Unmarshal([]byte(line), &row) != nil || row.Key != "worker" {
-			continue
-		}
-		if row.TemplateText != agent.BuiltinPromptSeeds()["worker"] {
-			t.Fatal("exported worker prompt must match the built-in delivery contract")
-		}
-		return
-	}
-	t.Fatal("worker prompt missing from config export")
 }

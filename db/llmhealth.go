@@ -3,6 +3,7 @@
 //   - LLMHealth：单个配置的熔断器状态行（连续失败/跳闸/熔断至/最近错误）。
 //   - LoadLLMHealth / SaveLLMHealth：加载全部熔断中的状态 / upsert 单条熔断状态。
 //   - ClearLLMHealth：删除指定配置的健康状态（UI 手动恢复）。
+
 package db
 
 import "time"

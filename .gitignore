@@ -12,6 +12,7 @@ __pycache__/
 # frontend
 web/node_modules/
 web/.next/
+web/out/
 web/tsconfig.tsbuildinfo
 web/next-env.d.ts
 *.local
@@ -34,6 +35,10 @@ Thumbs.db
 
 # 内嵌前端的单二进制产物
 /artex
+/artex-linux-amd64
+# 临时 diff 产物与验证截图（本地评审用，不入库）
+*.diff.tmp
+/screenshots/
 # 一键更新在可执行文件旁留下的中间产物（暂存件 / 备份 / 失败版本 / 升级标记）
 /artex.new
 /artex.new.sha256
@@ -43,14 +48,14 @@ Thumbs.db
 /server/webui/dist/
 /dist/
 
+# 本地工具状态与调试残留（含主机信息，绝不提交）
+/.omp/
+/.obsidian/
+/bak_agent.list
+/cur_agent.list
+
 # JWT 签名密钥（运行时生成，存项目根，绝不提交）
 /jwt.key
-
-# 本地预编译二进制（release 产物走 dist/ 与 GitHub Release，不入库）
-/artex-linux-amd64
-
-# Obsidian 编辑器工作区状态（含本机绝对路径，不入库）
-/.obsidian/
 
 # Docker 部署生成的本地环境（含密码/密钥，不提交）
 .env

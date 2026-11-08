@@ -7,6 +7,7 @@
  * Runs early in <head> to apply the correct data attributes before hydration,
  * preventing layout or theme flicker and keeping RootLayout fully static.
  */
+import { fontKeys } from "@/lib/fonts/registry";
 import { PREFERENCE_DEFAULTS, PREFERENCE_PERSISTENCE } from "@/lib/preferences/preferences-config";
 
 export function ThemeBootScript() {
@@ -30,12 +31,15 @@ export function ThemeBootScript() {
     sidebar_collapsible: PREFERENCE_DEFAULTS.sidebar_collapsible,
   });
 
+  const fonts = JSON.stringify(fontKeys);
+
   const code = `
     (function () {
       try {
         var root = document.documentElement;
         var PERSISTENCE = ${persistence};
         var DEFAULTS = ${defaults};
+        var FONTS = ${fonts};
 
         function readCookie(name) {
           var match = document.cookie.split("; ").find(function(c) {
@@ -86,7 +90,7 @@ export function ThemeBootScript() {
             ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
             : mode;
         var preset = rawPreset || DEFAULTS.theme_preset;
-        var font = rawFont || DEFAULTS.font;
+        var font = FONTS.indexOf(rawFont) !== -1 ? rawFont : DEFAULTS.font;
         var contentLayout = rawContentLayout || DEFAULTS.content_layout;
         var navbarStyle = rawNavbarStyle || DEFAULTS.navbar_style;
         var sidebarVariant = rawSidebarVariant || DEFAULTS.sidebar_variant;

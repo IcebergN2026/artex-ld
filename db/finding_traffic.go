@@ -352,10 +352,14 @@ func RecordFindingTx(ctx context.Context, tx *sql.Tx, in RecordFindingInput, pre
 	// starting the multi-table write so PostgreSQL cannot roll back the whole finding.
 	in.VulnClass = utf8Clean(in.VulnClass)
 	in.Name = utf8Clean(in.Name)
-	in.Severity = utf8Clean(in.Severity)
 	in.Summary = utf8Clean(in.Summary)
 	in.Evidence = utf8Clean(in.Evidence)
 	in.Worker = utf8Clean(in.Worker)
+	severity, err := normalizeSeverity(in.Severity)
+	if err != nil {
+		return nil, err
+	}
+	in.Severity = severity
 	if err := LockTaskEvidenceTx(tx, in.TaskID); err != nil {
 		return nil, err
 	}
@@ -418,7 +422,6 @@ VALUES(NULLIF($1,0),$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, in.TaskID, out.NodeI
 	if err := AddFindingTrafficTx(tx, out.FindingID, prepared); err != nil {
 		return nil, err
 	}
-	var err error
 	out.Traffic, err = FindingTrafficTx(tx, out.FindingID)
 	return out, err
 }

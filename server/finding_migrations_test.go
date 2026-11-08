@@ -9,12 +9,10 @@
 //  4. auto_default_bindings_v3 unset 时 seedOrchestrationTools 后
 //     dispatch_finding_to_agent 绑定严格等于 ["planner"]，auto 不补绑；
 //     新装 vuln_dispatcher trigger Enabled=true/OnFinding=false。
-//  5. config-export 的 agent_triggers/agents_custom/tools_bindings 与默认行为一致。
 package server
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -871,98 +869,5 @@ func TestSeedOrchestrationToolsFindingDispatchBinding(t *testing.T) {
 		if !found {
 			t.Fatalf("新装 dispatcher 触发器应为 Enabled=true/OnFinding=false/新派发消息: %+v", trs[0])
 		}
-	}
-}
-
-// TestFindingMigrationConfigExportConsistency 验证 config-export 与迁移后的
-// 默认行为一致。文件是 COPY text 双层转义，沿用项目既有 readExportLines 解码；
-// 只断言能捕捉配置回归的语义字段，不 pin 源文本字节。
-func TestFindingMigrationConfigExportConsistency(t *testing.T) {
-	type triggerRow struct {
-		AgentKey       string `json:"agent_key"`
-		Enabled        bool   `json:"enabled"`
-		OnFinding      bool   `json:"on_finding"`
-		FindingMessage string `json:"finding_message"`
-	}
-	found := map[string]triggerRow{}
-	for _, line := range readExportLines(t, "../config-export/agent_triggers.jsonl") {
-		var row triggerRow
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			t.Fatalf("agent_triggers.jsonl 解码失败（COPY 双层转义处理错误？）: %v", err)
-		}
-		found[row.AgentKey] = row
-	}
-	disp, ok := found["vuln_dispatcher"]
-	if !ok {
-		t.Fatal("config-export 缺少 vuln_dispatcher 触发器行")
-	}
-	if !disp.Enabled || disp.OnFinding {
-		t.Fatalf("config-export dispatcher 触发器必须为 enabled=true/on_finding=false: %+v", disp)
-	}
-	if disp.FindingMessage != vulnDispatcherFindingMessage {
-		t.Fatal("config-export dispatcher finding_message 与代码默认派发消息不一致")
-	}
-	cleaner, ok := found["trace_cleaner"]
-	if !ok {
-		t.Fatal("config-export 缺少 trace_cleaner 触发器行")
-	}
-	if !cleaner.Enabled || cleaner.OnFinding {
-		t.Fatalf("config-export trace_cleaner 触发器必须为 enabled=true/on_finding=false: %+v", cleaner)
-	}
-	if strings.TrimSpace(cleaner.FindingMessage) == "" {
-		t.Fatal("trace_cleaner 触发器应保留原 finding 消息作为显式派发消息模板")
-	}
-
-	type bindingRow struct {
-		Key     string   `json:"key"`
-		Agents  []string `json:"agents"`
-		Enabled bool     `json:"enabled"`
-	}
-	bindingFound := false
-	for _, line := range readExportLines(t, "../config-export/tools_bindings.jsonl") {
-		var row bindingRow
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			t.Fatalf("tools_bindings.jsonl 解码失败: %v", err)
-		}
-		if row.Key != "dispatch_finding_to_agent" {
-			continue
-		}
-		bindingFound = true
-		if !row.Enabled {
-			t.Fatal("config-export dispatch_finding_to_agent 必须为 enabled")
-		}
-		if len(row.Agents) != 1 || row.Agents[0] != "planner" {
-			t.Fatalf("config-export dispatch_finding_to_agent 绑定必须严格等于 [planner], 实际 %v", row.Agents)
-		}
-	}
-	if !bindingFound {
-		t.Fatal("config-export 缺少 dispatch_finding_to_agent 绑定行")
-	}
-
-	type agentRow struct {
-		Key         string `json:"key"`
-		Description string `json:"description"`
-	}
-	customFound := map[string]agentRow{}
-	for _, line := range readExportLines(t, "../config-export/agents_custom.jsonl") {
-		var row agentRow
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			t.Fatalf("agents_custom.jsonl 解码失败: %v", err)
-		}
-		customFound[row.Key] = row
-	}
-	exportDisp, ok := customFound["vuln_dispatcher"]
-	if !ok {
-		t.Fatal("config-export 缺少 vuln_dispatcher 自定义 agent 行")
-	}
-	if exportDisp.Description != vulnDispatcherDescription {
-		t.Fatal("config-export dispatcher 入口描述与 planner 显式派发默认描述不一致")
-	}
-	exportCleaner, ok := customFound["trace_cleaner"]
-	if !ok {
-		t.Fatal("config-export 缺少 trace_cleaner 自定义 agent 行")
-	}
-	if !strings.Contains(exportCleaner.Description, "显式派发") {
-		t.Fatalf("config-export trace_cleaner 入口描述应说明 planner 显式派发: %q", exportCleaner.Description)
 	}
 }

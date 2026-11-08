@@ -206,7 +206,7 @@ func TestIntentPauseResumeAndCancelCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cleanup, err := es.CancelIntent(intentID)
+	cleanup, err := es.CancelIntent(intentID, "paused")
 	if err != nil {
 		t.Fatal(err)
 	}

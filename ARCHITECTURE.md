@@ -1,6 +1,6 @@
 # Artex 架构树与逐文件职责
 
-更新时间：2026-11-02  
+文档状态：**本文档为 2026-11-02 的代码快照**（非实时生成）。文件清单与职责描述以该日工作区为准，之后新增的文件与能力未逐文件同步（0.1.5 增量索引见文末第 4 节）；引用代码位置请用 `文件#符号` 并在当前源码中核对，不要沿用旧行号。
 路径基准：项目根目录。
 
 本文使用目录树说明架构和文件职责。覆盖业务 Go 源码及测试、`web/src`、数据库 schema、构建/部署配置和 Skills；依赖、构建产物、缓存和 `third_party/` 内部源码不逐文件展开。
@@ -64,6 +64,8 @@ artex-ld/
 │   ├── coldgraph.go  # 计算探索图的冷热集合、结构冷节点和可折叠分块，为压缩提供图算法。
 │   ├── coldgraph_test.go  # 验证 `coldgraph` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── compaction.go  # 执行探索上下文 minor/major compaction，生成摘要节点、维护版本与冷标记并控制并发。
+│   ├── constraints.go  # 读取任务 allow/deny 约束并生成 Planner/Worker 系统提示词块。
+│   ├── constraints_test.go  # 验证约束读取、分组渲染和空约束行为；不参与生产运行。
 │   ├── customexec.go  # 运行独立自定义执行器会话，配置工具、预算和输出写回，返回终止原因及写入统计。
 │   ├── deferred.go  # 把 deferred 工具清单加入系统提示，并从历史工具调用恢复已解锁 Skill 状态。
 │   ├── deferred_test.go  # 验证 `deferred` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -95,7 +97,6 @@ artex-ld/
 │   ├── retester.go  # 保存漏洞复测 Agent 的默认系统提示。
 │   ├── review_context_test.go  # 验证 `review_context` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── runinfo.go  # 在 context 中携带任务、探索、会话和 Agent 等运行元数据，供工具与日志使用。
-│   ├── scope_prompt_test.go  # 验证 `scope_prompt` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── session_header_test.go  # 验证 `session_header` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── side_questions.go  # 将旁路问题捕获能力附加到一次 agent 运行上下文。
 │   ├── side_questions_test.go  # 验证 `side_questions` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -113,12 +114,10 @@ artex-ld/
 │   ├── tools_nil_store_test.go  # 验证 `tools_nil_store` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── tools_overview_test.go  # 验证 `tools_overview` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── tools_review.go  # 实现审核工具集，以及审核预筛、审核对话和自动审核的独立模型运行流程。
-│   ├── unrestricted_prompt_test.go  # 验证 `unrestricted_prompt` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── worker.go  # 实现意图执行者：加载意图与约束、执行工具、写回事实/漏洞并处理预算和收尾。
 │   ├── worker_delivery_test.go  # 验证 `worker_delivery` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── worker_domain_templates.go  # 定义 Worker 场景模板的类型和内置种子列表。
 │   ├── worker_intervention_test.go  # 验证 `worker_intervention` 对应实现的单元、边界或集成行为；不参与生产运行。
-│   ├── worker_prompt_test.go  # 验证 `worker_prompt` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   └── wrapup.go  # 管理普通预算耗尽和任务超时的收尾提示、轮数、工具禁用与 settlement 配置。
 ├── cmd/  # 可执行程序入口。
 │   └── artex/
@@ -168,6 +167,7 @@ artex-ld/
 │   ├── finding_retests.go  # 管理漏洞复测记录、关联会话、状态恢复和复测结果。
 │   ├── finding_retests_test.go  # 验证 `finding_retests` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── finding_sanitization_test.go  # 验证 `finding_sanitization` 对应实现的单元、边界或集成行为；不参与生产运行。
+│   ├── finding_severity_test.go  # 验证严重度归一化、非法写入拒绝和历史值排序；不参与生产运行。
 │   ├── finding_traffic.go  # 保存不可变流量证据快照，并在事务中绑定漏洞、维护版本和校验一致性。
 │   ├── finding_traffic_archive.go  # 把流量证据纳入任务归档，并在恢复时重建漏洞流量绑定。
 │   ├── finding_traffic_archive_test.go  # 验证 `finding_traffic_archive` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -229,6 +229,7 @@ artex-ld/
 │   ├── task_queue_test.go  # 验证 `task_queue` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── task_scope.go  # 管理任务范围、自动/Agent 范围来源、测试覆盖统计和覆盖图。
 │   ├── task_scope_test.go  # 验证 `task_scope` 对应实现的单元、边界或集成行为；不参与生产运行。
+│   ├── task_scope_match_test.go  # 验证 IP 字面量 domain 在覆盖度、未测资产、Host 和 DSL 查询中的一致性。
 │   ├── task_source_limit_test.go  # 验证 `task_source_limit` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── task_templates.go  # 提供任务模板 CRUD、名称规范化、规则序列化和创建任务时的模板应用。
 │   ├── task_templates_test.go  # 验证 `task_templates` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -238,6 +239,7 @@ artex-ld/
 │   ├── task_topology_test.go  # 验证 `task_topology` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── tasks.go  # 任务聚合根存储：创建、来源/公司/LLM 绑定、状态流转、查询、删除准备和恢复。
 │   ├── tasks_test.go  # 验证 `tasks` 对应实现的单元、边界或集成行为；不参与生产运行。
+│   ├── tasks_heartbeat_test.go  # 验证心跳下限归一和存量数据库列默认值迁移。
 │   ├── testmain_test.go  # 验证 `testmain` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── tool_usage.go  # 写入工具调用记录并按工具汇总调用次数。
 │   ├── tool_usage_test.go  # 验证 `tool_usage` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -308,7 +310,8 @@ artex-ld/
 │   └── wecom.go  # 实现企业微信 webhook Markdown 消息和长度限制。
 ├── report/  # 任务和漏洞报告。
 │   ├── findings.go  # 生成漏洞清单/单漏洞 Markdown、CSV、文件名和证据引用内容。
-│   └── report.go  # 将任务目标、发现、统计和节点内容渲染为任务 Markdown 报告。
+│   ├── report.go  # 将任务目标、发现、统计和节点内容渲染为任务 Markdown 报告。
+│   └── severity_test.go  # 验证报告与导出中严重度归一、排序和未知值置底。
 ├── scripts/  # 项目维护与迁移脚本。
 │   ├── cdp-shot.js  # 通过 Chrome DevTools Protocol 截取页面，用于 UI 调试/验证。
 │   ├── test-deploy-scripts.sh  # 部署脚本的静态/行为回归检查。
@@ -373,12 +376,14 @@ artex-ld/
 │   ├── goals_test.go  # 验证 `goals` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── inheritance_api_test.go  # 验证 `inheritance_api` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── inheritance_dto_test.go  # 验证 `inheritance_dto` 对应实现的单元、边界或集成行为；不参与生产运行。
-│   ├── intent_intervention.go  # 提供向运行中 Worker 发送 steer 消息的 API 和请求校验。
+│   ├── intent_intervention.go  # 提供向已暂停 Worker 意图注入人工后续消息的 API（`sendWorkerMessage`）和请求校验（`validWorkerMessageRequestID`）。
 │   ├── intercept.go  # 提供工具拦截规则/审批/历史 API，并接入 LLM judge reviewer。
 │   ├── intercept_detail_test.go  # 验证 `intercept_detail` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── intercept_filter_test.go  # 验证 `intercept_filter` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── intercept_live_test.go  # 验证 `intercept_live` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── intercept_review_test.go  # 验证 `intercept_review` 对应实现的单元、边界或集成行为；不参与生产运行。
+│   ├── jsonbody.go  # 统一 JSON 请求体分档限长、必填/可选解码和 400/413 错误映射。
+│   ├── jsonbody_test.go  # 验证 JSON 空体、尾随值、大小边界、chunked 超限和单次响应。
 │   ├── llmpool.go  # 将数据库 LLM profile 转为 pool member，构建路由链并导出健康状态。
 │   ├── llmpool_test.go  # 验证 `llmpool` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── llmrec_raw_test.go  # 验证 `llmrec_raw` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -393,13 +398,15 @@ artex-ld/
 │   ├── notifier.go  # 后台通知投递器：实时/摘要、限流、渲染、重试、退避和渠道适配。
 │   ├── notify_api.go  # 提供通知渠道和投递记录 CRUD、测试、重试及 DTO 转换。
 │   ├── notify_api_test.go  # 验证 `notify_api` 对应实现的单元、边界或集成行为；不参与生产运行。
-│   ├── orchestration.go  # 实现主 Agent 的平台编排工具：任务、Agent、LLM、MCP、触发器和派发操作。
+│   ├── orchestration.go  # 注册主 Agent 的平台编排工具（spawn/pause 任务、任务图、约束、发现、worker trace、LLM profile），并执行内置工具 seed 与存量库一次性提示词/绑定升级迁移。
 │   ├── orchestration_name_test.go  # 验证 `orchestration_name` 对应实现的单元、边界或集成行为；不参与生产运行。
+│   ├── orchestration_scope_gate_test.go  # 验证父 goal 禁止行和 deny 约束两道派发闸门及无副作用。
+│   ├── orchestration_status_test.go  # 验证 list_tasks 的 queued 和 LLM 链耗尽状态与 Web 状态推导一致。
 │   ├── planner_templates.go  # 提供 Planner 模板 CRUD、默认切换和变量校验 API。
 │   ├── platform_tools.go  # 实现资产删除、Skill/自定义工具/MCP 管理等平台工具。
 │   ├── platform_tools_test.go  # 验证 `platform_tools` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── prompt_vars_test.go  # 验证 `prompt_vars` 对应实现的单元、边界或集成行为；不参与生产运行。
-│   ├── review.go  # 审核运行器：任务预筛、审核会话、自定义执行器、写操作门和运行槽位。
+│   ├── review.go  # 审核运行器（`ReviewRunner`）：任务预筛（`preReviewTask`）、自动裁决（`autoDecide`）、复审对话与人工通过/驳回、任务级槽位（`reviewSlot`）和审核写工具 seed（`seedReviewIntercept`）。
 │   ├── review_chat_e2e_test.go  # 验证 `review_chat_e2e` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── review_http_test.go  # 验证 `review_http` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── scenario_templates_test.go  # 验证 `scenario_templates` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -407,7 +414,7 @@ artex-ld/
 │   ├── scope_prompt_migration.go  # 对旧 Agent 提示执行范围授权语义的一次性迁移。
 │   ├── scope_prompt_migration_test.go  # 验证 `scope_prompt_migration` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── server.go  # HTTP 服务与运行配置中心：路由、provider 缓存、Agent 配置、聊天、流式接口和后台组件启动。
-│   ├── server_mgmt.go  # 大型管理 API 集合：任务、Agent、Skill、LLM、设置、日志、工具和通用请求辅助。
+│   ├── server_mgmt.go  # agent、提示词、工具、MCP、技能与 LLM profile/重试策略的管理 API（如 `pgCreateAgent`、`pgSavePrompt`、`fsListSkills`），另含任务删除辅助与通用入参解析。
 │   ├── side_questions.go  # 接入旁路问题服务，管理模型、快照、运行、取消、回复和 SSE 事件。
 │   ├── side_questions_test.go  # 验证 `side_questions` 对应实现的单元、边界或集成行为；不参与生产运行。
 │   ├── skill_upload_test.go  # 验证 `skill_upload` 对应实现的单元、边界或集成行为；不参与生产运行。
@@ -791,3 +798,14 @@ artex-ld/
 ├── start.sh  # Linux/macOS 启动入口，设置环境并启动 Artex。
 └── update.sh  # 已有安装更新入口，重建/替换程序并保留运行数据。
 ```
+
+## 4. 0.1.5 增量索引（2026-11-02 快照之后）
+
+本快照的目录树未逐文件覆盖 0.1.5 的自定义执行器链路；下面只列已在源码核对过的能力与锚点（引用时用 `文件#符号`）：
+
+| 能力 | 代码锚点 | 职责 |
+|---|---|---|
+| `agents.executor_key` | `db/schema.sql`（`ALTER TABLE agents ADD COLUMN executor_key`，约束 `agents_executor_key_ck`，唯一索引 `idx_agents_executor_key`）；查询/校验 `db/config.go#GetAgentByExecutorKey` / `db/config.go#CheckExecutorKey` | 自定义 agent 声明“我是某种执行器”，供意图 `payload.executor` 引用；内置 agent 禁止声明。 |
+| `claim_executor_intent` | `agent/tools_intent.go#ToolSet.claimExecutorIntent`；CAS `db/exploration.go#ExplorationStore.ClaimExecutorIntent`；领取路径 `server/engine.go#claimNext` | 自定义执行器原子领取匹配意图（仅自定义执行器可调用）。 |
+| `list_intents` | `agent/tools.go#ToolSet.listIntents`；注入点 `server/assembly.go`（`executorAgent` 分支） | 意图列表工具：state/q 过滤 + 游标分页，按执行器身份注入。 |
+| `pre_agent` | `db/schema.sql`（`tasks.pre_agent`）；校验 `server/task_validate.go#validatePreAgent`；执行 `server/engine.go#runPreAgentStage` + `db/exploration.go#ExplorationStore.CustomSeedIntent` | 建任务时指定种子执行器；createTask 与 `spawn_task` 双入口同款校验，Engine 起跑前先跑 pre_agent 种子阶段。 |

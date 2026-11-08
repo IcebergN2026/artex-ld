@@ -91,6 +91,75 @@ func TestAuthInitOnlyOnce(t *testing.T) {
 	}
 }
 
+// The public auth endpoints (/api/auth/login, /api/auth/init) and the JWT-guarded
+// change-password must cap their JSON body before decoding. A chunked body larger
+// than the cap is 413 and is not read past the cap + 1 detection byte, so a huge
+// password cannot be buffered just to be rejected by validatePassword afterwards.
+func TestAuthEndpointsRejectOversizedBody(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer m.Close()
+	s := &Server{m: m}
+
+	newBody := func() *countingReader {
+		return &countingReader{data: []byte(`{"username":"ARTEX","old_password":"` + strings.Repeat("a", maxAuthJSONBodyBytes) + `","new_password":"` + strings.Repeat("b", maxAuthJSONBodyBytes) + `"}`)}
+	}
+	check := func(t *testing.T, rec *httptest.ResponseRecorder, reader *countingReader) {
+		t.Helper()
+		if rec.Code != 413 {
+			t.Fatalf("status=%d want 413; body=%q", rec.Code, rec.Body.String())
+		}
+		if reader.read > maxAuthJSONBodyBytes+1 {
+			t.Fatalf("handler read %d bytes for a %d byte cap", reader.read, maxAuthJSONBodyBytes)
+		}
+		if msg := assertSingleErrorResponse(t, rec); !strings.Contains(msg, "请求正文过大") {
+			t.Fatalf("error=%q", msg)
+		}
+	}
+
+	t.Run("login", func(t *testing.T) {
+		reader := newBody()
+		req := httptest.NewRequest("POST", "/api/auth/login", reader)
+		rec := httptest.NewRecorder()
+		s.authLogin(rec, req)
+		check(t, rec, reader)
+	})
+
+	t.Run("init", func(t *testing.T) {
+		pg := m.pg
+		prevHash, hadPrev, _ := pg.GetSetting(authPassKey)
+		_, _ = pg.Exec(`DELETE FROM settings WHERE key = $1`, authPassKey)
+		defer func() {
+			if hadPrev {
+				_ = pg.SetSetting(authPassKey, prevHash)
+			}
+		}()
+		reader := newBody()
+		req := httptest.NewRequest("POST", "/api/auth/init", reader)
+		rec := httptest.NewRecorder()
+		s.authInit(rec, req)
+		check(t, rec, reader)
+		if hash, _, err := pg.GetSetting(authPassKey); err != nil || hash != "" {
+			t.Fatalf("oversized init must not set a password: hash=%q err=%v", hash, err)
+		}
+	})
+
+	t.Run("change-password", func(t *testing.T) {
+		tok, err := signJWT(s.jwtKey)
+		if err != nil {
+			t.Fatalf("sign token: %v", err)
+		}
+		reader := newBody()
+		req := httptest.NewRequest("POST", "/api/auth/change-password", reader)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		s.authChangePassword(rec, req)
+		check(t, rec, reader)
+	})
+}
+
 func TestValidatePassword(t *testing.T) {
 	for _, tc := range []struct {
 		name, pw string

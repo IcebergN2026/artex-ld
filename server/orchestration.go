@@ -5,6 +5,7 @@
 //   - toolSpawnTask / toolPauseTask / toolGetTaskGraph 等：spawn/pause 任务、任务图、约束、发现、worker trace 等工具实现。
 //   - seedOrchestrationTools：把内置工具与默认绑定 seed 进 DB，并串联全部一次性提示词/绑定升级迁移。
 //   - refreshBuiltinToolSchemas：按版本标记把代码里的 schema/描述变更刷入已 seed 的工具行。
+
 package server
 
 import (
@@ -200,7 +201,9 @@ func (s *Server) toolListTasks() actool.CoreTool {
 			}
 			out := make([]map[string]any, 0)
 			for _, t := range s.m.List() {
-				status := s.deriveTaskStatus(t)
+				// 与 Web /api/tasks 共用同一状态推导：queued 与 LLM 链耗尽
+				// （chain_exhausted）必须与页面显示完全一致。
+				status := s.resolvedTaskStatus(t)
 				end := lastAct[t.ExpID]
 				if live := s.engine.LastActivity(t.ID); live > end {
 					end = live
@@ -278,13 +281,13 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"timeout_seconds":        map[string]any{"type": "integer", "description": "可选：任务级超时(秒)。到点后触发优雅收尾并进入 timeout 终态；留空或 0 = 不限时"},
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
-			// 【二开·P-ORCH·S8】起
+			// 【二开·P-ORCH·S8-1 spawn_task 四参数 schema】起 —— 子任务建任务四参数的 JSON Schema
 			"pre_agent":             strParam("可选：种子意图的自定义执行器 executor_key（该 agent 须已启用、非内置、已声明 executor_key）；留空=默认 worker 执行种子意图"),
 			"planner_prompt":        strParam("可选：子任务 planner 提示词任务级覆盖【全文】（上限 32KB）。创建时原子写入 tasks.planner_prompt_override，运行中无修改入口；与 planner_template_id 同传时本字段优先"),
 			"planner_template_id":   map[string]any{"type": "integer", "description": "可选（兼容旧调用）：从 planner 模板库按数字 id 选预设模板，正文在创建时快照进 planner_prompt_override；新调用优先使用 planner_template_nkey"},
 			"planner_template_nkey": strParam("可选：从 planner 模板库按稳定规范化名 nkey 选预设模板，正文在创建时快照；与 planner_template_id 互斥，与 planner_prompt 同传时 planner_prompt 优先"),
 			"worker_count":          map[string]any{"type": "integer", "description": "可选：任务级 worker 并发数，合法区间 0~16；0 或省略=跟随全局默认"},
-			// 【二开·P-ORCH·S8】止
+			// 【二开·P-ORCH·S8-1 spawn_task 四参数 schema】止
 		}, "description", "goal"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -298,13 +301,13 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				TimeoutSeconds       int             `json:"timeout_seconds"`
 				PlanHeartbeatSeconds int             `json:"plan_heartbeat_seconds"`
 				SeedFirstIntent      bool            `json:"seed_first_intent"`
-				// 【二开·P-ORCH·S8】起
+				// 【二开·P-ORCH·S8-2 spawn_task 四参数入参】起 —— 工具入参结构体中的四参数
 				PreAgent            string `json:"pre_agent"`
 				PlannerPrompt       string `json:"planner_prompt"`
 				PlannerTemplateID   int64  `json:"planner_template_id"`
 				PlannerTemplateNKey string `json:"planner_template_nkey"`
 				WorkerCount         int    `json:"worker_count"`
-				// 【二开·P-ORCH·S8】止
+				// 【二开·P-ORCH·S8-2 spawn_task 四参数入参】止
 				// 【二开·P-INTENT·U23】可选审核开关：只能加强不能减弱
 				ReviewEnabled *bool `json:"review_enabled"`
 			}
@@ -318,7 +321,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			if strings.TrimSpace(a.Goal) == "" {
 				return actool.Errorf("goal 为必填"), nil
 			}
-			// 【二开·P-ORCH·S8】起 —— 四参数校验（与 00 册 S7 createTask 同款规则；工具侧失败=错误文本回 LLM）
+			// 【二开·P-ORCH·S8-3 spawn_task 参数校验】起 —— pre_agent/planner_prompt 校验（与 00 册 S7 createTask 同款规则；工具侧失败=错误文本回 LLM）
 			if a.PreAgent != "" {
 				if err := validatePreAgent(s.m.PG(), a.PreAgent); err != nil {
 					log.Printf("[spawn] spawn_task 不予通过 ⚠ pre_agent=%q 无效（须为已启用自定义 agent 声明的 executor_key）", a.PreAgent)
@@ -333,6 +336,8 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			if plannerNKey != "" && a.PlannerTemplateID != 0 {
 				return actool.Errorf("planner_template_id 与 planner_template_nkey 互斥，请只传一个"), nil
 			}
+			// 【二开·P-ORCH·S8-3 spawn_task 参数校验】止
+			// 【二开·P-ORCH·S8-4 spawn_task 模板与 worker 校验】起 —— 模板快照解析、场景分类与 worker_count 校验
 			// planner_prompt 优先；模板引用只负责在创建时取正文快照，之后改/删模板不影响子任务。
 			plannerPrompt := a.PlannerPrompt
 			if plannerPrompt == "" && a.PlannerTemplateID == 0 && plannerNKey == "" {
@@ -409,8 +414,22 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				log.Printf("[spawn] spawn_task 不予通过 ⚠ worker_count=%d 越界（合法 0~16）", a.WorkerCount)
 				return actool.Errorf("worker_count 合法区间 0~16（0=跟随全局）"), nil
 			}
+			// 【二开·P-ORCH·S8-4 spawn_task 模板与 worker 校验】止
 			if a.TimeoutSeconds < 0 {
 				a.TimeoutSeconds = 0
+			}
+			// 约束轻校验（m01210 拍板·简化版，00 册 S8）：父任务 goal 文本里「禁止」行 → 子串匹配子任务 goal。
+			// 这是 LLM 无法绕过的代码侧硬闸门，与父任务 task_constraints 的 deny 闸门互补。
+			if a.ParentRef != "" {
+				if rule := s.matchForbiddenRule(a.ParentRef, a.Goal); rule != "" {
+					log.Printf("[spawn] spawn_task 不予通过 ⚠ 被父任务约束拦截：rule=%q child_goal=%q", rule, a.Goal)
+					return actool.Errorf(fmt.Sprintf("被父任务约束拦截：%s（子任务目标含被禁方向；如确属授权范围，请调整 goal 措辞或由人工建任务）", rule)), nil
+				}
+				// 【二开·P-INTENT·U22】操作约束硬闸门：父任务 deny 约束「禁止X」同样拦截（结构化载体）
+				if rule := s.matchForbiddenConstraint(a.ParentRef, a.Goal); rule != "" {
+					log.Printf("[spawn] spawn_task 不予通过 ⚠ 被父任务操作约束拦截：rule=%q child_goal=%q", rule, a.Goal)
+					return actool.Errorf(fmt.Sprintf("被父任务操作约束拦截：deny 约束「%s」命中子任务目标（约束明确禁止的方向不得派生；如确属授权范围，请调整 goal 措辞或修改父任务约束）", rule)), nil
+				}
 			}
 			// LLM profile resolution: explicit id > inherit parent's pin > active(nil).
 			var pin *int64
@@ -465,12 +484,12 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				LLMProfileIDs:        llmIDs,
 				TimeoutSeconds:       a.TimeoutSeconds,
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds,
-				// 【二开·P-ORCH·S8】起
-				PreAgent:      a.PreAgent,    // 一次性透传（不落 tasks 列；01 册 S10 seedFirstIntent 消费）
+				// 【二开·P-ORCH·S8-5 spawn_task 建任务透传】起 —— 四参数写入建任务选项
+				PreAgent:      a.PreAgent,    // executor_key 随 tasks.pre_agent 持久化，重启恢复仍由对话型 Agent 接管
 				PlannerPrompt: plannerPrompt, // 模板快照/手改全文已归一（K22 prompt 优先）
 				WorkerCount:   a.WorkerCount, // 0=跟随全局；03 册 S12 Engine.Run 读列
-				// 【二开·P-ORCH·S8】止
-				ReviewEnabled:     reviewEnabled, // 【二开·P-DISPATCH·阶段0①】硬继承父任务审核总开关（人定，无参数）
+				// 【二开·P-ORCH·S8-5 spawn_task 建任务透传】止
+				ReviewEnabled:     reviewEnabled, // 【二开·P-DISPATCH·阶段0①】父开强制开；父关按分类默认兜底（resolveSpawnReview）
 				DispatchAssetKeys: dispatchAssetKeys,
 				DispatchFindingID: a.FindingID,
 			})
@@ -652,21 +671,7 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 		})
 }
 
-// deriveTaskStatus mirrors listTasks' status derivation for the list_tasks tool.
-func (s *Server) deriveTaskStatus(t *Task) string {
-	lifecycle := t.lifecycleSnapshot()
-	switch {
-	case isTerminalStatus(lifecycle.Status):
-		return lifecycle.Status
-	case lifecycle.Paused || s.engine.IsPaused(t.ID):
-		return "paused"
-	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
-		return "running"
-	}
-	return "created"
-}
-
-// orchestrationToolSeeds seeds the cross-task tools into the tools table so they
+// seedOrchestrationTools seeds the cross-task tools into the tools table so they
 // are bindable per-agent (default: bound to nobody — opt-in for orchestration
 // agents). First-insert only, like the traffic seeds.
 func (s *Server) seedOrchestrationTools() {
@@ -745,7 +750,8 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	//     SeedTool 首插入only，旧库已 seed 的 schema 否则收不到这个新参数。
 	//   - list_facts：改为分页，新增 limit/before/q 入参；旧库已 seed 的空 schema 否则
 	//     在工具管理页显示「无参数」，模型也拿不到这几个参数说明。
-	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true, "report_finding": true} // 【二开·P-ORCH·§4.2.8】report_finding：vulnclass 词表描述（m03215 九类两档，触发条件=乱写率>20%，101 实测约 90% 已命中）
+	// 【二开·P-ORCH·§4.2.8 report_finding 词表】vulnclass 词表描述（m03215 九类两档，触发条件=乱写率>20%，101 实测约 90% 已命中）
+	refreshBuiltin := map[string]bool{"goal_met": true, "insert_assets": true, "list_facts": true, "report_finding": true}
 	for _, sd := range agent.BuiltinToolSeeds() {
 		if !refreshBuiltin[sd.Key] {
 			continue
@@ -945,11 +951,17 @@ const vulnDispatcherDescription = "由 planner 确认 finding 满足当前 execu
 
 const vulnDispatcherDescriptionV1 = "严重档立足点漏洞(getshell/rce/file_upload/deserialization × critical/high)自动派发深度子任务：finding 触发→约束检查→判定→去重→按 vulnclass/漏洞描述选场景模板 spawn_task。"
 
-// vulnDispatcherFindingMessage 保存显式派发时使用的消息模板；OnFinding 已默认关闭。
-const vulnDispatcherFindingMessage = "Planner 已确认以下 finding 需要评估后续处置：[vulnclass=__VULNCLASS__/severity=__SEVERITY__] __SUMMARY__。先读显式派发上下文的 execution_mode：" +
+const vulnDispatcherFindingMessagePrefix = "Planner 已确认以下 finding 需要评估后续处置：[vulnclass=__VULNCLASS__/severity=__SEVERITY__] __SUMMARY__。先读显式派发上下文的 execution_mode：" +
 	"foothold 或缺失时，仅 vulnclass ∈ {getshell,webshell,reverse_shell} 且 severity ∈ {critical,high}，并有 WebShell 可连接、交互命令回显或 C2/反弹会话上线证据才评估派发；" +
-	"vulnerability_only 时，vulnclass ∈ {rce,file_upload,deserialization,privesc,获取目标权限} 且 severity ∈ {critical,high}、已有可复现确认证据，可评估派发内网渗透子任务，不要求立足点。" +
+	"vulnerability_only 时，vulnclass ∈ {rce,file_upload,deserialization,privesc,获取目标权限} 且 severity ∈ {critical,high}、已有可复现确认证据，可评估派发内网渗透子任务，不要求立足点。"
+
+// vulnDispatcherFindingMessageUnrestricted 仅用于识别回滚前的系统默认触发消息。
+const vulnDispatcherFindingMessageUnrestricted = vulnDispatcherFindingMessagePrefix +
 	"其他漏洞档不派。派发前按提示词查父任务图去重。"
+
+// vulnDispatcherFindingMessage 保存显式派发时使用的消息模板；OnFinding 已默认关闭。
+const vulnDispatcherFindingMessage = vulnDispatcherFindingMessagePrefix +
+	"其他漏洞档不派。派发前必须用 list_task_constraints 查父任务约束（goal/deny 明确禁止方向不派），再按提示词查父任务图去重。"
 
 const vulnDispatcherFindingMessageV2 = "新漏洞：[vulnclass=__VULNCLASS__/severity=__SEVERITY__] __SUMMARY__。先读触发上下文的 execution_mode：" +
 	"foothold 或缺失时，仅 vulnclass ∈ {getshell,webshell,reverse_shell} 且 severity ∈ {critical,high}，并有 WebShell 可连接、交互命令回显或 C2/反弹会话上线证据才评估派发；" +
@@ -1022,6 +1034,7 @@ func (s *Server) resolveVulnDispatcherPrompt(tmpl string) string {
 	return prompt
 }
 
+// 【二开·P-INTENT·U22 存量库升级】起 —— upgradeVulnDispatcherV2：约束工具绑定 + 提示词 v3/v4 + 触发消息 v2（一次性）
 // upgradeVulnDispatcherV2 存量库一次性升级（【二开·P-INTENT·U22】）：
 //  1. 给 vuln_dispatcher 绑定 list_task_constraints（幂等）；
 //  2. 提示词升级到 v3（约束检查+场景映射+审核建议），仅当当前提示词仍是旧血统（含特征句且无「审核建议」章节）
@@ -1071,7 +1084,7 @@ func (s *Server) upgradeVulnDispatcherV2() {
 	}
 }
 
-// 【二开·P-INTENT·U22】止
+// 【二开·P-INTENT·U22 存量库升级】止
 
 // 【二开·P-DISPATCH·阶段0②】upgradeVulnDispatcherV5 存量库一次性升级：同资产去重强化（用户反馈 m00837：
 // 多个 finding 指向同一资产时派了多个内网渗透子任务）。仅当当前提示词仍是 v4 默认血统（含「审核开关由人决定」
@@ -1325,11 +1338,65 @@ func (s *Server) seedAutoDefaultBindings() {
 	_ = s.m.pg.SetSetting(flag, "true")
 }
 
-// ═══ ARTEX 二开 · [P-ORCH·S8 spawn_task 四参数配套 helper] ═══
-// 功能介绍：matchForbiddenRule 约束轻校验 + executorKeyList/plannerTemplateList 可用清单
-//           （校验失败时回给 LLM 自重试）。
-// 二开日期：2026-10-21
+// 【二开·P-ORCH·S8-6 spawn_task 约束关键词匹配】起 —— 父任务 goal 禁止行/deny 约束的关键词提取与匹配
+func forbiddenKeywordOf(line string) string {
+	line = strings.TrimSpace(strings.TrimLeft(line, "-·* ")) // 容忍列表符
+	if !strings.HasPrefix(line, "禁止") {
+		return ""
+	}
+	kw := strings.TrimSpace(strings.TrimPrefix(line, "禁止"))
+	kw = strings.Trim(kw, "：:。；;，,") // "禁止内网渗透：…" → 取关键词
+	if i := strings.IndexAny(kw, "：:。；;，, "); i > 0 {
+		kw = kw[:i]
+	}
+	return kw
+}
 
+// matchForbiddenRule 父任务 goal 文本逐行扫，取「禁止」开头的行，关键词（"禁止"后的词）
+// 在子任务 goal 里子串命中即返回该行原文；未命中返回 ""。
+// 约束唯一权威载体 = 任务的 goal 文本（m01210：零新字段、无词表、无解析器）。
+func (s *Server) matchForbiddenRule(parentRef, childGoal string) string {
+	pt, ok := s.m.Task(parentRef) // 内存任务对象（含 Goal 字段）
+	if !ok || pt == nil {
+		return ""
+	}
+	for _, line := range strings.Split(pt.Goal, "\n") {
+		if kw := forbiddenKeywordOf(line); kw != "" && strings.Contains(childGoal, kw) {
+			return line // 命中：返回规则行原文（给 LLM/日志看）
+		}
+	}
+	return ""
+}
+
+// 【二开·P-ORCH·S8-6 spawn_task 约束关键词匹配】止
+
+// 【二开·P-INTENT·U22 操作约束硬闸门】起 —— 结构化 deny 约束的代码侧兜底（与 goal 文本禁止行互补）
+// matchForbiddenConstraint 检查父任务 task_constraints 的 deny 行：含「禁止X」表述且
+// 子任务 goal 命中 X → 返回约束原文；未命中返回 ""。与 matchForbiddenRule（goal 文本
+// 禁止行）互补：deny 约束是结构化权威载体，本函数是代码侧兜底，LLM 判定不可绕过。
+func (s *Server) matchForbiddenConstraint(parentRef, childGoal string) string {
+	pt, ok := s.m.Task(parentRef)
+	if !ok || pt == nil || pt.Store == nil {
+		return ""
+	}
+	cons, err := pt.Store.ListConstraints()
+	if err != nil {
+		return ""
+	}
+	for _, c := range cons {
+		if c.Kind != "deny" {
+			continue
+		}
+		if kw := forbiddenKeywordOf(c.Text); kw != "" && strings.Contains(childGoal, kw) {
+			return c.Text
+		}
+	}
+	return ""
+}
+
+// 【二开·P-INTENT·U22 操作约束硬闸门】止
+
+// 【二开·P-ORCH·S8-7 spawn_task 校验辅助清单】起 —— executor_key 与 planner 模板的可用清单（供校验失败文案）
 // executorKeyList 列出可用的 executor_key（已启用、非内置、已声明），供校验失败文案。
 func (s *Server) executorKeyList() string {
 	agents, err := s.m.PG().ListAgents()
@@ -1364,4 +1431,4 @@ func (s *Server) plannerTemplateList() string {
 	return strings.Join(items, ", ")
 }
 
-// 【二开·P-ORCH·S8】止
+// 【二开·P-ORCH·S8-7 spawn_task 校验辅助清单】止

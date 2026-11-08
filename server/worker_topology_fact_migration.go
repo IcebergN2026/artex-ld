@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - internalWorkerTopologyFactRule：替换后的内网渗透拓扑 fact 规则行（拓扑边由 fact 自动派生）。
 //   - upgradeWorkerTopologyFactPrompt：刷内置模板、任务提示词快照与遗留基础快照，幂等只跑一次。
+
 package server
 
 import (

@@ -5,6 +5,7 @@
 //   - maintain：推进 round_no、重算冷热并落冷戳。
 //   - minor / major：增量折叠未覆盖冷节点 / 全量回源重压并按签名调和现有 digest。
 //   - foldBlock / compress：压缩单个块并写 digest（提交前复查活性）/ LLM 压缩块为综合结论。
+
 package agent
 
 // cold-digest §4/§5/§7: the Compactor ties the pure algorithms (coldgraph.go)
@@ -28,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -91,6 +93,11 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 	}
 	go func() {
 		defer c.finish(ts.ID())
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[compaction] PANIC exp=%d: %v\n%s", ts.ID(), r, debug.Stack())
+			}
+		}()
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
 		defer cancel()
 		// 压缩是裸 provider 调用（compress 里直接 prov.Complete），不经过 agentcore

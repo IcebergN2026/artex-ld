@@ -4,6 +4,7 @@
 //   - GetInterceptDetail：读取单条审批详情（含关联审计快照）。
 //   - ResolveIntercept：落库人工裁决（allow/deny）并返回是否为首次判定。
 //   - CompleteIntercept：回填工具执行状态、输出与截断标记，标记执行结束时间。
+
 package db
 
 import (

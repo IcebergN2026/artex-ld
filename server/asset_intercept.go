@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - assetInterceptListRules / assetInterceptCreateRule / assetInterceptUpdateRule / assetInterceptDeleteRule / assetInterceptToggleRule：拦截规则列表/新增/更新/删除/启停。
 //   - validateAssetInterceptRuleReq：校验拦截规则请求参数。
+
 package server
 
 import (
@@ -40,8 +41,7 @@ func (s *Server) assetInterceptCreateRule(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req assetInterceptRuleReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := validateAssetInterceptRuleReq(&req); err != nil {
@@ -67,8 +67,7 @@ func (s *Server) assetInterceptUpdateRule(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var req assetInterceptRuleReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := validateAssetInterceptRuleReq(&req); err != nil {
@@ -113,8 +112,7 @@ func (s *Server) assetInterceptToggleRule(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := pg.ToggleAssetInterceptRule(id, req.Enabled); err != nil {

@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - baseAgentOptions：两侧共用的 agentcore.Options 公共块（权限旁路、记录代理、文件边界、溢出目录、会话待办）。
 //   - wrapIntentEmit：包装 emit，给每条活动打上意图 id 与执行者名，活动流可追溯执行者。
+
 package agent
 
 import (

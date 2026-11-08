@@ -87,9 +87,7 @@ function entryTone(status: string): EntryTone {
   return { stroke: "", dashed: false, badge: "", badgeClass: "" };
 }
 
-// ---------------------------------------------------------------------------
 // 自定义元素：draw.io 风格的节点卡片 / 分组容器 / smoothstep 连线。
-// ---------------------------------------------------------------------------
 
 type TopoCardData = {
   title: string;
@@ -274,9 +272,7 @@ function TopologyEdge({
 const nodeTypes = { topology: TopoCard, frame: GroupCard };
 const edgeTypes = { topology: TopologyEdge };
 
-// ---------------------------------------------------------------------------
 // 后端整图 → React Flow 数据。
-// ---------------------------------------------------------------------------
 
 /**
  * 图数据转 RF 节点。坐标以 DB 为准（组内节点是相对坐标，天然匹配 RF 的 parentId 语义）；

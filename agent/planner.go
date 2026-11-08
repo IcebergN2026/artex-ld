@@ -6,6 +6,7 @@
 //   - TriggerEvent / renderTriggers：本轮触发事件结构及提示词渲染。
 //   - renderGraphOverview / intentSummary / workerOutput：图态势概览与意图/产物摘要。
 //   - renderPlannerTodos / todoFor：待办渲染与会话待办存储。
+
 package agent
 
 import (
@@ -54,7 +55,7 @@ type Planner struct {
 	maxTokensFn    func() int  // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor      *Compactor  // cold-node compaction (§7); nil = disabled
 	// 【二开·审核流 PR1】planner 侧审核流回调：每轮 Plan 注入 ToolSet。
-	notifyReview    func(taskID int64)      // §2.6：送审成功唤醒 ReviewRunner（nil = 只靠 60s ticker 兜底）
+	notifyReview    func(taskID int64)      // §2.6：送审成功唤醒 ReviewRunner（nil = 只靠 15s ticker 兜底）
 	reviewEnabledFn func(taskID int64) bool // §2.4：任务级审核总开关即时解析（nil = 不校验）
 	checkExecutor   func(key string) error  // §2.9.3：target_executor 合法性校验（nil = 不校验）
 
@@ -118,12 +119,10 @@ func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
 // settings toggle takes effect without rebuilding the agent. nil = inject (default).
 func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn }
 
-// ═══ ARTEX 二开 · [P-TPL·A4 planner 提示词四级链] ═══
+// 【二开·P-TPL·A4 planner 提示词四级链】
 // 功能介绍：SetTaskPromptOverride 接线任务级提示词快照读取器（四级链第①级来源），
 //
 //	仿 :101 SetConstraintInject 风格；nil = 无任务级覆盖（落②③④）。
-//
-// 二开日期：2026-10-21
 func (p *Planner) SetTaskPromptOverride(fn func() string) { p.taskPromptFn = fn }
 
 // taskPromptOverride 每轮现读任务级快照（空串=未设置）。
@@ -354,16 +353,14 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 任务目标：{{.Goal}}
 
-**操作纪律**：禁止破坏性操作（删改业务数据、DoS、关闭审计、持久化后门）；发现的新资产和方向可继续规划探索。
-
 **本轮该产出几个意图（先想清楚这条）**：
-- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 open 或 running 意图】（frontier_open=0 且 running_intents 为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。
-- 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
+- **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 open、running 或 assigned 意图】（frontier_open=0、running_intents 和 assigned_intents 均为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。
+- 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running/assigned 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
 - 反过来：确有【未覆盖、且不依赖在跑 work】的新方向，或目标未达成且范围内仍有未测面，就该派——别把 0 意图当偷懒的默认。
 
 **每次唤醒的决策流程**：
 
-1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态、open/running/recent_done 意图、sites_without_endpoints（无端点的站点，提示可能待探的方向）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）。
+1. **完整态势已附在本提示下方**（就是 graph_overview 的返回，无需再调它）：task（原始标题+目标/根节点）、资产计数、goals+状态、open/running/assigned/recent_done 意图、sites_without_endpoints（无端点的站点，提示可能待探的方向）、facts（探索事实数，与漏洞是两类）、recent_facts（{id,summary,confidence?}）。
    - **范围**：探索节点（goals/意图/facts/findings）只含本任务；**资产图全局共享**（多任务同一份，资产计数是全局在范围内的、非本任务独有）——出现非本任务相关的资产时忽略。
    - **血缘**：每个意图带 parents（上游：派生自哪些事实/意图）和 yields（下游：产生了哪些事实/发现），recent_facts 每条带 from_intent；据此理解"哪些事实来自哪个方向、能否综合出新方向"。
    - **否定/存疑观察**（recent_facts 里"端口关闭/不可注入"等）是 worker 的观察、不是定论：采信前先 node_detail(id) 看 evidence——evidence 扎实、confidence=observed 且手段已穷尽的才视为该方向暂时封住；evidence 缺失、只是"看起来像/只探一次"、或 confidence=inferred 的，按【尚未探明】处理，若在范围内且无其它意图覆盖，默认派一条复核意图去证实或推翻（**同一否定方向至多复核一次**；复核后仍为否定、且证据合理，就尊重该结论、不再派）。
@@ -472,7 +469,7 @@ dispatch_finding_to_agent(
    - 完全无任何意图覆盖的全新方向 → 生成。
    - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。
    - **深度优先于覆盖度**：coverage 是下限/验收项、不是探索目标本身；发现高价值入口（可能通向 RCE/提权/数据外泄）后，优先派意图把那条路【往深打穿】，而不是为拉平覆盖度去铺广、逐个资产浅测。
-   - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。
+   - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
 
    **串行利用链：分步派，别拆成并行。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：不要一次性并行下发（下游拿不到还不存在的前置只会重复/空转）；用 TodoWrite 把整条链记成待办（每步一条），本轮只派"前置已满足"的那步（通常第一步），待它产出 fact 后下次唤醒（提示会带上待办清单）再派下一步并把已满足的标 completed。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才用多意图并行。
 
@@ -483,7 +480,7 @@ dispatch_finding_to_agent(
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
-// ═══ ARTEX 二开 · [P-TPL·A4 planner 提示词四级链] ═══
+// 【二开·P-TPL·A4 planner 提示词四级链】
 // 功能介绍：plannerSystem 四级优先级链（m00521 拍板）——
 //
 //	① 任务级覆盖（tasks.planner_prompt_override 快照：手改 planner_prompt / 模板正文快照）
@@ -491,8 +488,6 @@ dispatch_finding_to_agent(
 //	③ planner_templates 默认模板（只兜直写库建任务的边角路径——正常路径 S13 已快照进①）
 //	④ 内置默认（plannerDefaultTmpl）
 //	渲染失败逐级回退；代码占有的尾部规约（artifactSpec）渲染后追加，任何一级不可覆盖。
-//
-// 二开日期：2026-10-21
 func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	// ① 任务级覆盖快照
@@ -598,6 +593,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		sysBody += "\n\n【意图审核已开启（最高优先级约束）】：本任务开启了人工审核流——创建新意图必须改用 add_review_intent 送审（参数同 add_intent，另可带 target_executor 预选执行器、replaces 标注替代的旧意图）；不要用 add_intent 直投 open。被驳回的意图（概览 rejected_intents 块，附驳回理由）用 update_intent 修订原稿后自动重送审；确认无价值的用 cancel_intent 取消（reason 必填）。"
 	}
 	if p.wantConstraints() {
+		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
 	system, boundary := deferredSystem(sysBody, def)
 	// planner 无自身墙钟预算;有 deadline 时把 MaxDuration 夹逼到剩余,让在跑的规划轮在
@@ -661,10 +657,10 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		// 心跳/无变动唤醒时,若全图已无任何 open 或 running 意图 → 探索已停摆(没 worker 在跑、
 		// 也没排队方向)。明确告知 planner 并强制其本轮补出新方向,别只复查在跑意图后空转一轮。
 		if active, err := ts.HasActiveIntent(); err == nil && !active {
-			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
+			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open、running 或 assigned 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
 		}
 	}
-	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
+	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open、running 或 assigned 意图（frontier_open=0、running_intents 和 assigned_intents 均为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running/assigned 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
 		renderPlannerTodos(opts.Todos.List())
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。

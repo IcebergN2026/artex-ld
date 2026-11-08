@@ -32,6 +32,8 @@ exit 0
 EOF
 cat > "$TMP/bin/psql" <<'EOF'
 #!/usr/bin/env bash
+# psql -c 不读取 stdin；fake 若在此等待 cat 会让 manifest 查询永久阻塞。
+if [[ " $* " == *" -c "* ]]; then exit "${FAKE_PSQL_STATUS:-0}"; fi
 cat >/dev/null
 exit "${FAKE_PSQL_STATUS:-0}"
 EOF

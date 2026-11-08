@@ -1,10 +1,11 @@
 // task_archives.go：任务冷归档/恢复/删除的后台 worker 与批量 HTTP 接口。
 // 主要函数/类型：
 //   - startTaskArchiveWorker / notifyTaskArchiveWorker / runOneTaskArchiveJob：归档 worker 的启动、唤醒与单任务领取执行。
-//   - archiveTask / restoreTask / restoreTaskArchivePayload / deleteTaskArchive：归档、恢复（含载荷安装）与删除的具体流程。
+//   - archiveTask / restoreTaskArchive / restoreTaskArchivePayload / deleteTaskArchive：归档、恢复（含载荷安装）与删除的具体流程。
 //   - loadRestoredTask：恢复后重新加载任务运行时。
 //   - listTaskArchives / getTaskArchive / queueTaskArchive / queueTaskArchiveRestore / queueTaskArchiveDelete：归档记录的查询与单个入队接口。
 //   - queueTaskArchivesBatch / restoreTaskArchivesBatch / deleteTaskArchivesBatch：批量归档/恢复/删除接口（含依赖排序 topoTaskIDs）。
+
 package server
 
 import (
@@ -520,8 +521,7 @@ func (s *Server) queueTaskArchiveDelete(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) queueTaskArchivesBatch(w http.ResponseWriter, r *http.Request) {
 	var request archiveBatchRequest
-	if err := decode(r, &request); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &request, maxBatchJSONBodyBytes) {
 		return
 	}
 	parsed := normalizeBatchTaskIDs(request.TaskIDs)
@@ -560,8 +560,7 @@ func (s *Server) queueTaskArchivesBatch(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) queueTaskArchiveActionBatch(w http.ResponseWriter, r *http.Request, action string) {
 	var request archiveBatchRequest
-	if err := decode(r, &request); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &request, maxBatchJSONBodyBytes) {
 		return
 	}
 	ids, err := normalizeArchiveIDs(request.ArchiveIDs)

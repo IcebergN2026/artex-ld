@@ -4,6 +4,7 @@
 //   - ExecutionModeFromGoal：识别显式的"仅漏洞路径"意图，Shell/立足点要求优先。
 //   - goalExecutionModeSpec / plannerExecutionModeSpec：goal/planner 侧仅漏洞路径提示词选择。
 //   - GoalVulnerabilityOnlySpec / PlannerVulnerabilityOnlySpec：代码持有的模式规约文案。
+
 package agent
 
 import "strings"
@@ -77,8 +78,8 @@ const GoalVulnerabilityOnlySpec = `
 - RCE、文件上传、反序列化或权限提升本身就是本模式的合法最终结果，不得升级为必须建立立足点。
 - 只有用户同时明确要求 Shell/立足点时才退出本模式；当前识别结果表示没有这种要求。`
 
-// PlannerVulnerabilityOnlySpec keeps planning focused on vulnerability
-// evidence rather than weaponization or a mandatory foothold.
+// plannerExecutionModeSpec returns the vulnerability-only prompt block for
+// goals recognized as vulnerability-only, or "" for foothold tasks.
 func plannerExecutionModeSpec(goal string) string {
 	if ExecutionModeFromGoal(goal) == ExecutionModeVulnerabilityOnly {
 		return PlannerVulnerabilityOnlySpec
@@ -86,6 +87,8 @@ func plannerExecutionModeSpec(goal string) string {
 	return ""
 }
 
+// PlannerVulnerabilityOnlySpec keeps planning focused on vulnerability
+// evidence rather than weaponization or a mandatory foothold.
 const PlannerVulnerabilityOnlySpec = `
 
 **执行模式：仅漏洞路径（代码按任务目标识别）**

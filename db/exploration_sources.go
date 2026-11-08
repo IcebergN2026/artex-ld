@@ -164,13 +164,13 @@ func (s *ExplorationStore) ListByKindPageWithSources(kind string, before int64, 
 	return merged, hasMore, total, nil
 }
 
-// ═══ ARTEX 二开 · [LIST-INTENTS·D1 跨源意图分页] ═══
+// 【二开·LIST-INTENTS·D1 跨源意图分页】
 // 功能介绍：ListIntentsPageWithSources——ListByKindPageWithSources 的 intent 专用版（合并排序/多取一行
 //
 //	探 hasMore/关联任务继承节点标 inherited=true 只读，全部同款），多一个 states 白名单过滤
 //	（空=全部状态）。供 list_intents 工具（agent/tools.go LIST-INTENTS·A1）。
 //
-// 二开日期：2026-10-22
+
 func (s *ExplorationStore) ListIntentsPageWithSources(states []string, before int64, limit int, q string) (nodes []*Node, hasMore bool, total int, err error) {
 	if limit <= 0 {
 		limit = 20

@@ -4,6 +4,7 @@
 //   - ValidMinSeverity / Validate：校验级别门槛等受限取值，在保存渠道时拦截。
 //   - Match：判定事件是否应投递到该渠道（类型→级别→范围→关键词，永不报错）。
 //   - intersectsInt / containsAnyFold：资产集合交集与大小写不敏感关键词匹配。
+
 package notify
 
 import (

@@ -19,7 +19,7 @@ services:
       context: .
       dockerfile: Dockerfile.source
       args:
-        ARTEX_VERSION: ${ARTEX_VERSION:-0.1.4}
+        ARTEX_VERSION: ${ARTEX_VERSION:-0.1.5}
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
     image: artex-second-dev:${ARTEX_TAG:-local}
     depends_on:

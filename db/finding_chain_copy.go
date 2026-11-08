@@ -1,3 +1,9 @@
+// finding_chain_copy.go：把选中 finding 的 intent/fact/finding 祖先链复制到目标探索。
+// 主要函数/类型：
+//   - copyFindingChainTx：在调用方事务内复制 finding 祖先链，新任务与图同事务提交/回滚。
+//   - findingIDsByNodeTx：按源探索的节点批量查询 finding id，缺行即报来源不可用。
+//   - copiedFindingPayload：复制节点 payload，finding 节点补 source_finding_id/source_finding_node_id。
+
 package db
 
 import (

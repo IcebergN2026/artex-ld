@@ -3,6 +3,7 @@
 //   - AbortCause / cause / Causef：带 code/short/text 的中止原因错误类型与构造器。
 //   - AbortPausedByUser 等预置变量：任务级/工作级/对话级/进程级的全部内置中止原因。
 //   - AbortReason：从已取消的 context 解析出命名中止原因。
+
 package agent
 
 import (

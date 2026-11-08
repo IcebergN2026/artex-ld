@@ -4,10 +4,11 @@
 //   - cancelIntent：软删除 open/proposed 意图（running/paused 拒绝并引导改走 control）。
 //   - intentIDVersionReq / validate：意图 id + expected_version 请求体及校验。
 //   - mainAgentOpenOnly：限制 mainagent 只能改动 open 意图。
+//   - claimExecutorIntent：自定义执行器领取工具（claim_executor_intent，原子领取匹配意图）。
 
 package agent
 
-// ═══ ARTEX 二开 · 审核流 PR4 ═══
+// 【二开·审核流 PR4 意图修订/取消工具】
 // update_intent / cancel_intent 工具（§5/§9）：
 //   - update_intent：修订 open 意图或被驳回（rejected）意图原稿；pending（审核中）一律
 //     拒绝；带 expected_version 乐观锁与产出锁；驳回稿改后自动重送审核（review_status
@@ -183,6 +184,70 @@ func (t *ToolSet) cancelIntent() actool.CoreTool {
 			}
 			return jsonResult(map[string]any{
 				"intent_id": req.IntentID, "state": "deleted", "summary": summary,
+			})
+		})
+}
+
+// claimExecutorIntent 让当前自定义执行器直接领取一条匹配的 intent。
+// executor_key 只从 ToolSet.executorKey 的服务端身份取得，模型不能指定其他执行器。
+// 同一个 CAS 同时完成 proposed/open → running 和 owner=exec:<key>，确保不会重复领取。
+func (t *ToolSet) claimExecutorIntent() actool.CoreTool {
+	return t.writeExpTool("claim_executor_intent",
+		"【自定义执行器领取】把一条 proposed/open 且 payload.executor 与当前 Agent executor_key 完全匹配的 intent 原子改为 running。只能由声明了 executor_key 的自定义 Agent 或其内部 exec:<key> 身份调用；不经过默认 Worker。返回 {claimed,state,owner,intent_id,reason}。重复领取、executor 不匹配或状态已变化均返回 claimed=false，不修改原 intent。",
+		obj(map[string]any{
+			"intent_id": idp("要领取的探索意图 id（先用 list_intents 查询）"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			executorKey := t.executorKey
+			if executorKey == "" {
+				return actool.Errorf("当前身份未配置 executor_key，不能领取自定义执行器意图"), nil
+			}
+			if !strings.HasPrefix(t.worker, "exec:") {
+				if t.worker == "" || t.checkExecutor == nil {
+					return actool.Errorf("仅自定义执行器可以调用 claim_executor_intent"), nil
+				}
+				if err := t.checkExecutor(executorKey); err != nil {
+					return actool.Errorf(fmt.Sprintf("当前 Agent 不是有效的自定义执行器：%v", err)), nil
+				}
+			}
+			var req struct {
+				IntentID int64 `json:"intent_id"`
+			}
+			if err := json.Unmarshal(in, &req); err != nil {
+				return actool.Errorf(fmt.Sprintf("invalid input: %v", err)), nil
+			}
+			if req.IntentID <= 0 {
+				return actool.Errorf("intent_id 必填且必须为正整数"), nil
+			}
+			n, err := t.ts.GetNode(req.IntentID)
+			if err != nil {
+				return actool.Result{}, err
+			}
+			if n == nil {
+				return jsonResult(map[string]any{"claimed": false, "reason": "intent 不存在或已删除"})
+			}
+			if n.State != "proposed" && n.State != "open" {
+				return jsonResult(map[string]any{"claimed": false, "reason": "intent 当前不是 proposed/open", "state": n.State})
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(n.Payload, &payload); err != nil {
+				return jsonResult(map[string]any{"claimed": false, "reason": "intent payload.executor 无效"})
+			}
+			executor, _ := payload["executor"].(string)
+			if executor == "" || executor == "review" || executor != executorKey {
+				return jsonResult(map[string]any{"claimed": false, "reason": "payload.executor 与当前执行器不匹配", "expected_executor": executorKey, "actual_executor": executor})
+			}
+			owner := "exec:" + executorKey
+			claimed, err := t.ts.ClaimExecutorIntent(n.ID, n.State, executorKey, owner)
+			if err != nil {
+				return actool.Result{}, err
+			}
+			if !claimed {
+				return jsonResult(map[string]any{"claimed": false, "reason": "领取冲突：状态或 executor 已变化"})
+			}
+			log.Printf("[executor] %s 通过 claim_executor_intent 领取 intent #%d：%s → running", t.worker, n.ID, n.State)
+			return jsonResult(map[string]any{
+				"claimed": true, "intent_id": n.ID, "state": "running", "owner": owner,
 			})
 		})
 }

@@ -4,6 +4,7 @@
 //   - step：每轮扫描启用触发器并分派六类触发。
 //   - fireIntervals / fireFindings / fireGoals / fireTaskTimeouts / fireTaskCreates / fireToolCalls：按间隔、新发现、目标达成、任务超时、任务创建、工具调用触发 agent。
 //   - firedGoalSet / saveFiredGoalSet / mustState：已触发目标集合与调度状态的持久化读写。
+
 package server
 
 import (
@@ -331,6 +332,17 @@ func (sc *Scheduler) fireTaskCreates(triggers []*db.AgentTrigger) {
 		}
 		msgCtx := "\n\n【本次由任务创建触发】"
 		for _, tr := range want {
+			if e.PreAgent != "" {
+				a, err := sc.pg.GetAgentByKey(tr.AgentKey)
+				if err != nil {
+					log.Printf("[scheduler] task#%d pre_agent 触发去重查询失败: %v", e.TaskID, err)
+					continue
+				}
+				if a != nil && a.ExecutorKey == e.PreAgent {
+					// 首个意图 Conversation 已合并该 Agent 的创建消息，不能重复启动。
+					continue
+				}
+			}
 			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("任务创建触发 · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
 		}
 	}

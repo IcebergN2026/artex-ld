@@ -94,9 +94,7 @@ const FOLD_ICON = svgUri(
   true,
 );
 
-// ---------------------------------------------------------------------------
 // Folding: full graph → currently-visible node/edge set (自顶向下级联折叠)。
-// ---------------------------------------------------------------------------
 type FoldNode = {
   fold: true;
   key: string;
@@ -182,9 +180,7 @@ function computeVisible(
   return { renderNodes, renderEdges };
 }
 
-// ---------------------------------------------------------------------------
 // G6 数据映射。自定义字段放节点顶层（G6 v5 官方 force 示例约定：style/layout 回调直接读 d.<field>）。
-// ---------------------------------------------------------------------------
 type G6NodeDatum = {
   id: string;
   kind: Kind;
@@ -261,9 +257,7 @@ function nodeStroke(d: G6NodeDatum): string {
   return "#64748b";
 }
 
-// ---------------------------------------------------------------------------
 // 抽屉：资产节点看详情；折叠节点看隐藏列表 + "展示更多"。
-// ---------------------------------------------------------------------------
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   if (children === undefined || children === null || children === "") return null;
   return (
@@ -416,7 +410,6 @@ function FoldSheet({
   );
 }
 
-// ---------------------------------------------------------------------------
 function GraphInner({ taskId, coverageEnabled = true }: { taskId: string; coverageEnabled?: boolean }) {
   const [data, setData] = React.useState<{
     nodes: CoverageGraphNode[];

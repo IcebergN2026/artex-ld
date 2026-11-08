@@ -59,6 +59,12 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const [preview, setPreview] = React.useState("");
   const [maxTurns, setMaxTurns] = React.useState("0");
   const [executorKey, setExecutorKey] = React.useState(""); // 【二开·P-EXEC·U7】执行器标识（空=行为不变）
+  // 【二开·P-FINTENT·U1】起 —— 不受 Planner 控制开关（旧数据缺字段按 true 回填）
+  const [plannerControlled, setPlannerControlled] = React.useState(true);
+  // 开关点击即持久化：ref 同步防重入，state 控制禁用样式
+  const plannerSavingRef = React.useRef(false);
+  const [plannerSaving, setPlannerSaving] = React.useState(false);
+  // 【二开·P-FINTENT·U1】止
   const [runSecs, setRunSecs] = React.useState("600");
   // "" = 跟随(未绑定)；否则为 profile id 字符串
   const [llmProfileId, setLlmProfileId] = React.useState("");
@@ -87,7 +93,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const captureOn = !!settings?.traffic_capture;
   const webSearchGlobalOn = !!settings?.web_search_enabled;
 
-  const reload = React.useCallback(() => {
+  const reload = React.useCallback((syncPlannerControlled?: boolean) => {
     api
       .getAgent(agentKey)
       .then((d) => {
@@ -102,6 +108,11 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         setLlmProfileId(d.agent?.llm_profile_id != null ? String(d.agent.llm_profile_id) : "");
         // 【二开·P-EXEC·U7】执行器标识回填（executor_key；空=行为不变 K23）
         setExecutorKey(d.agent?.executor_key ?? "");
+        // 【二开·P-FINTENT·U1】起 —— 仅初次加载回填；普通保存不得覆盖开关的乐观状态
+        if (syncPlannerControlled === true) {
+          setPlannerControlled(d.agent?.planner_controlled ?? true);
+        }
+        // 【二开·P-FINTENT·U1】止
         setLlmProfiles(d.llm_profiles ?? []);
         setWebSearch(!!d.agent?.web_search);
         setInteractiveShell(!!d.agent?.interactive_shell);
@@ -119,7 +130,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       .finally(() => setLoaded(true));
   }, [agentKey]);
   React.useEffect(() => {
-    reload();
+    reload(true);
   }, [reload]);
 
   async function doPreview() {
@@ -202,11 +213,34 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       // 【二开·P-EXEC·U7】起 —— executor_key 透传（空串=清除，K23 不设置则行为不变；仅自定义 agent 生效）
       patch.executor_key = executorKey.trim();
       // 【二开·P-EXEC·U7】止
+      // planner_controlled 只由专用开关通过 togglePlannerControlled 写入；
+      // 普通配置保存不得携带该字段，避免用页面加载时的旧值覆盖用户刚选择的开关状态。
       await api.saveAgentConfig(agentKey, patch);
       toast.success("已保存运行配置（立即生效）");
       reload();
     } catch (e) {
       toast.error("保存失败：" + (e as Error).message);
+    }
+  }
+  // togglePlannerControlled: “不受 Planner 控制”开关点击即持久化。checked 为开关值
+  // （true=不受控，即 planner_controlled=false）。先乐观更新，成功后保留并 toast，
+  // 失败回滚旧值并提示；不重载页面，避免覆盖其他未保存编辑。
+  async function togglePlannerControlled(checked: boolean) {
+    if (plannerSavingRef.current) return;
+    plannerSavingRef.current = true;
+    const prev = plannerControlled;
+    const next = !checked;
+    setPlannerControlled(next);
+    setPlannerSaving(true);
+    try {
+      await api.saveAgentConfig(agentKey, { planner_controlled: next });
+      toast.success(checked ? "已开启：不受 Planner 控制（立即生效）" : "已关闭：恢复受 Planner 控制（立即生效）");
+    } catch (e) {
+      setPlannerControlled(prev);
+      toast.error("保存失败，已恢复：" + (e as Error).message);
+    } finally {
+      plannerSavingRef.current = false;
+      setPlannerSaving(false);
     }
   }
   // applyVis optimistically updates, persists, and toasts success/failure. On
@@ -279,6 +313,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const showLLM = true;
   // triggers (P3) only attach to custom agents.
   const isCustom = !!detail && !detail.agent?.builtin;
+  // 【二开·P-FINTENT·U1】起 —— 不受 Planner 控制开关：对所有 custom intent 生效，仅非内置且已声明执行器标识时展示
+  const showPlannerControlled = isCustom && executorKey.trim() !== "";
+  // 【二开·P-FINTENT·U1】止
 
   return (
     <Tabs defaultValue="prompt" className="flex min-h-0 flex-1 flex-col">
@@ -383,6 +420,25 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                   </div>
                 </div>
               )}
+              {/* 【二开·P-FINTENT·U1】起 —— 不受 Planner 控制开关（仅自定义且已声明执行器标识时展示；点击即持久化） */}
+              {showPlannerControlled && (
+                <div className="flex items-center gap-3 border-t pt-3">
+                  <Switch
+                    id="planner-controlled"
+                    checked={!plannerControlled}
+                    disabled={plannerSaving}
+                    onCheckedChange={togglePlannerControlled}
+                  />
+                  <div className="grid gap-0.5">
+                    <Label htmlFor="planner-controlled" className="text-sm">不受 Planner 控制</Label>
+                    <span className="text-muted-foreground text-xs">
+                      开启后，该 Agent 的 intent 未完成前 Planner 不自动规划，暂停/报错等待人工介入。
+                      点击立即保存（无需再点“保存配置”），已有 intent 也按当前设置处理。
+                    </span>
+                  </div>
+                </div>
+              )}
+              {/* 【二开·P-FINTENT·U1】止 */}
             </div>
           )}
 

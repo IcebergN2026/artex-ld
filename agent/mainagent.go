@@ -4,6 +4,7 @@
 //   - Chat：处理一条人类消息并返回回复，执行步骤以活动流发射。
 //   - mainAgentSystem / mainAgentDefaultTmpl：主 agent 系统提示词模板（观察/操舵/用人话回复）。
 //   - SetSteerWork / SetNoaEnabled / SetNonStreaming / SetMaxTokens：注入各类运行时回调开关。
+
 package agent
 
 import (

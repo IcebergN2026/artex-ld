@@ -1,4 +1,8 @@
 // finding_prompt_migration.go：把 Finding 证据与显式派发规则升级到存量外网渗透内置提示词。
+// 主要函数/类型：
+//   - upgradeExternalFindingPrompts：一次性迁移入口，全部步骤成功后才写完成标记。
+//   - applyExternalFindingPrompts：更新内置 Planner/Worker 提示词、当前版本与逐字一致的旧任务快照。
+
 package server
 
 import (

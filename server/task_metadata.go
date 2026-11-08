@@ -1,10 +1,10 @@
 // task_metadata.go：更新任务列表级元数据（名称/置顶/审核开关）的 HTTP 端点。
 // 主要函数/类型：
 //   - updateTaskMetadata：PATCH 任务 name/pinned/review_auto/review_enabled，关审核前须清空待审队列。
+
 package server
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -26,20 +26,13 @@ func (s *Server) updateTaskMetadata(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "task not found")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskMetadataRequestSize)
 	var request struct {
 		Name          *string `json:"name"`
 		Pinned        *bool   `json:"pinned"`
 		ReviewAuto    *bool   `json:"review_auto"`    // 【二开·P-REVIEW·D2b】自动审核开关
 		ReviewEnabled *bool   `json:"review_enabled"` // 【二开·P-REVIEW·D2c】任务级审核总开关（m03934）
 	}
-	if err := decode(r, &request); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
+	if !decodeJSON(w, r, &request, maxTaskMetadataRequestSize) {
 		return
 	}
 	if request.Name == nil && request.Pinned == nil && request.ReviewAuto == nil && request.ReviewEnabled == nil {

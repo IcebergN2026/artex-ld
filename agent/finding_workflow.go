@@ -5,6 +5,7 @@
 //   - stripTrafficParameters：关闭绑定时从工具 schema 剔除流量绑定参数。
 //   - HintTrafficSchema：hint 工具共享的 traffic_refs 参数 schema。
 //   - findingRefsFromHint：读取 hint 的结构化流量引用并与显式引用合并。
+
 package agent
 
 import (

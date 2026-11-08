@@ -61,8 +61,6 @@ import { TaskTemplateControls } from "@/components/task-template-controls";
 // 【二开·P-TPL·U2】起
 import { PlannerTemplateControls, WorkerTemplateControls } from "@/components/prompt-template-controls";
 // 【二开·P-TPL·U2】止
-// 【二开·P-SCENARIO·U3】起 —— 任务管理页直接打开场景管理面板（场景=建任务预设打包）
-// 【二开·P-SCENARIO·U3】止
 import {
   AlertDialog,
   AlertDialogAction,
@@ -328,7 +326,6 @@ export default function TasksPage() {
   const [batchControlling, setBatchControlling] = React.useState<"pause" | "resume" | null>(null);
   const [movingCategory, setMovingCategory] = React.useState(false);
   // 【二开·P-SCENARIO·MERGE】场景管理=分类管理面板（m03167 合并）；场景预设字段在 CategoryManagementSheet 内维护
-  // 【二开·P-SCENARIO·U3】止
 
   React.useEffect(() => {
     const raw = getLocalStorageValue(TASK_FILTER_PREFERENCE_KEY);
@@ -3641,9 +3638,8 @@ function CreateTaskSheet({
                     接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
                   </p>
                 </div>
-                {/* ═══ ARTEX 二开 · [P-INTENT·U2 种子意图执行方式子区] ═══
-                    功能介绍：种子意图勾选后展开——执行方式 RadioGroup（默认 worker / 自定义执行器）+ executor Select；选中即种子带 payload.executor 直发 open，池领取后 pickExecutor 路由，全程无审核停留（m00973）
-                    二开日期：2026-10-21 */}
+                {/* 【二开·P-INTENT·U2 种子意图执行方式子区】
+                    功能介绍：种子意图勾选后展开——执行方式 RadioGroup（默认 worker / 自定义执行器）+ executor Select；选中即种子带 payload.executor 直发 open，池领取后 pickExecutor 路由，全程无审核停留（m00973）*/}
                 {seedFirstIntent && (
                   <div className="ml-6 grid gap-3 rounded-lg border bg-muted/40 p-3">
                     <Label className="text-sm">执行方式</Label>

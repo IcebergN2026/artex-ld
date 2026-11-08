@@ -1,4 +1,7 @@
 // external_review_migration.go：将外网渗透分类的旧默认审核开关迁移为关闭。
+// 主要函数/类型：
+//   - upgradeExternalPentestReviewDefault：一次性把「外网渗透」分类的默认审核开关迁到关闭。
+
 package server
 
 import (

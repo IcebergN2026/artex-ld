@@ -6,6 +6,7 @@
 //   - renderSingle / renderBatch / itemFor：把投递记录渲染成单条/批量通知消息。
 //   - takeTokens / digestTickPlan：渠道级令牌桶限流与每轮摘要节奏规划。
 //   - parseSnapshot / enabled / publicBaseURL / digestInterval：投递快照解析与通知器配置读取。
+
 package server
 
 import (

@@ -1,12 +1,13 @@
-// main.go：ARTEX 后端入口，组装 SQLite 存储、探索引擎与 JSON HTTP API 并启动服务。
+// main.go：ARTEX 后端入口，组装 PostgreSQL 存储、探索引擎与 JSON HTTP API 并启动服务。
 // 主要函数/类型：
 //   - main / run：进程入口与主装配流程，run 返回退出码以配合自更新重启协议。
 //   - printBanner：打印启动横幅与版本/运行时信息。
 //   - shutdownContext：收到退出信号后构造带期限的关闭上下文。
 
-// Command artex runs the ARTEX backend: the dual SQLite graph stores,
+// Command artex runs the ARTEX backend: the PostgreSQL graph stores,
 // the event-driven exploration engine, and the JSON HTTP API consumed by the
 // shadcn/ui frontend.
+
 package main
 
 import (
@@ -29,8 +30,8 @@ import (
 )
 
 // version is the build version, injected at release time via
-// -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
-var version = "dev"
+// -ldflags "-X main.version=<tag>". Defaults to the current release for local builds.
+var version = "0.1.5"
 
 const banner = `
     _    ____ _____ _______  __

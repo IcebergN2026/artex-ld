@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - ExternalPentestTemplateName：迁移后的内置模板名常量。
 //   - migrateExternalPentestDefaultTemplates：仅重命名原始内置 planner 模板行，自定义模板与快照不动。
+
 package db
 
 import (

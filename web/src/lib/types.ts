@@ -1,10 +1,12 @@
-// ARTEX domain model — types used across the UI.
-// Derived from the functional spec (section 7: 关键数据形状).
-// 主要函数/类型（按域节选）：
-//   - Task / TaskStatus / EngineMode：任务领域模型与状态枚举
-//   - Asset / AssetNode / AssetRel / NewAssetType：资产图节点、关系与新建类型
-//   - TaskArchive / TaskArchivePage / ArchiveBatchItem：归档结构与分页
-//   - CoverageGraph*：覆盖率图数据形状
+/**
+ * types.ts：ARTEX 领域模型，UI 共用类型。
+ * 派生自功能规格第 7 节（关键数据形状）。
+ * 主要函数/类型（按域节选）：
+ *   - Task / TaskStatus / EngineMode：任务领域模型与状态枚举
+ *   - Asset / AssetNode / AssetRel / NewAssetType：资产图节点、关系与新建类型
+ *   - TaskArchive / TaskArchivePage / ArchiveBatchItem：归档结构与分页
+ *   - CoverageGraph*：覆盖率图数据形状
+ */
 
 export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
@@ -899,6 +901,7 @@ export interface Session {
   source_task_id?: string;
   inherited?: boolean;
   seg?: number; // main-agent session: which conversation segment (0 = original)
+  executor?: string; // custom executor key from intent payload (non-review)
 }
 
 // ---- Security ----
@@ -1174,6 +1177,10 @@ export interface Agent {
   // 【二开·P-EXEC·U5】起 —— executor_key（K18：仅自定义 agent 可声明；空=行为不变 K23）
   executor_key?: string;
   // 【二开·P-EXEC·U5】止
+  // 【二开·P-FINTENT·U1】起 —— planner_controlled（首个 intent 门控：true=受 Planner 规划，
+  // false=首个 intent 完成前 Planner 不自动规划；缺失按 true 回填，仅自定义 agent 有意义）
+  planner_controlled?: boolean;
+  // 【二开·P-FINTENT·U1】止
   // 绑定数量(仅列表接口返回)：可见 MCP / 可见 Skill / 绑定工具
   mcp_count?: number;
   skill_count?: number;
@@ -1636,7 +1643,7 @@ export interface FindingTrafficDetail {
 
 /** GET /api/update/check —— 当前版本与 GitHub 最新正式版的比较结果。 */
 export interface UpdateCheck {
-  /** 当前运行的版本；开发构建为 "dev" 或 git describe 的带后缀形式。 */
+  /** 当前运行的版本；无 git 的本地构建为默认版本号，git describe 为带后缀形式。 */
   current: string;
   /** 运行形态。docker 下换装只作用于容器可写层，重建容器会退回镜像版本。 */
   mode: "docker" | "binary";

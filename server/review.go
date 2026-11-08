@@ -6,16 +6,14 @@
 //   - reviewListProposed / reviewApprove / reviewReject：待审意图列表与人工通过/驳回接口。
 //   - reviewChat / reviewMessages：复审对话提交与消息记录接口。
 //   - seedReviewIntercept：幂等补齐审核写工具的启用项与内置 ask 规则。
-package server
 
-// Review service 实现审核 agent 的周期预审、对话以及人工裁决接口。
+package server
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"runtime/debug"
@@ -42,7 +40,7 @@ func (s *Server) seedReviewIntercept() {
 		return
 	}
 	// ① 启用集补齐。从未保存过设置时 GetEnabledTools 返回硬编码默认清单
-	// （intercept/intercept.go:143：Bash/WebFetch 等 8 个，不含本组）→ 必须主动写回。
+	// （intercept/intercept.go#defaultEnabledTools：Bash/WebFetch 等 8 个，不含本组）→ 必须主动写回。
 	enabled, gErr := s.m.interceptor.GetEnabledTools()
 	if gErr != nil {
 		log.Printf("[review] intercept 启用集读取失败: %v", gErr)
@@ -507,8 +505,7 @@ func (s *Server) reviewApprove(w http.ResponseWriter, r *http.Request) {
 		// 空值兼容旧客户端；非空时做版本 CAS。
 		ExpectedVersion *int `json:"expected_version"`
 	}
-	if err := decode(r, &body); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, 400, "invalid JSON: "+err.Error())
+	if !decodeJSONOptional(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	ver, err := resolveReviewVersion(t.Store, intentID, body.ExpectedVersion)
@@ -564,8 +561,7 @@ func (s *Server) reviewReject(w http.ResponseWriter, r *http.Request) {
 		Reason          string `json:"reason"`
 		ExpectedVersion *int   `json:"expected_version"` // 可空；携带时做版本 CAS。
 	}
-	if err := decode(r, &body); err != nil && !errors.Is(err, io.EOF) {
-		writeErr(w, 400, "invalid JSON: "+err.Error())
+	if !decodeJSONOptional(w, r, &body, maxSmallJSONBodyBytes) {
 		return
 	}
 	reason := strings.TrimSpace(body.Reason)
@@ -627,7 +623,13 @@ func (s *Server) reviewChat(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
+	if err := decodeJSONBounded(w, r, &body, maxMediumJSONBodyBytes); err != nil {
+		if !writeJSONBodyTooLarge(w, err) {
+			writeErr(w, 400, "message 必填")
+		}
+		return
+	}
+	if strings.TrimSpace(body.Message) == "" {
 		writeErr(w, 400, "message 必填")
 		return
 	}

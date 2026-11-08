@@ -6,6 +6,7 @@
 //   - ListFindingsForExport：按严重度与时间排序导出选中或筛选的发现。
 //   - AddFindingFollowUpIntent：从存活发现原子派生优先级 10 的人工跟进意图。
 //   - ValidFindingStatus / ValidSeverity：校验发现状态与严重度取值的合法性。
+
 package db
 
 import (
@@ -84,10 +85,29 @@ func ValidSeverity(s string) bool {
 	return false
 }
 
+// normalizeSeverity returns the canonical form written for NEW findings: valid
+// UTF-8, trimmed, lowercase, and one of the four supported levels. Historical
+// rows (including archives) are never rewritten or rejected by readers, so this
+// validation belongs on the write path only. Callers MUST use the returned value
+// for every destination of the same write (findings row, node payload, notify
+// snapshot) instead of mixing raw and normalized forms.
+func normalizeSeverity(severity string) (string, error) {
+	severity = strings.ToLower(strings.TrimSpace(utf8Clean(severity)))
+	if !ValidSeverity(severity) {
+		return "", fmt.Errorf("无效的严重等级 %q（仅支持 critical/high/medium/low）", severity)
+	}
+	return severity, nil
+}
+
 // AddFinding inserts a finding into the standalone findings table. taskID and
 // nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
-// vulnclass). Returns the new finding id.
+// vulnclass). severity is trimmed/lowercased and must be one of the four valid
+// levels; invalid input is rejected before the INSERT. Returns the new finding id.
 func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (int64, error) {
+	severity, err := normalizeSeverity(severity)
+	if err != nil {
+		return 0, err
+	}
 	aidsJSON, _ := json.Marshal(assetIDs)
 	if assetIDs == nil {
 		aidsJSON = []byte("[]")
@@ -100,13 +120,19 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary
 		nid = &nodeID
 	}
 	var id int64
-	err := d.QueryRow(
+	err = d.QueryRow(
 		`INSERT INTO findings (task_id, node_id, vulnclass, name, severity, summary, evidence, worker, asset_ids)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		tid, nid, vulnclass, name, severity, summary, evidence, worker, string(aidsJSON),
 	).Scan(&id)
 	return id, err
 }
+
+// findingSeverityRankSQL orders severity values from most to least severe.
+// lower(btrim(...)) keeps historical rows written before write-time normalization
+// (for example "HIGH" or " high ") in their real level instead of the ELSE bucket;
+// unrecognized values rank below low.
+const findingSeverityRankSQL = `CASE lower(btrim(f.severity, E' \t\n\r\f\v')) WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END`
 
 // findingSelectCols is the column list (with task_description join) every finding
 // list query selects, so scanFinding stays in sync across callers.
@@ -270,7 +296,7 @@ func (d *DB) ListFindingsPage(f FindingFilter, page, pageSize int) ([]*DBFinding
 	order := "f.created_at DESC, f.id DESC"
 	if f.Sort == "severity" {
 		// critical > high > medium > low > 其它, then newest first.
-		order = `CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC, f.id DESC`
+		order = findingSeverityRankSQL + ` DESC, f.created_at DESC, f.id DESC`
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	q := fmt.Sprintf(`
@@ -334,7 +360,7 @@ func (d *DB) ListFindingGroups(f FindingFilter, page, pageSize int) ([]FindingGr
 
 	order := "MAX(f.created_at) DESC, t.id DESC NULLS LAST"
 	if f.Sort == "severity" {
-		order = `MAX(CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST`
+		order = `MAX(` + findingSeverityRankSQL + `) DESC, MAX(f.created_at) DESC, t.id DESC NULLS LAST`
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	query := fmt.Sprintf(`SELECT t.id, COALESCE(t.name,''), COALESCE(t.description,''), COALESCE(
@@ -481,7 +507,7 @@ RETURNING id, created_at`, s.expID, audit.NodeID, utf8Clean(audit.Worker), utf8C
 // filter;ids 为空时按 filter 导出(导出当前筛选/全部)。结果按严重等级降序、
 // 再按时间倒序,与「导出汇总报告」的分组顺序一致。
 func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, error) {
-	const order = `ORDER BY CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
+	const order = `ORDER BY ` + findingSeverityRankSQL + ` DESC, f.created_at DESC`
 	cols := findingSelectCols + `, COALESCE(f.report, '')`
 
 	var q string
@@ -743,9 +769,15 @@ func (d *DB) setFindingCol(id int64, col, jsonKey, val string) (int64, error) {
 	return 1, nil
 }
 
-// SetFindingSeverity updates one finding's severity (+ node payload sync). Returns
+// SetFindingSeverity updates one finding's severity (+ node payload sync). The
+// value is trimmed/lowercased and validated with the same policy as new records;
+// invalid values are rejected without touching the row or node payload. Returns
 // rows affected (0 when no finding has that id).
 func (d *DB) SetFindingSeverity(id int64, severity string) (int64, error) {
+	severity, err := normalizeSeverity(severity)
+	if err != nil {
+		return 0, err
+	}
 	return d.setFindingCol(id, "severity", "severity", severity)
 }
 

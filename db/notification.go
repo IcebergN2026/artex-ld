@@ -5,6 +5,7 @@
 //   - RecordNotificationEventTx / AddNotificationEvent：在事务中记录事件快照（幂等去重）。
 //   - FanOutPendingEvents：把未投递事件按启用渠道扇出为投递任务。
 //   - NotificationAssetNames / assetDisplayName：批量取资产显示名，避免无名字段混进推送文案。
+
 package db
 
 import (
@@ -540,7 +541,7 @@ type NotificationStats struct {
 
 // NotificationStatsSnapshot 汇总通知系统的健康度。
 // BacklogAgeMS 是「推送是不是卡住了」最直接的指标——比 pending 计数有用得多，
-// 因为积压 3 条和积压 3 条的差别可以是从 3 秒到 3 小时。
+// 因为同样积压 3 条，可能只等了 3 秒，也可能已等了 3 小时。
 func (d *DB) NotificationStatsSnapshot(ctx context.Context) (*NotificationStats, error) {
 	var s NotificationStats
 	if err := d.QueryRowContext(ctx, `SELECT

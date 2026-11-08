@@ -30,11 +30,6 @@ import (
 	"norma/transcript"
 )
 
-// Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
-// with real tools (Bash: kali tooling through the recording proxy), writes the
-// FACTS it found back into the graph, and stops. It does NOT generate new
-// directions (that is the planner's job) and does NOT keep exploring toward the
-// goal on its own. Multiple workers run concurrently as goroutines.
 // WebSearchOpts is the web-search backend selection the server pushes into each
 // agent (planner/worker/main). Enabled=false leaves the web_search tool off.
 // Backend is "ddgs" (no key), "brave-free" (BraveKey required), "tavily"
@@ -61,6 +56,11 @@ type WebSearchOpts struct {
 	DeepSeekModel   string
 }
 
+// Worker is an LLM work agent (docs §4.4): it claims ONE intent, completes it
+// with real tools (Bash: kali tooling through the recording proxy), writes the
+// FACTS it found back into the graph, and stops. It does NOT generate new
+// directions (that is the planner's job) and does NOT keep exploring toward the
+// goal on its own. Multiple workers run concurrently as goroutines.
 type Worker struct {
 	findingRecorder FindingRecorder
 	prov            llm.Provider
@@ -245,20 +245,20 @@ func proxyEnv(proxyAddr, caCert string) []string {
 	return env
 }
 
-// workerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the worker system
-// prompt, seeded into agent_prompts. The trafficTool block and the 中间产物输出规约
-// are NOT here — they are code-owned and appended by workerSystem after rendering
-// (段 [B]/[C]), so editing the DB body can never drop them.
 // WorkerDeliveryFactSpec is the record_fact contract consumed by trace_cleaner.
 // There is deliberately no separate record_delivery tool: deliveries are facts.
 const WorkerDeliveryFactSpec = `- **投放登记 → record_fact（探索图，传 intent_id，强制）**：每次实际上传、写入或部署 WebShell、C2 木马、反弹脚本、代理/隧道工具及其他后续需要清理的文件后，必须立即登记；summary 以 ` + "`[投放]`" + ` 开头，detail 写明目标 host/容器、落地绝对路径、产物类型、上传方式、用途、关联 finding（如有）和可清理性；evidence 写实际上传/写入命令及成功回显，confidence=observed，能得 sha256 时一并记录。**每个投放物单独一条 ` + "`[投放]`" + ` 事实，这是“一意图通常只一条事实”的强制例外；report_finding 不能代替投放登记。失败或仅尝试上传不登记。**后续痕迹清理依赖这些事实，遗漏会导致产物无法销账。`
 
+// workerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the worker system
+// prompt, seeded into agent_prompts. The trafficTool block and the 中间产物输出规约
+// are NOT here — they are code-owned and appended by workerSystem after rendering
+// (段 [B]/[C]), so editing the DB body can never drop them.
 const workerDefaultTmpl = `你是授权安全测试与分析系统的"执行者"(work agent)。你领到【一条意图】(一句话探索方向)，唯一职责：**完成这一条意图、把发现写回知识图谱、然后停止返回。**
 
 **边界（红线）**：
 1. **只做你领到的这一条意图**。
 2. 初次受阻不代表已探透——**穷尽本意图在你当前条件下的所有可用手段**再输出结论：在线目标就换 payload/编码/路径，代码目标就换入口/调用链/数据流，文档目标就换检索角度。
-3. 禁止破坏性操作（删改业务数据、DoS、关闭审计、持久化后门）；除此之外可执行完成当前意图所需的探测、验证和利用。
+3. 只在授权范围内操作。系统提示顶部若附【操作约束】，那是最高优先级红线：每条命令/探测执行前先自检，违反即不做（哪怕它落在你领到的意图里）。
 
 **webshell 纪律**：涉及 webshell 落地时，shell 一律用 mcp__godzilla__shell_create 生成（延迟加载工具：先 SearchExtraTools 搜 "godzilla" 再 ExecuteExtraTool 调用，传参带上目标语言/加密器/过滤特征），禁止手写硬编码。生成的 shell 写到本意图工作目录再走上传链；落地后用 mcp__godzilla__shell_add 登记、shell_test 实连，有回显才按 webshell 记 finding；若另有反弹 shell 等主机命令执行证据，则按 getshell 登记。MCP 不可用就记 fact 交规划者，不得退回手写。
 
@@ -360,10 +360,6 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir, workerName, taskOverride s
 	return tail(workerDefaultTmpl)
 }
 
-// renderIntentTask formats the claimed intent for the worker's launch USER message:
-// the intent is the worker's whole job. It used to live in the system prompt; it now
-// rides in the first user turn (together with the situational overview) so the system
-// prompt stays static/role-only — same move as the planner's situational block.
 // intentAssetIDs pulls the intent's target asset ids out of its payload
 // (planner's add_intent stores them as a numeric asset_ids array). nil on absence
 // or malformed payload.
@@ -380,9 +376,13 @@ func intentAssetIDs(intent *db.Node) []int64 {
 	return p.AssetIDs
 }
 
-// ═══ ARTEX 二开 · [P-EXEC·A1 意图任务渲染导出] ═══
+// RenderIntentTask formats the claimed intent for the worker's launch USER message:
+// the intent is the worker's whole job. It used to live in the system prompt; it now
+// rides in the first user turn (together with the situational overview) so the system
+// prompt stays static/role-only — same move as the planner's situational block.
+//
+// 【二开·P-EXEC·A1 意图任务渲染导出】
 // 功能介绍：renderIntentTask 改名导出为 RenderIntentTask，供 RunCustomExecutor（A2）复用同一意图任务块文案
-// 二开日期：2026-10-21
 func RenderIntentTask(intent *db.Node) string {
 	return fmt.Sprintf("\n\n【你领到的意图（本次唯一任务：只做这一条、只产生事实、做完即停）】：\n%s\n意图 id: %d（写回 record_fact / report_finding 时传它）", string(intent.Payload), intent.ID)
 }
@@ -465,6 +465,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir, name, w.taskPromptOverride())
 	if w.wantConstraints() {
+		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
 	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
 	sysBody += RenderIntentTask(intent) // 【二开·P-EXEC·A1】导出改名

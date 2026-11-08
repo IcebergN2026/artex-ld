@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -29,37 +28,5 @@ func TestFindingTriggerContextIncludesExecutionMode(t *testing.T) {
 				t.Fatalf("finding context lost finding data: %s", got)
 			}
 		})
-	}
-}
-
-func TestVulnDispatcherConfigExportSupportsDualMode(t *testing.T) {
-	type triggerRow struct {
-		AgentKey       string `json:"agent_key"`
-		FindingMessage string `json:"finding_message"`
-	}
-	found := false
-	for _, line := range readExportLines(t, "../config-export/agent_triggers.jsonl") {
-		var row triggerRow
-		if err := json.Unmarshal([]byte(line), &row); err != nil {
-			t.Fatal(err)
-		}
-		if row.AgentKey != "vuln_dispatcher" {
-			continue
-		}
-		found = true
-		for _, required := range []string{
-			"execution_mode",
-			"vulnclass ∈ {getshell,webshell,reverse_shell}",
-			"vulnerability_only",
-			"vulnclass ∈ {rce,file_upload,deserialization,privesc,获取目标权限}",
-			"不要求立足点",
-		} {
-			if !strings.Contains(row.FindingMessage, required) {
-				t.Errorf("dispatcher trigger missing %q", required)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("vuln_dispatcher trigger not found")
 	}
 }

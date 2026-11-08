@@ -9,10 +9,10 @@
 "use client";
 
 import * as React from "react";
-import { Input } from "@/components/ui/input";
+
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { sseUrl } from "@/lib/api";
-import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -84,9 +84,9 @@ export default function LogsPage() {
   // Live tail via SSE. on connect, replays whatever is in the ring (includes
   // DB-restored history from the last 100 rows written before restart).
   React.useEffect(() => {
-    if (MOCK) {
-      // Mock 模式使用本地示例日志，不连接后端 SSE。动态 import + 构建期 alias
-      // （见 next.config.mjs）：示例日志只在 MOCK 构建进 bundle。
+    // 必须直接判断环境变量，让 webpack DefinePlugin 能折掉动态 import；
+    // Turbopack 另由 next.config.mjs 的 resolveAlias 替换为空桩。
+    if (process.env.NEXT_PUBLIC_MOCK === "1") {
       void import("@/lib/mock/logs").then(({ MOCK_LOGS }) => setLines(MOCK_LOGS));
       return;
     }

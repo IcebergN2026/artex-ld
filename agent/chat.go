@@ -3,6 +3,7 @@
 //   - ChatAgent / NewChatAgent：会话 agent 状态与构造（provider/模型/转录窗口）。
 //   - Chat：跑一轮对话并恢复历史，执行步骤以活动流发射。
 //   - chatSystem / chatWorkDirSpec：渲染自定义 agent 的系统提示词与工作目录说明。
+
 package agent
 
 import (
@@ -15,6 +16,7 @@ import (
 	"artex/guard"
 	"artex/intercept"
 	"norma/agentcore"
+	"norma/harness"
 	"norma/llm"
 	"norma/permission"
 	actool "norma/tool"
@@ -107,7 +109,7 @@ type chatVars struct{ DataDir, Now string }
 // but each agent decides on/off). emit receives each execution step (thinking /
 // tool_use / tool_result / text / result), tagged with the agent key as the
 // worker lane.
-func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message string, maxTurns int, maxDuration time.Duration, webSearch bool, emit func(db.Activity)) (string, error) {
+func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message string, maxTurns int, maxDuration time.Duration, webSearch bool, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	// gate the global web-search opts by this agent's own flag.
 	ws := c.webSearch
 	if !webSearch {
@@ -191,11 +193,11 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// re-unlock skill-gated MCPs from prior Skill() calls in the reloaded history so
 	// revealed tools stay callable across the fresh session.
 	seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
-	text, _, err := captureRunSession(ctx, s, message, func(r db.Activity) {
+	text, reason, err := captureRunSession(ctx, s, message, func(r db.Activity) {
 		if emit != nil {
 			r.Worker = agentKey
 			emit(r)
 		}
 	})
-	return text, err
+	return text, reason, err
 }

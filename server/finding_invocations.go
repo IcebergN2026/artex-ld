@@ -1,4 +1,8 @@
 // finding_invocations.go：Planner 显式派发 Finding 给自定义 Agent 的通用工具与统一入队路径。
+// 主要函数/类型：
+//   - toolDispatchFindingToAgent：dispatch_finding_to_agent 工具，校验 Finding 归属与目标 Agent 后记录派发。
+//   - enqueueFindingInvocation：初始工具调用与持久化重试扫描共享的统一入队路径，入队前重新校验可变状态。
+
 package server
 
 import (

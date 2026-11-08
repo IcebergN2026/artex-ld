@@ -4,6 +4,7 @@
 //   - TruncateHTML：按字符截断 HTML 且不产生残缺标签。
 //   - OneLine：折叠多行文本为单行标题。
 //   - packItemCount：计算字节预算内汇总批能装下的条目数。
+
 package notify
 
 import (

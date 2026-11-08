@@ -3,6 +3,7 @@
 //   - GoalSpec：拆解出的单条目标（text + 可选漏洞类别）。
 //   - DecomposeGoals / DecomposeGoalsWithProvider：一次性 LLM 调用完成拆解，set_goals 直写探索图后回读。
 //   - goalsDefaultTmpl / goalsScopeTail：拆解器系统提示模板与资产范围登记尾段。
+
 package agent
 
 import (

@@ -1,6 +1,8 @@
+---
+
 # artex-ld
 
-当前版本：**0.1.4**；Release 名称：**artex-ld 0.1.4**；Git Tag：**v0.1.4**。
+当前版本：**0.1.5**；Release 名称：**artex-ld 0.1.5**；Git Tag：**v0.1.5**。
 
 基于 [ARTEX](https://github.com/autumn27/artex) v0.3.15+ 的二次开发版本：AI 自主渗透测试平台。
 在原有「planner-worker 自主推进」基础上，新增四个可控点：**场景可配**（任务分类/模板/种子意图）、**意图可审**（AI 预审 + 人工批准/驳回）、**执行者可指定**（自定义 agent 执行意图）、**finding 可编排**（触发器自动派生子任务/写报告/复测）。所有增强默认关闭，不使用则行为与原版一致。
@@ -14,12 +16,12 @@
 ```bash
 # 1. 新建目录并下载 Release 部署包
 mkdir artex && cd artex
-wget https://github.com/IcebergN2026/artex-ld/releases/download/0.1.4/artex-0.1.4-linux-amd64.deploy.tar.gz
+wget https://github.com/IcebergN2026/artex-ld/releases/download/0.1.5/artex-0.1.5-linux-amd64.deploy.tar.gz
 
 # 2. 解压并一键安装（自动注册 systemd 服务、初始化数据库）
-tar xzf artex-0.1.4-linux-amd64.deploy.tar.gz
+tar xzf artex-0.1.5-linux-amd64.deploy.tar.gz
 chmod +x install.sh
-sudo bash install.sh --server artex-0.1.4-linux-amd64.deploy.tar.gz
+sudo bash install.sh --server artex-0.1.5-linux-amd64.deploy.tar.gz
 ```
 
 ### 方式二：Docker Compose（从源码构建）
@@ -59,7 +61,6 @@ export ARTEX_PG_DSN='postgres://artex:密码@127.0.0.1:5432/artex?sslmode=disabl
 2. 在 **系统 → LLM** 配置模型（Anthropic / OpenAI / 兼容 OpenAI 的私有网关均可）。
 3. **任务 → 新建任务**：选择场景分类与 planner 模板，填写目标开跑。
 
-
 ### 配套 MCP（可选增强）
 
 场景预设中的部分能力依赖以下 MCP，按需安装后在 **系统 → MCP** 配置并授权可见：
@@ -79,6 +80,14 @@ export ARTEX_PG_DSN='postgres://artex:密码@127.0.0.1:5432/artex?sslmode=disabl
 | 换环境迁移方案               | [docs/ARTEX-换环境迁移方案.md](docs/ARTEX-换环境迁移方案.md)         |
 | 全流程代码链                | [docs/ARTEX-二开-全流程代码链文档.md](docs/ARTEX-二开-全流程代码链文档.md) |
 | 更新日志                  | [CHANGELOG.md](CHANGELOG.md)                           |
+
+## 关注我们
+
+**公众号：凌度安全(LDsec)**
+
+微信扫码关注，获取版本更新、实战案例与使用技巧：
+
+![](docs/images/wechat-qrcode.jpg)
 
 ## 许可
 

@@ -78,6 +78,14 @@ func (p *Pool) Members() []*Member { return p.members }
 // Head returns the first member of the chain.
 func (p *Pool) Head() *Member { return p.members[0] }
 
+// tripAndLog 健康熔断并在首跳时记日志（Stream/Complete 同款的熔断日志块收敛于此）。
+func (p *Pool) tripAndLog(m *Member, failed error) {
+	hard := isHardFailure(failed)
+	if p.health.Trip(m.ID, trimErr(failed), hard) {
+		log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(failed))
+	}
+}
+
 // Stream implements llm.Provider with failover.
 //
 // The one hard rule: a member may only be abandoned BEFORE it has yielded any
@@ -87,14 +95,6 @@ func (p *Pool) Head() *Member { return p.members[0] }
 // harness's resume logic. Fortunately the failures this exists for (402 no
 // credit, 401 bad key, 429, 5xx) all surface during request establishment,
 // before the body is read, so they always land in the safe window.
-// tripAndLog 健康熔断并在首跳时记日志（Stream/Complete 同款的熔断日志块收敛于此）。
-func (p *Pool) tripAndLog(m *Member, failed error) {
-	hard := isHardFailure(failed)
-	if p.health.Trip(m.ID, trimErr(failed), hard) {
-		log.Printf("[llmpool] 配置 %q(%s) 已熔断：%s", m.Name, m.Model, trimErr(failed))
-	}
-}
-
 func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	order := p.order(req)
 	return func(yield func(llm.StreamEvent, error) bool) {

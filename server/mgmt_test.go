@@ -111,3 +111,96 @@ func itoaTest(n int64) string {
 	}
 	return string(b)
 }
+
+// TestAgentPlannerControlledPatch exercises the planner_controlled chain through
+// the real mux: create defaults true, PATCH false round-trips to the DTO, an
+// unrelated PATCH leaves it alone (pointer semantics), and built-in agents are
+// rejected. Synthetic agent key only; no historical tasks touched.
+func TestAgentPlannerControlledPatch(t *testing.T) {
+	m, err := NewManager(t.TempDir(), "")
+	if err != nil {
+		t.Skipf("database unavailable (%v) — skipping", err)
+	}
+	if m.pg == nil {
+		t.Skip("postgres unavailable — skipping")
+	}
+	td := t.TempDir()
+	s := New(context.Background(), m, td, td, td)
+	h := s.Handler()
+	tok, err := signJWT(s.jwtKey)
+	if err != nil {
+		t.Fatalf("sign jwt: %v", err)
+	}
+	m.pg.Exec(`DELETE FROM agents WHERE key = 't_pcpatch'`)
+
+	do := func(method, path string, body any) (int, map[string]any) {
+		var r *http.Request
+		if body != nil {
+			b, _ := json.Marshal(body)
+			r = httptest.NewRequest(method, path, bytes.NewReader(b))
+		} else {
+			r = httptest.NewRequest(method, path, nil)
+		}
+		r.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		var out map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	getPC := func() (bool, bool) {
+		_, out := do("GET", "/api/agents", nil)
+		for _, ag := range out["agents"].([]any) {
+			am := ag.(map[string]any)
+			if am["key"] == "t_pcpatch" {
+				v, ok := am["planner_controlled"].(bool)
+				return v, ok
+			}
+		}
+		t.Fatal("t_pcpatch missing from /api/agents")
+		return false, false
+	}
+	defer do("DELETE", "/api/agents/t_pcpatch", nil)
+
+	// create → default true in DTO
+	code, out := do("POST", "/api/agents", map[string]any{"key": "t_pcpatch", "name": "t pcpatch"})
+	if code != 200 {
+		t.Fatalf("create agent: %d (%v)", code, out)
+	}
+	if v, ok := out["planner_controlled"].(bool); !ok || !v {
+		t.Fatalf("create DTO planner_controlled=%v (present=%v), want true", v, ok)
+	}
+
+	// PATCH false → DTO shows false
+	code, _ = do("PUT", "/api/agents/t_pcpatch/config", map[string]any{"planner_controlled": false})
+	if code != 200 {
+		t.Fatalf("patch planner_controlled=false: %d", code)
+	}
+	if v, ok := getPC(); !ok || v {
+		t.Fatalf("after patch false: planner_controlled=%v (present=%v), want false", v, ok)
+	}
+
+	// unrelated PATCH (no planner_controlled key) must not reset it
+	code, _ = do("PUT", "/api/agents/t_pcpatch/config", map[string]any{"max_turns": 0})
+	if code != 200 {
+		t.Fatalf("patch max_turns: %d", code)
+	}
+	if v, ok := getPC(); !ok || v {
+		t.Fatalf("after unrelated patch: planner_controlled=%v (present=%v), want still false", v, ok)
+	}
+
+	// PATCH true restores
+	code, _ = do("PUT", "/api/agents/t_pcpatch/config", map[string]any{"planner_controlled": true})
+	if code != 200 {
+		t.Fatalf("patch planner_controlled=true: %d", code)
+	}
+	if v, _ := getPC(); !v {
+		t.Fatal("after patch true: planner_controlled should be true")
+	}
+
+	// built-in agent rejected
+	code, _ = do("PUT", "/api/agents/planner/config", map[string]any{"planner_controlled": false})
+	if code != 400 {
+		t.Fatalf("patch built-in planner_controlled: got %d, want 400", code)
+	}
+}

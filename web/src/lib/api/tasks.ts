@@ -84,7 +84,7 @@ import type {
 } from "@/lib/types";
 
 export const tasksApi = {
-  // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
+  // 后端应用版本号（release 时由 ldflags 注入，默认当前版本号）。
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
 
   // ---- auth ----
@@ -277,7 +277,7 @@ export const tasksApi = {
   ) =>
     post<{
       id: number;
-      state: "paused" | "open" | "deleted" | "";
+      state: "paused" | "open" | "proposed" | "deleted" | "";
       deleted?: { intents: number; facts: number; findings: number; activities: number };
     }>(`/tasks/${taskId}/intents/${intentId}/control`, { action, reason: reason ?? "", mode: mode ?? "soft" }),
   sendWorkerMessage: (taskId: string, intentId: string, message: string, requestId: string) =>
@@ -288,11 +288,11 @@ export const tasksApi = {
       request_id: string;
     }>(`/tasks/${taskId}/intents/${intentId}/messages`, { message, request_id: requestId }),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
-  // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
+  // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：由服务端按执行器置回 open/proposed，等待重新认领。
   rerunIntent: (taskId: string, intentId: string) =>
     post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/${intentId}/rerun`),
-  // 批量重跑本任务全部 blocked 意图（一次网络/LLM 断连导致多条 blocked 时一键全部重试）。
-  rerunBlocked: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-blocked`),
+  // 批量重跑本任务全部可恢复意图(blocked/exhausted/stopped)。
+  rerunRecoverable: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-recoverable`),
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),

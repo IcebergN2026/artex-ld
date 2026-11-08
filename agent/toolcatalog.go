@@ -45,6 +45,8 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 		"mainagent": ts.MainAgentTools(),
 		"planner":   ts.PlannerTools(),
 		"worker":    ts.WorkerTools(),
+		// custom_executor：所有声明 executor_key 的自定义 Agent 都可查询并自领。
+		"custom_executor": ts.CustomExecutorTools(),
 		// goals（目标拆解器）默认绑 set_goals + set_constraints：靠它们把拆出的目标、
 		// 抽出的操作约束写进库。与 mainagent 共用同一受管工具，web 端可改描述/schema、按 agent 勾选。
 		"goals": {ts.setGoals(), ts.setConstraints()},
@@ -70,7 +72,7 @@ var defaultUnbound = map[string]bool{"goal_met": true}
 // 多个 agent 都有）合成一条，Agents 取并集；defaultUnbound 里的工具则强制绑定为空。
 func BuiltinToolSeeds() []ToolSeed {
 	byAgent := builtinToolsByAgent()
-	order := []string{"mainagent", "goals", "planner", "worker", "auto", "pentest"}
+	order := []string{"mainagent", "goals", "planner", "worker", "custom_executor", "auto", "pentest"}
 
 	type acc struct {
 		tool   actool.CoreTool

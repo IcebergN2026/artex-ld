@@ -5,6 +5,7 @@
 //   - seedFindingTrafficTools：升级内置工具的 traffic_refs / evidence_version schema。
 //   - toolGetFindingTraffic：agent 读取已绑定流量证据的工具。
 //   - findingTrafficAccess：校验当前任务对 Finding 证据的读写权限（继承漏洞只读）。
+
 package server
 
 import (
@@ -165,6 +166,8 @@ func (s *Server) getFindingTraffic(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, trafficSummary(out))
 }
 
+const maxFindingTrafficJSONBodyBytes = 1 << 20
+
 func (s *Server) bindFindingTraffic(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.findingTrafficAccess(w, r, true)
 	if !ok {
@@ -173,8 +176,7 @@ func (s *Server) bindFindingTraffic(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Refs []db.TrafficRef `json:"traffic_refs"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
-		writeErr(w, 400, "invalid body")
+	if !decodeJSON(w, r, &body, maxFindingTrafficJSONBodyBytes) {
 		return
 	}
 	if len(body.Refs) == 0 {
@@ -200,7 +202,13 @@ func (s *Server) editFindingTraffic(w http.ResponseWriter, r *http.Request) {
 		Note    *string  `json:"note"`
 		Order   []string `json:"binding_ids"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil || body.Version == nil {
+	if err := decodeJSONBounded(w, r, &body, maxFindingTrafficJSONBodyBytes); err != nil {
+		if !writeJSONBodyTooLarge(w, err) {
+			writeErr(w, 400, "version 和有效请求体必填")
+		}
+		return
+	}
+	if body.Version == nil {
 		writeErr(w, 400, "version 和有效请求体必填")
 		return
 	}

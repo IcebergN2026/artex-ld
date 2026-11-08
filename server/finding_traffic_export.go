@@ -3,6 +3,7 @@
 //   - writeFindingsEvidenceZip：向 writer 输出包含全部 Finding 证据的 zip。
 //   - writeFindingsZipEntries：逐个 Finding 写 zip 条目（单 Finding 报告 Markdown、绑定清单与请求/响应原文）。
 //   - buildFindingsEvidenceZip：生成写到指定路径的证据 zip，并回读校验所有压缩条目。
+
 package server
 
 import (

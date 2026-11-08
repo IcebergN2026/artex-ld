@@ -5,6 +5,7 @@
 //   - ActivityDTO / activityDTOs：活动记录 DTO 转换。
 //   - AgentDTO / agentDTOs、LLMProfileDTO / llmProfileDTOs：Agent 与 LLM 配置 DTO 转换。
 //   - GoalDTO / ConstraintDTO / TrafficExchangeDTO / TaskNodeDTO / EdgeDTO：目标、约束、流量、节点与边的 DTO 及转换。
+
 package server
 
 import (
@@ -329,10 +330,11 @@ type FindingDTO struct {
 	VulnClass string `json:"vulnclass"`
 	Name      string `json:"name,omitempty"` // 漏洞名称;为空时前端回退展示 vulnclass
 	Severity  string `json:"severity"`       // critical | high | medium | low
-	Status    string `json:"status"`         // pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
-	Summary   string `json:"summary"`
-	Evidence  string `json:"evidence"`
-	Report    string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
+	// pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
+	Status   string `json:"status"`
+	Summary  string `json:"summary"`
+	Evidence string `json:"evidence"`
+	Report   string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`
@@ -560,6 +562,9 @@ type AgentDTO struct {
 	// 【二开·P-EXEC·U5】执行器标识（K18：仅自定义 agent；空=行为不变 K23）——列表/详情 DTO 都要带，
 	// 否则建任务抽屉的种子执行器下拉（filter a.executor_key）永远为空（m05023 bug）
 	ExecutorKey string `json:"executor_key,omitempty"`
+	// 【二开·首个 custom seed 门控】首个 intent 执行期间是否受 Planner 控制
+	// （true=默认；false=首个 intent 快照 hold_until_done。仅自定义 agent 可改，内置恒 true）。
+	PlannerControlled bool `json:"planner_controlled"`
 	// P3 触发后处理策略(仅自定义 agent 有意义)。
 	TriggerRunMode     string `json:"trigger_run_mode"`
 	TriggerMergeMode   string `json:"trigger_merge_mode"`
@@ -585,6 +590,7 @@ func agentDTO(a *db.Agent) AgentDTO {
 		InteractiveShell:   a.InteractiveShell,
 		LLMProfileID:       a.LLMProfileID,
 		ExecutorKey:        a.ExecutorKey,
+		PlannerControlled:  a.PlannerControlled,
 		TriggerRunMode:     a.TriggerRunMode,
 		TriggerMergeMode:   a.TriggerMergeMode,
 		TriggerMaxParallel: a.TriggerMaxParallel,

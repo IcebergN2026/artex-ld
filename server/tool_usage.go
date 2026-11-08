@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - toolUsageRecorder / meteredTool：使用记录落库接口与计量装饰器。
 //   - meterTool / Call：包装工具并在调用前插入 ToolUsage 行，行为与结果完全透传。
+
 package server
 
 import (

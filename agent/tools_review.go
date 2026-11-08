@@ -6,13 +6,13 @@
 //   - RunReviewChat：审核会话轮，处置队列中的待审意图。
 //   - RunReviewAuto：自动审核轮，无人值守产出审核决定。
 
-// ═══ ARTEX 二开 · [P-REVIEW·A3 审核工具组] ═══
+// 【二开·P-REVIEW·A3 审核工具组】
 // 功能介绍：review agent 的四个图工具——list_intents（读，K4=取代原 get_proposed_intents，m03206）/set_intent_status（处置）/
 //
 //	send_planner_hint（优化点下发）/add_review_intent（送审唯一入口+优化版替代）；
 //	双模式工具子集：预审轮物理只读（K14），会话轮写动作全走 intercept ask（K15）
 //
-// 二开日期：2026-10-21
+
 package agent
 
 import (
@@ -209,7 +209,7 @@ func (t *ToolSet) sendPlannerHint() actool.CoreTool {
 // 批准时转正；executor 不是参数（§2.9.1），想改派执行器只能驳回→update_intent→重送。
 // K16 路线 A 由 review agent 用它直产优化版替代意图（payload.replaces=旧意图 id，K21，带存在性校验）。
 // review_enabled=false 时明确报错（§2.4：不得静默改投 open）。送审成功经 wakeReview 立即唤醒
-// ReviewRunner（§2.6：单个/批量都收口，不再只靠 60s 轮询）。
+// ReviewRunner（§2.6：单个/批量都收口，不再只靠 15s 轮询）。
 func (t *ToolSet) addReviewIntent() actool.CoreTool {
 	return t.writeExpTool("add_review_intent",
 		"【送审】提交一条意图进入人工审核：落 proposed + review_status=pending + executor='review' 占位，不会直接执行，只被审核面板/审核轮拾取；审核通过后同一节点转 open（资产与血缘保持不变）。与 add_intent（直投 open、立即执行）不同，本工具只送审。支持单条或 intents 数组批量。",
@@ -311,9 +311,8 @@ func (t *ToolSet) addReviewIntent() actool.CoreTool {
 		})
 }
 
-// ═══ ARTEX 二开 · [P-AGENT·S5 预审装配] ═══
+// 【二开·P-AGENT·S5 预审装配】
 // 功能介绍：RunReviewPreScreen——只读预审一轮，产出 {意图id: {verdict, note}}（§3.3 契约）
-// 二开日期：2026-10-21
 
 // PreScreenVerdict 预审单条建议（§3.3）：pass=建议放行；revise=建议修订。两种结论的 note 均必填，且只落标注，意图保持待审。
 type PreScreenVerdict struct {
@@ -346,7 +345,7 @@ func RunReviewPreScreen(ctx context.Context, cfg ReviewPreScreenConfig) (map[int
 	for _, id := range cfg.FreshIDs {
 		ids = append(ids, fmt.Sprintf("#%d", id))
 	}
-	input := fmt.Sprintf("以下是本轮需要预审的待审意图 id：%s。\n请用 list_intents(states=[\"proposed\"]) 拉取详情（审核模式下 proposed 即待审意图），结合 graph_overview 看任务全貌，逐条给出裁决，最后只输出 JSON：\n{\"<id>\": {\"verdict\": \"pass|revise\", \"note\": \"<≤200字>\"}, ...}\n- pass：与任务目标相关、不重复、不危险、执行器适配（按送审时预选的 pending_executor 判断，无预选=默认 worker），建议放行（note 必须写一句通过理由；仅标注，不会自动批准）；\n- revise：不建议放行，note 必填——写清需要优化的内容（给人工审核聚焦用）。\n- note 写法：每个 id 只说明当前这条意图，用 1–3 句完整中文写清要做什么、为什么、与已有意图的关系及操作约束；结论前置，禁止罗列无关 id 或用分号堆叠结论。pass 必须写一句通过理由，revise 必须给出可执行修改建议。",
+	input := fmt.Sprintf("以下是本轮需要预审的待审意图 id：%s。\n请用 list_intents(states=[\"proposed\"]) 拉取详情（审核模式下 proposed 即待审意图），结合 graph_overview 看任务全貌，逐条给出裁决，最后只输出 JSON：\n{\"<id>\": {\"verdict\": \"pass|revise\", \"note\": \"<≤200字>\"}, ...}\n- pass：与任务目标相关、不重复、不危险、执行器适配（按送审时预选的 pending_executor 判断，无预选=默认 worker），建议放行（note 必须写一句通过理由；仅标注，不会自动批准）；\n- revise：不建议放行，note 必填——明显越界（撞任务目标里的授权边界/禁止条款）、明显重复或明显危险时都要退回修订，写清需要优化的内容（给人工审核聚焦用）。\n- note 写法：每个 id 只说明当前这条意图，用 1–3 句完整中文写清要做什么、为什么、与已有意图的关系及操作约束；结论前置，禁止罗列无关 id 或用分号堆叠结论。pass 必须写一句通过理由，revise 必须给出可执行修改建议。",
 		strings.Join(ids, "、"))
 	out, _, err := captureRun(ctx, agentcore.Options{
 		Provider:       cfg.Provider,
@@ -410,9 +409,8 @@ func parseReviewID(s string) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-// ═══ ARTEX 二开 · [P-AGENT·S6 会话轮装配] ═══
+// 【二开·P-AGENT·S6 会话轮装配】
 // 功能介绍：RunReviewChat——人在场审核对话轮，挂 ReviewTools 全组（写工具由 intercept ask 挂起，K15）
-// 二开日期：2026-10-21
 
 // ReviewChatConfig 会话轮输入。Hooks 传任务 Guard.Hooks()（D9 ask 规则在此生效）。
 type ReviewChatConfig struct {
@@ -462,12 +460,11 @@ func RunReviewChat(ctx context.Context, cfg ReviewChatConfig) error {
 	return err
 }
 
-// ═══ ARTEX 二开 · [P-REVIEW·S5b 自动审核] ═══
+// 【二开·P-REVIEW·S5b 自动审核】
 // 功能介绍：RunReviewAuto——任务开了「自动处置」（tasks.review_auto，审核聊天窗 Switch）后，
 // ReviewRunner 预审轮走这里：LLM 只读研判 + 输出决策 JSON，server 端解析后经 D3 CAS 执行。
 // 关键设计：LLM 自始至终不碰写工具（工具组仍是 ReviewReadOnlyTools），决策以数据形式返回，
 // 由 server 执行 ApproveIntentAt/RequestRevisionAt——拦截 ask 规则零冲突，格式强约束，留痕完整。
-// 二开日期：2026-10-22
 
 // ReviewDecision 自动审核单条处置决定。
 // 【二开·审核流 PR6/§3.5】收窄为 approve/reject 两态：拿不准=不输出该 id（未决），
@@ -504,7 +501,7 @@ func RunReviewAuto(ctx context.Context, cfg ReviewAutoConfig) ([]ReviewDecision,
 	input := fmt.Sprintf(`以下是本轮待审意图 id：%s。
 请用 list_intents(states=[\"proposed\"]) 拉取详情（审核模式下 proposed 即待审意图），结合 graph_overview 看任务全貌，然后对你能明确判断的每一条给出处置决定：
 - approve：明显安全且与任务目标强相关；
-- reject：明显重复或明显危险（删改业务数据、DoS、关闭审计、持久化后门等，note 必填，写清需要优化的内容——会退回 planner 修订原稿后重新送审）；
+- reject：明显越界（撞任务目标里的授权边界/禁止条款）、明显重复或明显危险（删改业务数据、DoS、关闭审计、持久化后门等，note 必填，写清需要优化的内容——会退回 planner 修订原稿后重新送审）；
 - 拿不准的【不要输出】该 id：未决不做任何写操作，留给人工。
 每个决定附 ≤200 字理由 note。
 最后只输出 JSON：{"<id>": {"action": "approve|reject", "note": "<理由>"}, ...}`,

@@ -5,6 +5,7 @@
 //   - interceptListPending / interceptGetOne / interceptDetail / interceptDecide：待审项列表、详情与人工裁决接口。
 //   - interceptGetToolConfig / interceptSetToolConfig / interceptGetJudgeConfig / interceptSetJudgeConfig：拦截工具与评审模型的配置读写。
 //   - reviewCompletion / streamCollectText：调用 LLM 复核输入内容并收集流式文本。
+
 package server
 
 import (
@@ -124,8 +125,7 @@ func (s *Server) interceptCreateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req interceptRuleReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := validateInterceptRuleReq(req); err != nil {
@@ -152,8 +152,7 @@ func (s *Server) interceptUpdateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req interceptRuleReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if err := validateInterceptRuleReq(req); err != nil {
@@ -200,8 +199,7 @@ func (s *Server) interceptToggleRule(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
 	}
 	if err := pg.ToggleInterceptRule(id, req.Enabled); err != nil {
@@ -366,8 +364,7 @@ func (s *Server) interceptDecide(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Decision string `json:"decision"` // "allowed" | "denied"
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
 	}
 	if req.Decision != "allowed" && req.Decision != "denied" {
@@ -404,8 +401,7 @@ func (s *Server) interceptSetToolConfig(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		EnabledTools []string `json:"enabled_tools"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
 		return
 	}
 	if req.EnabledTools == nil {
@@ -429,8 +425,7 @@ func (s *Server) interceptGetJudgeConfig(w http.ResponseWriter, r *http.Request)
 // interceptSetJudgeConfig persists the judge configuration.
 func (s *Server) interceptSetJudgeConfig(w http.ResponseWriter, r *http.Request) {
 	var req intercept.JudgeConfig
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	switch req.FailAction {

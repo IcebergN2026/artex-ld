@@ -2,7 +2,51 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-版本说明：`artex-ld` 从 `0.1.2` 起使用独立版本序列。Release 名称为 **artex-ld 0.1.4**，Git Tag 为 **v0.1.4**。文末 `0.3.15` 及更早内容是上游 ARTEX 历史，不属于 `artex-ld` 的版本号序列。
+版本说明：`artex-ld` 从 `0.1.2` 起使用独立版本序列。Release 名称为 **artex-ld 0.1.5**，Git Tag 为 **v0.1.5**。文末 `0.3.15` 及更早内容是上游 ARTEX 历史，不属于 `artex-ld` 的版本号序列。
+
+## [Unreleased]
+
+### 版本默认值修正
+
+- 本地/无 git 构建的默认版本号由 `dev` 改为 `0.1.5`（`cmd/artex/main.go` 的 `version`、`server.BuildVersion`、`build.sh` 的 `ARTEX_BUILD_VERSION` 回退值），未经 `-ldflags -X main.version=…` 注入的构建也报告真实版本；`selfupdate.CompareVersions` 仍把旧二进制报告的 `dev` 视为不可比较版本（不触发一键更新），相关测试保留。
+
+### 注释审计与规范修正
+
+- 修正 22 处文档注释错位与 3 处文件头失名，补齐 8 个文件头，修正 4 处 60s 过期说明及 2 处审核继承语义注释（15s 审核轮；父任务开启则子任务强制开启，父任务关闭时按分类默认兜底）。
+- 归一 PR7 二开标记并拆分超长/空区间，代码注释中的行号锚点改为 `文件#符号`；新增 `scripts/check-comments` 检查器（`go run ./scripts/check-comments`），基于 Go AST 与 TS/SQL 正则检查文件头、doc 贴附、标记配对、行内长度和过期短语，先以 `-warn` 模式接入 CI 观察，再转为失败项。
+
+### 授权范围回退与稳定性修复
+
+- 回退“Agent 无范围限制”改造：恢复 Planner/Worker 的 `task_constraints` 注入、内置场景授权边界、审核越界驳回及 `spawn_task` 的父 goal/deny 双重闸门；新增一次性回滚迁移，保留用户自定义提示词与任务快照。
+- `list_tasks` 与 Web 任务 API 统一使用 `resolvedTaskStatus`，消除 queued、LLM 链耗尽状态的重复推导。
+- 任务范围匹配统一复用同一 SQL 谓词，IP/CIDR 同时覆盖 `ip` 列和 IP 字面量 `domain`，修复资产列表、覆盖度、未测资产、Host 与覆盖图之间的不一致。
+- HTTP JSON 请求统一分档限长并映射 400/413；公开认证端点使用 16 KiB 上限，保留可选空体、严格尾随值和原始 body 键集等既有语义。
+- Guard 的 deny、审批拒绝和取消分支在内存审计中保留原始 shell 命令；报告严重度支持历史大小写归一、未知值置底，新写入统一校验 critical/high/medium/low。
+- Planner 心跳默认值统一为 600 秒，并为存量 PostgreSQL 库幂等更新列默认值；根镜像构建重新包含 `dist/artex-linux-*/artex`。
+- 修复 Next webpack `DefinePlugin` 回调，报告/日志动态模块改用可折叠的直接环境判断；字体选项裁剪为真实 Geist、Geist Mono、Geist Pixel Square，并兼容旧字体 cookie 回退。
+
+### 全局 Agent 控制与开关修复
+
+- `planner_controlled=false` 改为读取 Agent 当前配置并对所有 custom intent 生效，不再限定 `origin=seed` 或依赖 `planner_policy` 快照；已有 intent 与非首个触发路径均受同一门控，Agent 缺失时仍按 `true` 兼容。
+- 自定义执行器新增 `list_intents` 与 `claim_executor_intent` 工具：Agent 按服务端 `agents.executor_key` 原子 CAS 领取，无匹配直接退出且不改状态；`Agent.Key` 只用于配置、提示词和会话。非首个 custom intent 由 Engine 预领取后直接执行，不再要求模型重复 list/claim；自领路径仍保留冲突、executor 不匹配和重复领取防护。
+- `pre_agent` 首个种子统一由真实 Conversation/ChatAgent 执行，不再进入 `RunCustomExecutor` 特殊 Worker 链；对话完成后按真实 TerminalReason 结算 seed，普通 Worker 在 done/deleted 前保持互斥。`tasks.pre_agent` 持久化并支持活动 seed 回填，重启后恢复对话执行而不重放 `on_task_create`；任务会话列表不再为该 seed 新建 Executor/Worker 条目。对话创建/领取前的瞬时错误按 800ms 退避重试，不会永久放弃执行阶段；对话注入的领域工具继承任务 TaskID，finding/asset/fact 归属不再丢失。
+- `pre_agent` 新任务将匹配 Agent 的启用 `on_task_create` 消息合并进首个 Conversation，Scheduler 不再重复启动同一 Agent；blocked/exhausted/stopped 保留现场并等待人工重跑，批量接口扩大为 `/intents/rerun-recoverable`。
+- Agent 编辑器开关更名为“不受 Planner 控制”，点击立即通过配置 API 保存，保存中防重入、失败回滚，不再要求额外点击“保存配置”；刷新后状态与服务端一致。普通“保存配置”不再提交该字段，避免页面加载时的旧值把刚选择的 false 覆盖为 true。
+
+## [0.1.5] - 2026-11-07
+
+### 首个意图与 Agent 编排
+
+- 自定义 Agent 新增 `planner_controlled` 配置（默认 `true` 兼容旧数据），Agent 编辑器可设置首个意图执行期间是否受 Planner 控制；`seedFirstIntent` 按创建时配置写入 `planner_policy` 快照，后续修改 Agent 不影响已有 intent，config-export/import 同步支持该字段。
+- 首个 `hold_until_done` custom seed 的首次 kick、edge、heartbeat、goalless 和超时终局规划统一由 DB 门控控制：paused/stopped/blocked/exhausted 不再自动唤醒 Planner 或改派默认 Worker，只有真实 done 或人工删除放行；普通 Worker 与其他 custom intent 保持原有失败重规划。
+- custom runner 终态改为 fail-closed，只有 `ReasonCompleted` 可写 done，hook/abort 写 stopped，未知或空 reason 写 blocked，避免未完成被误判完成。
+- 补齐 Agent 配置 PATCH、DB 状态矩阵、真实 Planner edge/heartbeat、超时收尾、快照兼容和浏览器开关保存测试；实施与验证详见 `dev/FIRST_INTENT_GATE_IMPLEMENTATION.md`、`dev/FIRST_INTENT_GATE_TEST_RECORD.md`。
+
+### 稳定性修复
+
+- 主 Agent 单轮会话增加 10 分钟超时兜底、超时提示和 panic 恢复；正常、超时及 panic 退出均清理会话占用与 LLM 调用计数，手动取消原因保持不变。
+- LLM 熔断状态落库改为单 writer + 2000 容量有界队列，队列满时丢弃持久化并记录日志，避免 PostgreSQL 卡顿时按事件堆积 goroutine；新增真实 PostgreSQL 行为测试。
+- 冷图压缩和会话执行增加 panic 恢复与堆栈日志，防止单个后台任务异常终止整个服务。
 
 ## [0.1.4] - 2026-11-05
 
@@ -27,12 +71,6 @@
 - 拓扑自动整理与 C 段归组增加同步防重入、错误提示与失败重载；归组标记读写容错，手动归组后不再被意外自动归回。
 - 人工预审 `pass` / `revise` 的 `note` 统一为必填；空值不进入预审结果，合法理由保留 trim 后内容，自动处置契约不变。
 - Agent 触发列表对 Planner 显式派发消息模板显示 `工具调用(dispatch_finding_to_agent)`，不再误显示“无条件”；不额外开启 Scheduler `on_tool_call`，避免重复入队。
-- 补充定向回归测试：`spawn_task` 独立探索链验证子任务不创建 `source_task_ids` 来源关系、仅复制触发 Finding 的 intent/fact/finding 血缘链；`vuln_dispatcher` 独立探索链提示词迁移验证默认血统切换、重入幂等与自定义提示词不覆盖。
-
-### 安全与发布
-
-- `.dockerignore` 收紧构建上下文：`Dockerfile.source` 的 `COPY . .` 不再收进 `*.key`、`*.pem`、`config-export/`、`backup/` 与 `/dev/`，避免密钥和业务数据进入镜像构建层。
-- `config-export/` 导出快照含密钥明文，改由 `.gitignore` 忽略、不再入库（配置种子已内置源码，见上文幂等 seed）；仓库同步移除该示例目录。
 
 ## [0.1.3] - 2026-11-04
 

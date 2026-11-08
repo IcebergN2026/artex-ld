@@ -4,6 +4,7 @@
 //   - activityWithUsage：把 LLM usage 附加进活动记录。
 //   - firstLine / blocksText：活动摘要截断与工具结果文本提取。
 //   - approvalHistory：从历史消息构造有界的审批/审计上下文。
+
 package agent
 
 import (

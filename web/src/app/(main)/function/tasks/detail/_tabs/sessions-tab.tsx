@@ -286,9 +286,8 @@ const SYSTEM_SESSION: Session = {
   last_activity: "",
 };
 
-// ═══ ARTEX 二开 · [P-INTENT·U3 审核会话常量] ═══
+// 【二开·P-INTENT·U3 审核会话常量】
 // 功能介绍：REVIEW_SESSION——审核会话常驻会话列表（与 PLANNER_SESSION 同款虚拟会话模式；live 由活动流近 30s 判定）
-// 二开日期：2026-10-21
 const REVIEW_ID = "s-review";
 const REVIEW_SESSION: Session = {
   id: REVIEW_ID,
@@ -323,6 +322,8 @@ function intentStatus(state: string): SessionStatus {
       return "paused";
     case "open": // 待领取，区别于执行中
       return "pending";
+    case "proposed": // 自定义执行器待领取 / 空 executor 待处理
+      return "pending";
     case "deleted": // 用户假删除
       return "deleted";
     default: // running
@@ -330,11 +331,47 @@ function intentStatus(state: string): SessionStatus {
   }
 }
 
-// Derive worker sessions from running/open intents — there is no backend
+// parseExecutorKey 从意图 payload JSON 中解析自定义执行器 key。
+// 返回空字符串表示：无 executor、JSON 解析失败、或 executor='review'（人工审核占位符）。
+// 该值用于前端区分「Worker」与「Executor <key>」的会话标签显示。
+function parseExecutorKey(payload: string): string {
+  if (!payload) return "";
+  try {
+    const p = JSON.parse(payload) as Record<string, unknown>;
+    const key = typeof p.executor === "string" ? p.executor.trim() : "";
+    return key === "review" ? "" : key;
+  } catch {
+    return "";
+  }
+}
+
+// isReviewProposed 判断该意图是否为人工审核待审项（state=proposed 且 executor='review'）。
+// 人工审核 proposed 只应出现在审核面板，不应出现在 Worker 会话列表。
+// JSON 无效时返回 false（保守保留在 Worker 列表显示 pending，避免僵尸隐藏）。
+function isReviewProposed(n: TaskNode): boolean {
+  if (n.state !== "proposed") return false;
+  try {
+    const p = JSON.parse(n.payload ?? "{}") as Record<string, unknown>;
+    return p.executor === "review";
+  } catch {
+    return false;
+  }
+}
+
+// sessionExecutionLabel 生成会话的执行者显示标签。
+// 有自定义 executor 时显示 `Executor <key> #<iid>`，否则显示 `Worker #<iid>`。
+// 用于会话徽标、详情标题、暂停/恢复/删除 toast、发消息 aria 和删除对话框，替换硬编码 Worker 文案。
+function sessionExecutionLabel(s: Session): string {
+  if (s.executor) return `Executor ${s.executor} #${s.intent_id ?? s.id}`;
+  return `Worker #${s.intent_id ?? s.id}`;
+}
+
+// Derive worker sessions from running/open/proposed intents — there is no backend
 // sessions endpoint, so intents (≈ worker units) are the closest real source.
 function intentToSession(n: TaskNode): Session {
   const label = (n.payload ?? "").trim();
   const state = intentStatus(n.state);
+  const executor = parseExecutorKey(n.payload ?? "");
   return {
     id: n.id,
     role: "worker",
@@ -345,6 +382,7 @@ function intentToSession(n: TaskNode): Session {
     intent_id: n.id,
     source_task_id: n.source_task_id,
     inherited: n.inherited,
+    executor: executor || undefined,
   };
 }
 
@@ -383,8 +421,8 @@ function SessionItem({
     s.role === "worker" &&
     !s.inherited &&
     !deleted &&
-    // pending = 待领(open)意图;连同运行中/已暂停都允许删除。
-    (s.status === "running" || s.status === "paused" || s.status === "pending");
+    // pending = 待领(open/proposed)意图;连同运行中/已暂停/失败终态都允许删除。
+    (s.status === "running" || s.status === "paused" || s.status === "pending" || s.status === "blocked" || s.status === "exhausted" || s.status === "stopped");
   return (
     <div
       className={cn(
@@ -637,29 +675,30 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         return;
       }
       setControllingIntent(session.intent_id);
+      const label = sessionExecutionLabel(session);
       try {
         const res = await api.controlIntent(taskId, session.intent_id, action, reason, mode);
         if (action === "pause") {
-          patchIntentState(session.intent_id, "paused");
-          toast.success(`Worker #${session.intent_id} 已暂停`);
+          patchIntentState(session.intent_id, res.state || "paused");
+          toast.success(`${label} 已暂停`);
         } else if (action === "resume") {
-          patchIntentState(session.intent_id, "open");
-          toast.success(`Worker #${session.intent_id} 已恢复，等待重新领取`);
+          patchIntentState(session.intent_id, res.state || "open");
+          toast.success(`${label} 已恢复，等待重新领取`);
         } else if (mode === "hard") {
           // 真删除:意图及独占下游已物理移除,从列表剔除该行。
           patchIntentState(session.intent_id);
           const d = res.deleted;
           const extra = d ? `（含 ${d.intents} 意图 / ${d.facts} 事实 / ${d.findings} 漏洞）` : "";
-          toast.success(`Worker #${session.intent_id} 及其独占下游已彻底删除${extra}`);
+          toast.success(`${label} 及其独占下游已彻底删除${extra}`);
           setCancelReason("");
         } else {
           // 假删除:意图置 deleted、记录删除原因,保留节点与产出。
-          patchIntentState(session.intent_id, "deleted");
-          toast.success(`Worker #${session.intent_id} 已删除（原因已记录，规划者将据此重新规划）`);
+          patchIntentState(session.intent_id, res.state || "deleted");
+          toast.success(`${label} 已删除（原因已记录，规划者将据此重新规划）`);
           setCancelReason("");
         }
       } catch (error) {
-        toast.error(`Worker 操作失败：${(error as Error).message}`);
+        toast.error(`${label} 操作失败：${(error as Error).message}`);
       } finally {
         setControllingIntent(null);
         setCancelIntent(null);
@@ -1187,7 +1226,17 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     return grouped;
   }, [intentAssets]);
 
-  const workerSessions = React.useMemo(() => allIntents.map(intentToSession), [allIntents]);
+  // pre_agent custom seed 由会话 Agent 自领；仅隐藏这一类，非 seed custom/default intent 保持原有 Worker 会话。
+  const workerSessions = React.useMemo(
+    () =>
+      allIntents
+        .filter(
+          (n) =>
+            !isReviewProposed(n) && !(n.origin === "seed" && parseExecutorKey(n.payload ?? "") !== ""),
+        )
+        .map(intentToSession),
+    [allIntents],
+  );
   const intentsHasMore = hasLoadedOlderIntentsPage ? olderIntentsHasMore : firstIntentsHasMore;
 
   // For each worker session (intent), derive the display title from the intent
@@ -1289,11 +1338,14 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
   const sessions = React.useMemo(() => {
     // 【二开·P-INTENT·U3】REVIEW_SESSION 并入（紧随 PLANNER_SESSION）
-    const items = [...mainSessions, { ...PLANNER_SESSION, live: plannerLive }, { ...REVIEW_SESSION, live: reviewLive }, ...workerSessions, SYSTEM_SESSION]; // 【二开·P-REVIEW·常驻】审核 tab 常驻：未开启审核的任务面板内显示空态
+    // 【二开·P-REVIEW·常驻】审核 tab 常驻：未开启审核的任务面板内显示空态
+    const items = [...mainSessions, { ...PLANNER_SESSION, live: plannerLive }, { ...REVIEW_SESSION, live: reviewLive }, ...workerSessions, SYSTEM_SESSION];
     const located = focusSession ?? retainedSession;
     if (located && !items.some((s) => s.id === located.id)) items.push(located);
     return items;
-  }, [mainSessions, workerSessions, plannerLive, reviewLive, reviewEnabled, focusSession, retainedSession]); // 【二开·P-INTENT·U3】依赖加 reviewLive【二开·P-REVIEW·D2c】加 reviewEnabled
+  // 【二开·P-INTENT·U3】依赖加 reviewLive
+  // 【二开·P-REVIEW·D2c】依赖加 reviewEnabled
+  }, [mainSessions, workerSessions, plannerLive, reviewLive, reviewEnabled, focusSession, retainedSession]);
 
   const grouped = {
     mainagent: sessions.filter((s) => s.role === "mainagent"),
@@ -1584,7 +1636,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         patchIntentState(intentId, result.state);
         setWorkerMessage("");
         setWorkerMessageRequestId("");
-        toast.success(`消息已发送给 Worker #${intentId}，已立即继续执行`);
+        toast.success(`消息已发送给 ${sessionExecutionLabel(active)}，已立即继续执行`);
       })
       .catch((error) => {
         toast.error(`发送失败：${(error as Error).message || "请稍后重试"}`);
@@ -1788,7 +1840,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         {/* Right: transcript */}
         <SideQuestionWorkspace
           side={side}
-          label={active.role === "worker" ? `Worker #${active.intent_id} · ${activeDisplayTitle}` : activeDisplayTitle}
+          label={active.role === "worker" ? `${sessionExecutionLabel(active)} · ${activeDisplayTitle}` : activeDisplayTitle}
         >
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card">
             {/* 【二开·P-INTENT·U3】起 —— 审核会话内容区整体由 ReviewPanel 接管（消息流+确认卡+composer 全在面板内） */}
@@ -2070,8 +2122,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   <MentionTextarea
                     inputGroup
                     rows={1}
-                    aria-label={`给 Worker #${active.intent_id} 发消息`}
-                    placeholder={`给 Worker #${active.intent_id} 发消息，@ 引用记录，调整执行方向…`}
+                    aria-label={`给 ${sessionExecutionLabel(active)} 发消息`}
+                    placeholder={`给 ${sessionExecutionLabel(active)} 发消息，@ 引用记录，调整执行方向…`}
                     value={workerMessage}
                     onValueChange={(value) => {
                       setWorkerMessage(value);
@@ -2107,8 +2159,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                         variant="destructive"
                         onClick={() => void controlWorker(active, "pause")}
                         disabled={controllingIntent === active.intent_id}
-                        title="暂停当前 Worker"
-                        aria-label="暂停当前 Worker"
+                        title={`暂停当前 ${sessionExecutionLabel(active)}`}
+                        aria-label={`暂停当前 ${sessionExecutionLabel(active)}`}
                       >
                         {controllingIntent === active.intent_id ? (
                           <Loader2Icon className="animate-spin" />
@@ -2177,7 +2229,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         >
           <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
             <AlertDialogHeader>
-              <AlertDialogTitle>删除 Worker #{cancelIntent?.intent_id}？</AlertDialogTitle>
+              <AlertDialogTitle>删除 {cancelIntent ? sessionExecutionLabel(cancelIntent) : "Worker"}？</AlertDialogTitle>
               <AlertDialogDescription className="break-words whitespace-normal">
                 {deleteMode === "hard" ? (
                   <>

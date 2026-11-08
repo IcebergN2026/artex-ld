@@ -4,6 +4,7 @@
 //   - wireTools：种子内置领域工具并挂接自定义工具解析。
 //   - buildDomainReg：从资产存储构建领域工具注册表。
 //   - seedPrompts：首次插入内置提示词种子，不覆盖用户修改。
+
 package server
 
 import (
@@ -327,6 +328,12 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
 			return tools
 		}
+		configuredAgent, _ := pg.GetAgentByKey(agentKey)
+		executorAgent := configuredAgent != nil && configuredAgent.ExecutorKey != ""
+		if strings.HasPrefix(agentKey, "exec:") {
+			executor, err := pg.GetAgentByExecutorKey(strings.TrimPrefix(agentKey, "exec:"))
+			executorAgent = err == nil && executor != nil && executor.Enabled && !executor.Builtin
+		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {
 			byKey[t.Key] = t
@@ -342,6 +349,11 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				taskRegLoaded = true
 				if t, err := pg.GetTask(runInfo.TaskID); err == nil && t != nil && t.ExplorationID > 0 {
 					tts := agent.NewToolSet(pg.Exploration(t.ExplorationID), agentKey)
+					tts.SetTaskID(runInfo.TaskID)
+					if configuredAgent != nil {
+						tts.SetExecutorKey(configuredAgent.ExecutorKey)
+					}
+					tts.SetExecutorChecker(pg.CheckExecutorKey)
 					if as := pg.Assets(); as != nil {
 						tts.SetAssetStore(as, as.Companies())
 					}
@@ -371,7 +383,15 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				out = append(out, t)
 				continue
 			}
-			if !row.Enabled || !contains(row.Agents, agentKey) {
+			if !row.Enabled {
+				continue
+			}
+			// 声明 executor_key 的自定义 Agent 均可查询/自领 intent，无需逐个维护绑定。
+			if (row.Key == "list_intents" || row.Key == "claim_executor_intent") && executorAgent {
+				out = append(out, resolve(t, row))
+				continue
+			}
+			if !contains(row.Agents, agentKey) {
 				continue // disabled globally or not bound to this agent → drop
 			}
 			out = append(out, resolve(t, row))
@@ -387,7 +407,16 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				inList[t.Name()] = true
 			}
 			for _, row := range rows {
-				if row.Kind == "shell" || !row.Enabled || !contains(row.Agents, agentKey) || inList[row.Key] {
+				if row.Kind == "shell" || !row.Enabled || inList[row.Key] {
+					continue
+				}
+				if (row.Key == "list_intents" || row.Key == "claim_executor_intent") && executorAgent {
+					if inst, ok := taskDomain(row.Key); ok {
+						out = append(out, resolve(inst, row))
+					}
+					continue
+				}
+				if !contains(row.Agents, agentKey) {
 					continue
 				}
 				inst, ok := taskDomain(row.Key)

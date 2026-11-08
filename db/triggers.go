@@ -162,6 +162,7 @@ type TaskEvent struct {
 	TaskID     int64  `json:"task_id"`
 	TaskDesc   string `json:"task_description"`
 	TaskGoal   string `json:"task_goal"`
+	PreAgent   string `json:"pre_agent"`   // task-create only: conversation-owned seed executor_key
 	Summary    string `json:"summary"`     // finding summary / goal text
 	VulnClass  string `json:"vulnclass"`   // finding only
 	Severity   string `json:"severity"`    // finding only
@@ -228,9 +229,15 @@ ORDER BY id`, lastID)
 // agent runs are conversations, not tasks, so this never fires on its own output.
 func (d *DB) NewTasksSince(lastID int64) ([]TaskEvent, error) {
 	rows, err := d.Query(`
-SELECT id, description, goal FROM tasks
-WHERE deleted_at IS NULL AND id > $1
-ORDER BY id`, lastID)
+SELECT t.id, t.description, t.goal,
+       CASE WHEN EXISTS (
+           SELECT 1 FROM exploration_nodes n
+           WHERE n.exploration_id=t.exploration_id AND n.kind='intent' AND n.origin='seed'
+             AND n.payload->>'executor'=t.pre_agent
+       ) THEN COALESCE(t.pre_agent,'') ELSE '' END
+FROM tasks t
+WHERE t.deleted_at IS NULL AND t.id > $1
+ORDER BY t.id`, lastID)
 	if err != nil {
 		return nil, err
 	}
@@ -238,7 +245,7 @@ ORDER BY id`, lastID)
 	out := []TaskEvent{}
 	for rows.Next() {
 		var e TaskEvent
-		if err := rows.Scan(&e.NodeID, &e.TaskDesc, &e.TaskGoal); err != nil {
+		if err := rows.Scan(&e.NodeID, &e.TaskDesc, &e.TaskGoal, &e.PreAgent); err != nil {
 			return nil, err
 		}
 		e.TaskID = e.NodeID // task id doubles as NodeID for the watermark

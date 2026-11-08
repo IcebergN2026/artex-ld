@@ -5,6 +5,7 @@
 //   - summarize / foldHistory / compactSnapshot：用 LLM 摘要压缩历史并折叠消息。
 //   - isContextOverflow：判断模型错误是否为上下文超限。
 //   - SideQuestionService.Respond：旁路问答主流程（加载历史→组装→回答→更新记忆）。
+
 package sidequestion
 
 import (
@@ -41,9 +42,10 @@ type ContextInfo struct {
 	OverflowRetried      bool   `json:"overflow_retried,omitempty"`
 }
 
-// Load returns ascending completed exchanges after the cursor, in bounded
-// pages, restricted to ordinals before this request. Save must reject writes
-// after a clear/delete/cancel using the admitted request's generation.
+// Replay supplies persisted side-question memory: Load pages ascending completed
+// exchanges after the cursor (bounded, restricted to ordinals before this request);
+// Save must reject writes after a clear/delete/cancel using the admitted request's
+// generation.
 type Replay struct {
 	Memory Memory
 	Load   func(context.Context, int64) ([]Exchange, error)

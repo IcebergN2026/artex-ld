@@ -4,6 +4,7 @@
 //   - uniqueUploadPath：同名文件自动加序号，避免覆盖已有附件。
 //   - composeAgentMessage：把附件绝对路径清单追加到用户消息，供 agent 读取。
 //   - userActivityWithAttachments：构造带附件明细的持久化用户活动。
+
 package server
 
 import (

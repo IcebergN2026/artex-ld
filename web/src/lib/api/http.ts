@@ -1,7 +1,6 @@
-// Real backend client transport: /api/* is proxied to the Go backend (next.config rewrites).
-// Domain methods live in the sibling domain files and are aggregated in lib/api.ts, which
-// re-exports http/sseUrl for the few call sites that use them directly.
 /**
+ * http.ts：真实后端客户端传输层，/api/* 由 next.config rewrites 代理到 Go 后端。
+ * 域方法位于同目录域文件并在 lib/api.ts 聚合，http/sseUrl 由聚合面 re-export。
  * 主要函数/类型：
  *   - http / get / post / put / patch / del：带鉴权与统一错误处理的 fetch 封装（MOCK 构建短路到 mock handler）
  *   - sseUrl：构建 SSE 流地址（生产同源、开发直连 :8787）
@@ -18,8 +17,10 @@ export function getToken(): string | null {
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   // 动态 import 让 6800 行 mock 数据只在 MOCK 构建进 bundle：此处必须内联
-  // process.env 判定（而非经 lib/mock/enabled 的 MOCK 常量），DefinePlugin 才能
-  // 在生产构建把它折成 if(false) 并整体消除该 import() 依赖。
+  // process.env 判定（而非经 lib/mock/enabled 的 MOCK 常量）。默认 Turbopack
+  // 构建由 next.config.mjs 的 resolveAlias 把 mock handler 换成空桩；显式
+  // webpack 构建则由 DefinePlugin 把它折成 if(false)，两种构建都能消除该
+  // import() 依赖。
   if (process.env.NEXT_PUBLIC_MOCK === "1")
     return (await import("@/lib/mock/handler")).mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
   const token = getToken();
@@ -55,23 +56,6 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   if (r.status === 204) return undefined as T;
   return r.json();
 }
-
-// sseUrl builds a URL for Server-Sent Events streams.
-//
-// Production (static export / Docker): the Go backend serves the web UI *and* the
-// SSE streams on the same port, so we default to a same-origin (relative) URL.
-// This is what makes reverse-proxy deploys work: a page loaded from
-// https://<domain>/ connects to https://<domain>/api/..., which the proxy forwards
-// to the backend — no need to expose :8787 publicly. Hardcoding :8787 here used to
-// break exactly that (https://<domain>:8787/... is unreachable when only 443 is open).
-//
-// Dev (next dev): SSE must NOT go through the Next.js `/api` rewrite — that proxy
-// buffers the streamed response, so event frames never reach the browser (the
-// EventSource opens but receives 0 messages). So in dev only we connect straight
-// to the Go backend on :8787, whose CORS is open.
-//
-// Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
 
 // sseUrl 构建 SSE 地址。同源流由浏览器携带登录 cookie，避免把 JWT 放进
 // URL 查询串而泄漏到访问日志；仅跨源、无法使用该 cookie 时才附加 token。

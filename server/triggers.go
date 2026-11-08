@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - triggerReq / validateTrigger：触发器请求体与共享校验（至少一种条件、工具调用需选工具）。
 //   - pgListTriggers / pgCreateTrigger / pgUpdateTrigger / pgDeleteTrigger：触发器的查/建/改/删。
+
 package server
 
 import (
@@ -64,8 +65,7 @@ func (s *Server) pgCreateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req triggerReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if req.IntervalSec < 0 {
@@ -100,8 +100,7 @@ func (s *Server) pgUpdateTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req triggerReq
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if req.IntervalSec < 0 {

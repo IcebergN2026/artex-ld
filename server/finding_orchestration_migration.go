@@ -1,4 +1,9 @@
 // finding_orchestration_migration.go：把 Finding 下游 Agent 从全局订阅迁移到 Planner 显式派发。
+// 主要函数/类型：
+//   - upgradeVulnDispatcherFindingPrompt：只刷新旧默认血统的派发提示词，自定义血统不动。
+//   - upgradeVulnDispatcherIndependentGraph：只刷新仍要求继承整条来源任务的旧默认血统。
+//   - upgradePlannerFindingDispatch：关闭 vuln_dispatcher/trace_cleaner 的旧全局 Finding 入口。
+
 package server
 
 import (

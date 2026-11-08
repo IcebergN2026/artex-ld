@@ -5,6 +5,7 @@
 //   - fetchSums / parseSums / isHexSHA256：获取并解析发布附带的 SHA256SUMS 校验和。
 //   - download / get / extractBinary：带进度地下载资源、跟随白名单重定向并从 zip 提取二进制。
 //   - progressWriter / humanSize / short：进度写出器与展示辅助。
+
 package selfupdate
 
 import (

@@ -1,8 +1,10 @@
-// lib/api.ts 聚合面：按域拆分实现（lib/api/*.ts），此处 spread 聚合并保持原单文件
-// 字面体的键序；调用点一律继续 import { api } from "@/lib/api"。
-// 主要函数/类型：
-//   - api / Api：聚合 tasks/llm-agents/intercept/misc 各域 API 的 facade 对象及其类型
-//   - http / sseUrl：re-export 的底层请求客户端与 SSE 地址构造
+/**
+ * api.ts：按域拆分实现（lib/api/*.ts）的聚合面，此处 spread 聚合并保持原单文件
+ * 字面体的键序；调用点一律继续 import { api } from "@/lib/api"。
+ * 主要函数/类型：
+ *   - api / Api：聚合 tasks/llm-agents/intercept/misc 各域 API 的 facade 对象及其类型
+ *   - http / sseUrl：re-export 的底层请求客户端与 SSE 地址构造
+ */
 
 import { http, sseUrl } from "@/lib/api/http";
 import { type InterceptApi, interceptApi } from "@/lib/api/intercept";
@@ -78,7 +80,7 @@ const API_KEYS = [
   "sendWorkerMessage",
   "taskLLMResolution",
   "rerunIntent",
-  "rerunBlocked",
+  "rerunRecoverable",
   "setActive",
   "stats",
   "taskCoverage",

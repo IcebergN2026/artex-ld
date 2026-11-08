@@ -3,6 +3,7 @@
 //   - Broadcaster：按任务维护订阅者列表的活动广播器。
 //   - NewBroadcaster：创建广播器。
 //   - Subscribe / Publish：订阅任务活动流 / 向任务订阅者发布活动。
+
 package server
 
 import (

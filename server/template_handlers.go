@@ -5,13 +5,13 @@
 //   - list / create / update / delete / setDefault：模板五端点的通用实现。
 //   - validateDryRun：模板试渲染干跑校验端点。
 //   - parseValidateTemplate：text/template 解析（missingkey=error），两侧校验共享。
+
 package server
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -22,7 +22,6 @@ import (
 	"artex/xlog"
 )
 
-// ═══ 模板库服务层（planner/worker 参数化共享实现）═══
 // planner_templates.go 与 worker_templates.go 的九组同构 handler 合并为本文件的参数化实现；
 // 差异项（kind 日志前缀、哨兵 error、内置保护 409 文案、name 长度上限、db 方法）全部经参数注入。
 
@@ -80,21 +79,15 @@ func parseValidateTemplate(body string) (*template.Template, error) {
 	return template.New("p").Option("missingkey=error").Parse(body)
 }
 
-// decode MaxBytesReader 限长读体后解码。
+// decode 限长读取后解码模板请求体，错误映射统一走 writeJSONBodyError。
 func (a *templateAPI[T, In, P]) decode(w http.ResponseWriter, r *http.Request, req *tplRequest) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, a.maxReqBytes)
-	body, err := io.ReadAll(r.Body)
+	body, err := readJSONBody(w, r, a.maxReqBytes)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
+		writeJSONBodyError(w, err)
 		return false
 	}
 	if err := json.Unmarshal(body, req); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeJSONBodyError(w, err)
 		return false
 	}
 	return true

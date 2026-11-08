@@ -52,7 +52,7 @@ type Task struct {
 	FirstRunAt     *time.Time `json:"first_run_at,omitempty"` // 首次真正开始运行的时刻(非 created_at);nil=尚未运行
 	DeadlineAt     *time.Time `json:"deadline_at,omitempty"`  // = first_run_at + timeout_seconds;nil=不限或未运行
 	// planner 心跳触发间隔(秒)：距上轮 plan 结束/任务开始满该值且期间无触发 → 触发一轮。
-	// 下限=默认=300(5min)，低于一律抬到 300(在 CreateTask 归一)。见 docs/planner-trigger-impl-plan.md
+	// 下限=默认=600(10min)，低于一律抬到 600(在 CreateTask 归一为 MinPlanHeartbeatSeconds)。
 	PlanHeartbeatSeconds int `json:"plan_heartbeat_seconds"`
 	// CoverageEnabled 是「资产覆盖度功能」总开关(默认 true)。false 时：不计算/不展示测试
 	// 覆盖度、不自动累积 task_scope(source=auto)、不给 agent 开放 add_task_scope/
@@ -73,7 +73,7 @@ type Task struct {
 	// AssetMode 资产图模式标签（m04039/D12 占位）：pentest/vuln_research/code_audit；建任务从分类快照，展示层后做。
 	AssetMode string `json:"asset_mode"`
 	// 【二开·P-TPL·D2】止
-	// 【二开·P-INTENT·D7】PreAgent 不列表（不落 tasks 表）：仅经 TaskCreateOptions 建任务时透传给 seedFirstIntent（S10）写意图 payload。
+	// PreAgent 是种子意图的自定义执行器 executor_key；空=默认 Worker。
 	PreAgent string `json:"pre_agent,omitempty"`
 }
 
@@ -100,9 +100,6 @@ func IsTerminal(status string) bool {
 	return status == "done" || status == "failed" || status == "timeout"
 }
 
-// CreateTask creates an exploration + task in one transaction and returns the task.
-// timeoutSeconds is the task-level wall-clock budget (0 = 不限时); deadline_at is
-// stamped later at first real run (see engine), not here.
 // MinPlanHeartbeatSeconds 是 planner 心跳间隔的下限 = 默认 = 10min。
 // 低于它(含缺省 0 / 负值 / 误配的小值)一律抬到 10min，防止把 planner 打爆。
 const MinPlanHeartbeatSeconds = 600
@@ -156,6 +153,9 @@ func normalizeHeartbeat(sec int) int {
 	return sec
 }
 
+// CreateTask creates an exploration + task in one transaction and returns the task.
+// timeoutSeconds is the task-level wall-clock budget (0 = 不限时); deadline_at is
+// stamped later at first real run (see engine), not here.
 func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int) (*Task, error) {
 	var ids []int64
 	if llmProfileID != nil {
@@ -182,7 +182,7 @@ type TaskCreateOptions struct {
 	// InterceptRules 是任务级资产拦截规则,创建时随任务在同一事务内写入 task_intercept_rules。
 	InterceptRules []TaskInterceptRuleInput
 	// 【二开·P-INTENT·D7】起 —— TaskCreateOptions 五新字段（00 册 D7；pre_agent 种子 executor + planner 快照/模板 + worker 池）
-	// PreAgent 种子意图 executor_key（01 册 S10：种子落 open 时写 payload.executor；空=默认 worker）。
+	// PreAgent 是持久化的种子意图 executor_key；空=默认 worker。
 	PreAgent string
 	// PlannerPrompt 提示词全文快照（与 PlannerTemplateID 同传时本字段优先，K22）。
 	PlannerPrompt string
@@ -279,11 +279,12 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		WorkerCount:           opts.WorkerCount,
 		ReviewEnabled:         opts.ReviewEnabled,
 		AssetMode:             opts.AssetMode,
+		PreAgent:              opts.PreAgent,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_prompt_override, worker_count, review_enabled, asset_mode)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.PlannerPrompt, opts.WorkerPrompt, opts.WorkerCount, opts.ReviewEnabled, opts.AssetMode).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, planner_prompt_override, worker_prompt_override, worker_count, review_enabled, asset_mode, pre_agent)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.PlannerPrompt, opts.WorkerPrompt, opts.WorkerCount, opts.ReviewEnabled, opts.AssetMode, opts.PreAgent).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	if len(opts.DispatchAssetKeys) > 0 && categoryNKey != "内网渗透" {
@@ -411,14 +412,16 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 	return nil
 }
 
+// 【二开·P-TPL·D2】taskCols 尾部追加两列【二开·P-REVIEW·D2b】再追加 review_auto【二开·P-REVIEW·D2c】再追加 review_enabled【二开·P-REVIEW·D12】再追加 asset_mode
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
 COALESCE((SELECT category.nkey FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), COALESCE(worker_prompt_override,''), COALESCE(worker_count,0), COALESCE(review_auto,false), COALESCE(review_enabled,false), COALESCE(asset_mode,'pentest')` // 【二开·P-TPL·D2】尾部追加两列【二开·P-REVIEW·D2b】再追加 review_auto【二开·P-REVIEW·D2c】再追加 review_enabled【二开·P-REVIEW·D12】再追加 asset_mode
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,600), COALESCE(coverage_enabled,true), first_run_at, deadline_at, COALESCE(planner_prompt_override,''), COALESCE(worker_prompt_override,''), COALESCE(worker_count,0), COALESCE(review_auto,false), COALESCE(review_enabled,false), COALESCE(asset_mode,'pentest'), COALESCE(pre_agent,'')`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryNKey, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.WorkerPromptOverride, &t.WorkerCount, &t.ReviewAuto, &t.ReviewEnabled, &t.AssetMode); err != nil { // 【二开·P-TPL·D2】尾部追加两个 Scan 目标【二开·P-REVIEW·D2b】再追加 ReviewAuto【二开·P-REVIEW·D2c】再追加 ReviewEnabled【二开·P-REVIEW·D12】再追加 AssetMode
+	// 【二开·P-TPL·D2】scanTask 尾部追加两个 Scan 目标【二开·P-REVIEW·D2b】再追加 ReviewAuto【二开·P-REVIEW·D2c】再追加 ReviewEnabled【二开·P-REVIEW·D12】再追加 AssetMode
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.CategoryNKey, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.PlannerPromptOverride, &t.WorkerPromptOverride, &t.WorkerCount, &t.ReviewAuto, &t.ReviewEnabled, &t.AssetMode, &t.PreAgent); err != nil {
 		return nil, err
 	}
 	t.Pinned = t.PinnedAt != nil
@@ -757,10 +760,10 @@ DELETE FROM assets a USING deletable d WHERE a.id=d.id`, id, expID)
 	return result, tx.Commit()
 }
 
-// ═══ ARTEX 二开 · [P-INTENT·D3] ═══
+// 【二开·P-INTENT·D3 待审任务统计】起 —— TasksWithProposed：任务列表"待审意图"徽标数据源
+
 // 功能介绍：TasksWithProposed——任务列表"有待审意图"徽标数据源（01 册 D3 第七法；
 //           双条件过滤与 exploration.go 的 proposedReviewFilter 一致）。
-// 二开日期：2026-10-21
 
 // TasksWithProposed 返回存在待审意图的任务 id 集合，供任务列表打"待审"标记/未读计数。
 // 【二开·审核流 PR2】过滤片段复用 ProposedPendingFilter（pending 单一闸门，§3.6）。
@@ -787,4 +790,4 @@ GROUP BY t.id`)
 	return out, rows.Err()
 }
 
-// 【二开·P-INTENT·D3】止
+// 【二开·P-INTENT·D3 待审任务统计】止

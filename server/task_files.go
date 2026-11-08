@@ -1,6 +1,7 @@
 // task_files.go：枚举任务归档/暂存时要打包的工作区文件目标。
 // 主要函数/类型：
 //   - taskWorkspaceTargets：列出 tasks/<taskID> 目录与对应 exploration 的 transcript 文件。
+
 package server
 
 import (

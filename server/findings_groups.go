@@ -4,10 +4,10 @@
 //   - findingGroups：分组分页查询全局 Finding，并附任务实时运行状态。
 //   - deepenFinding：在原任务下创建高优先级人工深挖意图并唤醒/排队任务。
 //   - findingFilterFromQuery / findingPaginationParam：从查询串解析过滤条件与分页参数。
+
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -109,17 +109,10 @@ func (s *Server) deepenFinding(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad finding id")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 	var req struct {
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, "bad json: "+err.Error())
-		}
+	if !decodeJSON(w, r, &req, 32<<10) {
 		return
 	}
 	description := strings.TrimSpace(req.Description)

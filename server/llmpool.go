@@ -5,6 +5,7 @@
 //   - poolForActive / poolForBinding：分别为全局生效配置与任务绑定配置解析轮询 provider。
 //   - llmPoolStatus / sortPoolStatus / poolLess：汇总各成员状态并按优先级与活跃标记排序。
 //   - LLMPoolMemberStatus：单个池成员对外暴露的状态结构。
+
 package server
 
 import (
@@ -30,20 +31,38 @@ func newLLMHealthRegistry(pg *db.DB) *llmpool.Registry {
 	if pg == nil {
 		return llmpool.NewRegistry(nil, nil)
 	}
+	// 单 writer + 有界队列(范式同 logsink.go:SetDB):熔断事件不再 per-event 起
+	// goroutine。写库仍是 best-effort——内存态为准,队列满直接丢弃并记日志,
+	// 宁可丢持久化也不在 PG 卡顿时堆积 goroutine。writer 为进程级守护,随进程退出。
+	// healthCh 有意永不 close:writer 是进程级守护 goroutine,随进程退出回收,
+	// 避免 close 与运行中的 enqueue 竞争(范式同 logsink)。
+	healthCh := make(chan func(), 2000)
+	go func() {
+		for f := range healthCh {
+			f()
+		}
+	}()
+	enqueue := func(f func()) {
+		select {
+		case healthCh <- f:
+		default:
+			log.Printf("[llmpool] 熔断落库队列已满(2000),丢弃一次写(内存态为准)")
+		}
+	}
 	persist := func(id int64, st llmpool.State) {
 		h := db.LLMHealth{ProfileID: id, Fails: st.Fails, Trips: st.Trips, LastError: st.LastError}
 		if !st.OpenUntil.IsZero() {
 			t := st.OpenUntil
 			h.OpenUntil = &t
 		}
-		go func() {
+		enqueue(func() {
 			if err := pg.SaveLLMHealth(h); err != nil {
 				log.Printf("[llmpool] 熔断状态落库失败: %v", err)
 			}
-		}()
+		})
 	}
 	forget := func(id int64) {
-		go func() { _ = pg.ClearLLMHealth(id) }()
+		enqueue(func() { _ = pg.ClearLLMHealth(id) })
 	}
 	reg := llmpool.NewRegistry(persist, forget)
 	// Restore only windows that haven't expired (LoadLLMHealth filters), so a

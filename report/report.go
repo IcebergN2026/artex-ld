@@ -4,6 +4,7 @@
 //   - Markdown：根据 Input 渲染完整渗透测试报告 Markdown。
 //   - parseFinding / nz：把图节点解析为发现视图并提供空值兜底。
 //
+
 // Package report renders a deliverable Markdown report from the exploration
 // graph: confirmed findings (with severity/evidence) (docs §15 P5).
 package report
@@ -49,7 +50,30 @@ func parseFinding(n *db.Node) findingView {
 	return findingView{p.VulnClass, p.Name, p.Severity, p.Summary, p.Evidence.PoC}
 }
 
-var sevRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "": 4}
+// severityKey canonicalizes a stored severity for ordering and summary counts.
+// Historical rows may predate write-time normalization (for example "HIGH" or
+// " high ").
+func severityKey(severity string) string {
+	return strings.ToLower(strings.TrimSpace(severity))
+}
+
+// severityRank orders severities from most to least severe. Anything unrecognized,
+// including empty and legacy free-form values, deliberately sorts last: a missing
+// lookup must never make an unknown severity rank ahead of critical.
+func severityRank(severity string) int {
+	switch severityKey(severity) {
+	case db.SeverityCritical:
+		return 0
+	case db.SeverityHigh:
+		return 1
+	case db.SeverityMedium:
+		return 2
+	case db.SeverityLow:
+		return 3
+	default:
+		return 4
+	}
+}
 
 // Markdown renders the report.
 func Markdown(in Input) string {
@@ -84,7 +108,7 @@ func Markdown(in Input) string {
 		for _, n := range in.Findings {
 			fs = append(fs, parseFinding(n))
 		}
-		sort.SliceStable(fs, func(i, j int) bool { return sevRank[fs[i].Severity] < sevRank[fs[j].Severity] })
+		sort.SliceStable(fs, func(i, j int) bool { return severityRank(fs[i].Severity) < severityRank(fs[j].Severity) })
 		for i, f := range fs {
 			fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
 			fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))

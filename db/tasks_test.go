@@ -82,6 +82,164 @@ func TestTaskLifecycleAndDeleteCascade(t *testing.T) {
 	}
 }
 
+func TestTaskPreAgentPersistenceAndBackfill(t *testing.T) {
+	dsn := testDSN(t)
+	d, err := Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	var tasks []*Task
+	var nodeIDs []int64
+	newTask := func(name, preAgent string) *Task {
+		t.Helper()
+		tk, err := d.CreateTaskWithOptions(name, "pre_agent migration", TaskCreateOptions{PreAgent: preAgent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tasks = append(tasks, tk)
+		return tk
+	}
+	addSeed := func(tk *Task, state, origin, executor string) int64 {
+		t.Helper()
+		id, err := d.Exploration(tk.ExplorationID).AddNode(KindIntent, map[string]any{
+			"summary": origin + " " + state,
+			"executor": executor,
+		}, 1, state, origin, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodeIDs = append(nodeIDs, id)
+		return id
+	}
+	defer func() {
+		for _, tk := range tasks {
+			_ = d.DeleteTask(tk.ID)
+		}
+	}()
+
+	persisted := newTask("persisted pre_agent", "configured_scout")
+	if persisted.PreAgent != "configured_scout" {
+		t.Fatalf("created task pre_agent=%q, want configured_scout", persisted.PreAgent)
+	}
+	got, err := d.GetTask(persisted.ID)
+	if err != nil || got == nil || got.PreAgent != "configured_scout" {
+		t.Fatalf("GetTask pre_agent got=%+v err=%v", got, err)
+	}
+	list, err := d.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, item := range list {
+		if item.ID == persisted.ID {
+			listed = true
+			if item.PreAgent != "configured_scout" {
+				t.Fatalf("ListTasks pre_agent=%q, want configured_scout", item.PreAgent)
+			}
+		}
+	}
+	if !listed {
+		t.Fatal("created task missing from ListTasks")
+	}
+	// A nonempty persisted value wins over seed metadata during every migration.
+	addSeed(persisted, "proposed", "seed", "ignored_scout")
+
+	expectedPreAgent := map[int64]string{persisted.ID: "configured_scout"}
+	for _, state := range []string{"proposed", "open", "running", "paused"} {
+		tk := newTask("active "+state+" seed", "legacy_scout")
+		if _, err := d.Exec(`UPDATE tasks SET status='paused', paused=true, pre_agent='' WHERE id=$1`, tk.ID); err != nil {
+			t.Fatal(err)
+		}
+		executor := "executor_" + state
+		addSeed(tk, state, "seed", executor)
+		if state == "proposed" {
+			// The earliest active custom seed is authoritative, not the latest one.
+			addSeed(tk, "open", "seed", "later_scout")
+		}
+		expectedPreAgent[tk.ID] = executor
+	}
+
+	inactive := newTask("inactive and non-seed controls", "")
+	addSeed(inactive, "done", "seed", "done_scout")
+	addSeed(inactive, "deleted", "seed", "deleted_scout")
+	addSeed(inactive, "proposed", "seed", "review")
+	addSeed(inactive, "open", "seed", "")
+	addSeed(inactive, "proposed", "planner", "planner_scout")
+	expectedPreAgent[inactive.ID] = ""
+
+	deletedTask := newTask("soft-deleted task control", "")
+	addSeed(deletedTask, "proposed", "seed", "deleted_task_scout")
+	if _, err := d.Exec(`UPDATE tasks SET deleted_at=now() WHERE id=$1`, deletedTask.ID); err != nil {
+		t.Fatal(err)
+	}
+	expectedPreAgent[deletedTask.ID] = ""
+
+	type taskSnapshot struct {
+		status, preAgent string
+		paused           bool
+	}
+	beforeTasks := make(map[int64]taskSnapshot, len(tasks))
+	for _, tk := range tasks {
+		var snapshot taskSnapshot
+		if err := d.QueryRow(`SELECT status, paused, pre_agent FROM tasks WHERE id=$1`, tk.ID).Scan(&snapshot.status, &snapshot.paused, &snapshot.preAgent); err != nil {
+			t.Fatal(err)
+		}
+		beforeTasks[tk.ID] = snapshot
+	}
+	beforeNodes := make(map[int64]string, len(nodeIDs))
+	for _, id := range nodeIDs {
+		var state string
+		if err := d.QueryRow(`SELECT state FROM exploration_nodes WHERE id=$1`, id).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		beforeNodes[id] = state
+	}
+
+	assertMigrated := func(migrated *DB) {
+		t.Helper()
+		for id, before := range beforeTasks {
+			var after taskSnapshot
+			if err := migrated.QueryRow(`SELECT status, paused, pre_agent FROM tasks WHERE id=$1`, id).Scan(&after.status, &after.paused, &after.preAgent); err != nil {
+				t.Fatal(err)
+			}
+			if after.status != before.status || after.paused != before.paused {
+				t.Fatalf("task %d state changed: before=%+v after=%+v", id, before, after)
+			}
+			if after.preAgent != expectedPreAgent[id] {
+				t.Fatalf("task %d pre_agent=%q, want %q", id, after.preAgent, expectedPreAgent[id])
+			}
+		}
+		for id, before := range beforeNodes {
+			var after string
+			if err := migrated.QueryRow(`SELECT state FROM exploration_nodes WHERE id=$1`, id).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after != before {
+				t.Fatalf("intent %d state changed from %s to %s", id, before, after)
+			}
+		}
+	}
+
+	reopened, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	assertMigrated(reopened)
+
+	// Reapplying the schema is a no-op after the initial backfill.
+	again, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMigrated(again)
+	if err := again.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTaskDeleteCascadeAssets(t *testing.T) {
 	d, err := Open(testDSN(t))
 	if err != nil {

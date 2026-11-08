@@ -3,6 +3,7 @@
 //   - toolAppendFindingToTask：append_finding_to_task 工具，幂等地把 Finding 内容与证据补进目标任务。
 //   - findingHandoffText：生成带持久化标记的 Finding 移交文本（含来源、摘要与证据）。
 //   - findingHandoffMarker / clipFindingHandoff：移交标记生成 / 移交文本裁剪。
+
 package server
 
 import (

@@ -3,12 +3,12 @@
 //   - accessLog：包装 handler，记录错误/慢请求日志并注入 req id。
 //   - ReqIDFrom：从 context 取出请求 ID。
 //   - statusWriter：记录响应状态码的 ResponseWriter 包装。
+
 package server
 
-// ═══ ARTEX 二开 · [P-LOG·M0 HTTP 访问日志中间件] ═══
+// 【二开·P-LOG·M0 HTTP 访问日志中间件】
 // 只对 4xx/5xx 与 >2s 慢请求打日志（2xx 快请求不记，防刷屏）；每请求生成 req id
 // 注入 context，配合 writeErr 的 5xx 日志可双向对照。
-// 二开日期：2026-10-25
 
 import (
 	"context"

@@ -237,7 +237,7 @@ server/server.go launchTask(t, seedText, seedFirstIntent)      【同步执行�
 └─────────────┘
 ```
 
-### 1.3.2 plannerLoop 门禁链（`engine.go`，顺序即语义；逐行行号见 §7.4）
+### 1.3.2 plannerLoop 门禁链（`server/engine.go#plannerLoopWithInterval` 的 `runRound` 闭包，顺序即语义；逐条条件与行为见 §7.4）
 
 ```
 engine.go plannerLoop(ctx, t)
@@ -990,7 +990,7 @@ reviewErrText 将 ErrStaleVersion → 「版本冲突…重新 list_intents」�
 
 # 第 3 章 · planner 轮详解
 
-> 第 1 章 1.3.2/1.4 已给出门禁链与 `Plan` 的骨架行号；本章讲「一轮规划到底读了什么、
+> 第 1 章 1.3.2/1.4 已给出门禁链与 `Plan` 的骨架（文件#符号锚点）；本章讲「一轮规划到底读了什么、
 > 说了什么、能做什么、如何收场」，以及它与审核域的耦合点。
 
 ## 3.0 一轮规划的完整时序
@@ -1050,7 +1050,7 @@ drainTriggersRetaining(kinds)    逐事件比对 Kind，命中的留在队列，
 事件本体在 `pendingTriggers`；因此**任何 Notify 都必须同时携带完整载荷**，
 否则事件合并后信息就只剩最后一条。
 
-## 3.2 门禁的三条补充说明（对照 `server/engine.go plannerLoop`，逐行行号见 §7.4）
+## 3.2 门禁的三条补充说明（对照 `server/engine.go#plannerLoopWithInterval`，逐条规则见 §7.4）
 
 ```
 A. 待审抑制
@@ -1315,14 +1315,14 @@ HTTP PATCH /api/agents/{key}  {executor_key: "vuln_dig"}
   server/orchestration.go  同款三层，失败 → actool.Errorf
       「pre_agent 无效：…；可用：%s」（可用清单 executorKeyList() ：
       遍历 ListAgents() 过滤 ExecutorKey!="" ∧ Enabled ∧ !Builtin；空则提示先声明）
-  server/orchestration.go  PreAgent 一次性透传（不落 tasks 列）
+  server/orchestration.go  PreAgent 持久化到 tasks.pre_agent（executor_key）
   server/orchestration.go  review_enabled 继承：父开→子开；父关→按所选 planner 模板 nkey
              反查 task_categories.default_review_enabled 兜底；无模板则纯继承；
              dispatcher 不能通过参数覆盖此规则
   server/orchestration.go  launchTask(t, …, a.SeedFirstIntent)
 ```
 
-### 4.3 seedFirstIntent：种子意图写入
+### 4.3 seedFirstIntent：种子意图写入与对话执行
 
 ```
 server/goals.go launchTask
@@ -1330,73 +1330,52 @@ server/goals.go launchTask
     s.admitTask(t, "bootstrap")
 
 server/server.go seedFirstIntent
-   注释即结论：「种子意图永远 open 落库（seed_review 已废除，种子不送审）；
-              pre_agent 非空时 payload.executor=executor_key 直发自定义 agent；
-              不设 pre_agent 走现状 AddIntent 路径零变化（K23）」
-    summary := "完成任务目标：%s（任务：%s）"
     payload := {"summary": summary}
-    if t.PreAgent != "" { payload["executor"] = t.PreAgent }   ←★唯一写入点
-    id := t.Store.AddIntent(payload, 8, nil, "seed")
-           └ db/exploration.go AddIntent → AddNode("intent", …, "open", …)
-             state 硬编码 "open"，priority=8，origin="seed"
-    Link(originFact, derived_from, id)   ← 血缘挂根
-    log「[seed] task %s: 已下发种子意图 #%d（预选执行器 %q，池领取后直接路由执行）」
+    if t.PreAgent != "" {
+        payload["executor"] = t.PreAgent       // agents.executor_key
+        AddNode("intent", payload, 8, "proposed", "seed", nil)
+    } else {
+        AddIntent(payload, 8, nil, "seed")     // 普通 open 种子
+    }
+    Link(originFact, derived_from, id)
+
+server/engine.go runPreAgentStage
+    CustomSeedIntent(t.PreAgent) 读取真实 seed
+    proposed/open → preAgentFn → Server.runPreAgentConversation
+    running/paused → 等待；blocked/exhausted/stopped → 等人工 rerun/delete
+    只有 done/deleted/物理删除 → 启动普通 Worker 池
+
+server/conversations.go runPreAgentConversation
+    resolveExecutor(executorKey) → Agent.Key 选择 Conversation/提示词/LLM
+    新任务合并该 Agent 已启用的 on_task_create 消息；恢复任务不重放创建事件
+    创建 Conversation → ChatAgent.Chat → list_intents/claim_executor_intent
+    工具只以 executor_key 领取，owner=exec:<executor_key>
+    活动写 conversation_activities；任务会话列表过滤该 custom seed，不创建 Worker 条目
 ```
 
-### 4.4 engine 领取后的 executor 路由
+### 4.4 非首个 custom intent 的 Engine 领取与执行
 
 ```
-server/engine.go claimNext(t, name)
-    Frontier(20) 逐个尝试 ClaimIntent（open→running 的 CAS 见第 7 章）
-         由 runWorkerStep（ 起）在 workerLoop 里调用
+server/engine.go claimNext(t, name, worker)
+    DispatchFrontier 只返回 intent：open + 非 review proposed
+    custom open/proposed → ClaimExecutorIntent → exec:<executor_key>
+    返回 customPreclaimed=true
 
-server/engine.go runIntent(ctx, t, name, worker, intent, requestID, message)
-    hasChatMessage := message != ""
-
-  ★payload.executor 的唯一路由读取点：
-      executorKey := ""
-      var p map[string]any
-      if json.Unmarshal(intent.Payload, &p) == nil {
-          if ex, ok := p["executor"].(string); ok { executorKey = ex }
-      }
-  （全仓其它 payload["executor"] 出现处均非路由读：server.go 种子写、
-    tools.go 审核占位写 "review"、tools.go 展示层过滤、
-    exploration.go 批准转正、intent_edit.go 写 pending_executor）
-
-    if executorKey != "" && !hasChatMessage {
-         ↑ 分流条件：人发消息续跑（hasChatMessage）强制走默认 worker
-           （ DEBUG「executor=%s 但属消息续跑，走默认 worker」）
-           │
-           ▼
-         resolveExecutor 三层校验（engine.go）：
-             key=="" → "executor_key 为空"
-             GetAgentByExecutorKey 报错 → "查询执行器失败"
-             a==nil → "执行器标识 %q 未注册"
-             !Enabled → "执行器 %q 所属 agent 已禁用"
-             Builtin → "内置 agent 不能作为自定义执行器"
-           │
-           ├─ 失败（R6 回退）：
-           │    emitActivity「意图 #%d 指定执行器 %q 不可用（%v），已回退默认 worker」
-           │    + WARN log ── 不失败，继续默认 worker
-           │
-           └─ 成功：
-                prov := e.providerFn(llmProfileOrZero(ea.LLMProfileID))  ←
-                reason, wrote, err = agent.RunCustomExecutor(workCtx,
-                    CustomExecutorConfig{Agent: ea, Provider: prov, TaskID, Intent,
-                        Assets, Store, Goal, Hooks, Emit, Enrich,
-                        NotifyFinding: t.NotifyFinding,
-                        WorkDir, ProxyAddr, ProxyCACert})
-                routed = true
-         }
-    if !routed → worker.ExecuteWithMessage / worker.Execute（默认路径）
-    model_error 重试段只重试 worker.Execute*，不重试 RunCustomExecutor
+server/engine.go runIntent(..., customPreclaimed)
+    executorKey := executorKeyForIntent(intent)  // 唯一路由读取点
+    resolveExecutor 按 executor_key 新鲜读取 Agent，要求 Enabled && !Builtin
+    RunCustomExecutor 使用 Agent.Key 组装提示词/工具，使用 ExecutorKey 作为执行身份
+    RequireSelfClaim = !customPreclaimed：
+      true  → Agent list/claim，未领取返回 ErrNoMatchingIntent
+      false → Engine 已领取 running，提示词禁止重复 list/claim
+    人发消息续跑仍走普通 Worker；custom 只有 ReasonCompleted 可落 done
 ```
 
 ### 4.5 RunCustomExecutor 执行体（`agent/customexec.go`）
 
 ```
   RunCustomExecutor(ctx, cfg CustomExecutorConfig) (TerminalReason, WriteCounts, error)
-  name := "exec:" + cfg.Agent.Key          ← 活动流 worker 名，可追溯执行器
+  name := "exec:" + cfg.Agent.ExecutorKey   ← canonical executor_key；Agent.Key 仅用于提示词/工具配置
   工具底座：
         tsx := NewToolSet(cfg.Store, name); SetTaskID; SetCoverageEnabled;
         SetOwnerNode(intent.ID); SetEnrich; SetNotifyFinding
@@ -1471,8 +1450,10 @@ agent/prompt.go renderSystem(agentKey, def, vars)
 | `SetAgentExecutorKey` | `db/config.go` | 声明/清除 executor_key（仅非内置） |
 | `createTask` pre_agent 校验 | `server/server.go` | HTTP 入口三层校验 |
 | `toolSpawnTask` pre_agent 校验 | `server/orchestration.go` | spawn_task 入口三层校验 |
-| `seedFirstIntent` | `server/server.go` | 种子意图写入；永远 open |
-| `Engine.claimNext` | `server/engine.go` | Frontier 领取（open→running） |
+| `seedFirstIntent` | `server/server.go` | 普通种子 open；custom 种子 proposed + executor_key |
+| `Engine.runPreAgentStage` | `server/engine.go` | 首个种子 Conversation 互斥、恢复与人工重跑 |
+| `Server.runPreAgentConversation` | `server/conversations.go` | 首个种子真实 Conversation/ChatAgent 执行与终态结算 |
+| `Engine.claimNext` | `server/engine.go` | DispatchFrontier 领取；返回 customPreclaimed |
 | `Engine.runIntent` | `server/engine.go` | 执行分发：executor 路由 + 默认 worker |
 | `Engine.resolveExecutor` | `server/engine.go` | 路由三层校验（空/未注册/禁用/内置） |
 | `agent.RunCustomExecutor` | `agent/customexec.go` | 自定义执行器执行体 |
@@ -1652,7 +1633,8 @@ runConversationSync→ conversationRunContext（：
     webSearch := a.WebSearch
         sessionID := convBusyKey(c.ID)   ← transcript 会话键
     emit → pg.AppendConvActivity（conversations 活动表！）
-        ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit)
+        _, reason, err := ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit)
+        pre_agent executorKey 非空时按 reason 对匹配 running seed 做 CAS 结算
         pg.TouchConversation(c.ID)
 ```
 
@@ -1661,6 +1643,7 @@ runConversationSync→ conversationRunContext（：
 ```
 agent/chat.go ChatAgent.Chat(ctx, agentKey, sessionID, message,
                                  maxTurns, maxDuration, webSearch, emit)
+                                 → (text, TerminalReason, error)
     工作目录 <workDir>/sessions/<sessionID>/；WithReviewWorkingDirectory
     ★工具底座：
             base := actool.DefaultTools()            ← Read/Write/Edit/Bash/…
@@ -1901,7 +1884,7 @@ name = "Skill"；Prompt 列出技能清单（maxSkillListingChars=8000 / maxSkil
 
 续跑恢复（agent/deferred.go seedUnlockFromHistory）：
   重放历史里 name="Skill" 的 tool_use，重新 unlockSkill
-  调用点：mainagent.go（每轮新会话故每轮重放）/ worker.go,516 / chat.go
+  调用点：mainagent.go / worker.go#Worker.execute（resume 分支）/ chat.go
 
 计量（server/skill_usage.go meterSkillTool）：
    Call 先 record 再转发； record 把 display Name 归一成目录名，
@@ -2106,28 +2089,31 @@ DB 层再兜 `db/config.go`；请求体上限 `MaxBytesReader` 413（—）；
   agent/tools_intent.go  update_intent 改 asset_ids 同口径（"资产拦截校验失败：%v"）； 命中列表回给模型
 ```
 
-### 7.4 引擎层门禁（plannerLoop `server/engine.go` / workerLoop —）
+### 7.4 引擎层门禁（`server/engine.go#plannerLoopWithInterval` / `#workerLoop`）
+
+位置列给 `文件#符号` 锚点（不再维护行号）：除注明 `workerLoop`/心跳臂外，均位于 `plannerLoopWithInterval` 的 `runRound` 闭包内。
 
 | 位置 | 条件 | 行为 |
 |---|---|---|
-| — | planner 快照 nil | return（idle：LLM 未配置） |
-| — | `IsPaused` | return |
-| — | `IsDeleting` | return（删除屏障） |
-| — | 终态 Status | return |
-| — | `isSettling` | return（收尾中） |
-| — | `HasProposedIntent()` | log「planner 规划轮抑制：有待审意图」+ drainTriggersRetaining("revision_requested","hint") + return |
-| — | 待审 + goalless | 豁免收尾，保持 running |
-| — | 无待审 ∧ 无 open goal ∧ 无活跃意图 | drainTriggers → `SetTaskStatusGuarded(done)` + activity，永不进 Plan |
-| — | `!beginTaskOperation` | return |
-| — | ectx.Err() 或 IsDeleting | return |
-| — | Plan 判定 met 但仍有被驳回意图 | log「目标达成判定被拦截」；否则 SetTaskStatus(done) + cancelExec(AbortGoalMet) |
-| — | 心跳：无活跃意图但有待审意图 | log「planner 心跳抑制」+ continue |
-| — | `planHeartbeatSeconds < 600` | 抬到 600（MinPlanHeartbeatSeconds） |
+| `snapshotFor` | planner 快照 nil | return（idle：LLM 未配置） |
+| `IsPaused` | `IsPaused` | return |
+| `IsDeleting` | `IsDeleting` | return（删除屏障） |
+| `isTerminalStatus`（`server/manager.go`） | 终态 Status | return |
+| `isSettling`（`server/engine_timeout.go`） | `isSettling` | return（收尾中） |
+| `HasProposedIntent`（待审抑制段） | `HasProposedIntent()` | log「planner 规划轮抑制：有待审意图」+ drainTriggersRetaining("revision_requested","hint") + return |
+| `HasProposedIntent`（goalless 豁免段） | 待审 + goalless | 豁免收尾，保持 running |
+| `HasOpenGoal` / `HasActiveIntent` / `SetTaskStatusGuarded` | 无待审 ∧ 无 open goal ∧ 无活跃意图 | drainTriggers → `SetTaskStatusGuarded(done)` + activity，永不进 Plan |
+| `beginTaskOperation`（`server/engine_timeout.go`） | `!beginTaskOperation` | return |
+| `execContextFor` / `clockCtx` | ectx.Err() 或 IsDeleting | return |
+| `Plan` 结果分流 | Plan 判定 met 但仍有被驳回意图 | log「目标达成判定被拦截」；否则 SetTaskStatus(done) + cancelExec(AbortGoalMet) |
+| 心跳臂（`plannerLoopWithInterval`） | 心跳：无活跃意图但有待审意图 | log「planner 心跳抑制」+ continue |
+| `plannerHeartbeatInterval` | `planHeartbeatSeconds < 600` | 抬到 600（`db.MinPlanHeartbeatSeconds`） |
 
-workerLoop：快照 nil → sleep 1500ms 重试；IsPaused → sleep 1000ms；
-IsDeleting → return；isSettling/终态 → sleep continue；
-`!beginTaskOperation` → return；`claimNext` 未领到 → sleep 800ms。
-领取闸：`engine.go claimNext` → `Frontier(20)` 逐个 `ClaimIntent`。
+workerLoop（`server/engine.go#workerLoop`）：每轮 `snapshotFor`；IsPaused → sleep 1000ms；
+IsDeleting → return；isSettling/终态 → sleep 1000ms 后 continue；
+`!beginTaskOperation` → return；`runWorkerStep` 未领到 → sleep 800ms。
+领取闸：`server/engine.go#claimNext` → `DispatchFrontier(20)` 逐个领取——普通 open 走
+`ClaimIntent`（`worker==nil` 时跳过并保持 open）；带 `executor_key` 或 `proposed` 走 `ClaimExecutorIntent`。
 
 ### 7.5 审核闸门（详见第 2 章；此处只列门禁面）
 
@@ -2280,7 +2266,7 @@ prompt 渲染回退：agent/prompt.go renderSystem
 运行预算闸：server/server.go agentMaxTurns（0=不限）/  agentRunSeconds（兜底 1200）
   任务级 TimeoutSeconds（<0 归 0）+ engine.taskDeadline（engine_timeout.go）
 
-panic 兜底闸：agent/assembly.go + 75-87（工具 panic 变普通工具错误，不炸会话）
+panic 兜底闸：agent/assembly.go#guardPanic（工具 panic 变普通工具错误，不炸会话）
 
 guard hooks 挂载点：server/manager.go Guard: guard.NewWithInterceptor(ic)（NewManager 内装配）
   引用：engine.go（steerHooks 包裹）、chat.go、review.go

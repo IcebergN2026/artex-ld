@@ -9,6 +9,7 @@
 //     分阶段执行并可崩溃恢复。
 //   - Tools / SeedToolMetas：暴露给 Agent 的流量检索工具定义。
 //
+
 // Package traffic implements the request-recording subsystem (docs §10): an
 // embedded go-mitmproxy proxy whose addon writes every target HTTP exchange into
 // a human-browsable file tree, with a sidecar SQLite index for paged queries.

@@ -322,25 +322,25 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       return next;
     });
 
-  // 重跑单条：置回 open（乐观更新本地 state，3s 轮询兜底），worker 会重新认领、从头再跑。
+  // 重跑单条：置回 open/proposed（由服务端决定），成功后重新拉取服务端节点。
   const rerunOne = async (id: string) => {
     markRerun(id, true);
     try {
       await api.rerunIntent(taskId, id);
-      setIntents((prev) => prev.map((i) => (i.id === id ? { ...i, state: "open" } : i)));
+      await load();
     } catch {
-      // 失败忽略：下次轮询仍显示 blocked，用户可再点
+      // 失败忽略：下次轮询仍显示原状态，用户可再点
     } finally {
       markRerun(id, false);
     }
   };
 
-  // 批量重跑本任务全部 blocked。
+  // 批量重跑本任务全部 blocked/exhausted/stopped 意图。
   const rerunAll = async () => {
     markRerun("__all__", true);
     try {
-      await api.rerunBlocked(taskId);
-      setIntents((prev) => prev.map((i) => (i.state === "blocked" ? { ...i, state: "open" } : i)));
+      await api.rerunRecoverable(taskId);
+      await load();
     } catch {
       // ignore
     } finally {
@@ -348,47 +348,50 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     }
   };
 
+  const load = React.useCallback(async () => {
+    const [taskResp, statsResp, intentsResp, findingsResp] = await Promise.all([
+      api.task(taskId),
+      api.stats(taskId),
+      api.intents(taskId),
+      api.findings(taskId),
+    ]);
+    const activeTask = statsResp.active_task;
+    setTask(
+      activeTask
+        ? {
+            ...taskResp,
+            in_flight: activeTask.in_flight,
+            goals_total: activeTask.goals_total,
+            goals_met: activeTask.goals_met,
+            engine_mode: statsResp.engine_mode ?? activeTask.engine_mode,
+            paused: activeTask.paused,
+          }
+        : taskResp,
+    );
+    setStats(statsResp);
+    setIntents(intentsResp);
+    setFindings(findingsResp);
+    // coverage is independent + may 503 when no asset store — fetch separately so
+    // its failure never blocks the others.
+    api
+      .taskCoverage(taskId)
+      .then((c) => {
+        setCoverage(c);
+      })
+      .catch(() => {
+        // A transient coverage failure is retried by the next poll.
+      });
+  }, [taskId]);
+
   React.useEffect(() => {
     let cancelled = false;
     let loading = false;
 
-    const load = async () => {
+    const guardedLoad = async () => {
       if (loading) return;
       loading = true;
       try {
-        const [taskResp, statsResp, intentsResp, findingsResp] = await Promise.all([
-          api.task(taskId),
-          api.stats(taskId),
-          api.intents(taskId),
-          api.findings(taskId),
-        ]);
-        if (cancelled) return;
-        const activeTask = statsResp.active_task;
-        setTask(
-          activeTask
-            ? {
-                ...taskResp,
-                in_flight: activeTask.in_flight,
-                goals_total: activeTask.goals_total,
-                goals_met: activeTask.goals_met,
-                engine_mode: statsResp.engine_mode ?? activeTask.engine_mode,
-                paused: activeTask.paused,
-              }
-            : taskResp,
-        );
-        setStats(statsResp);
-        setIntents(intentsResp);
-        setFindings(findingsResp);
-        // coverage is independent + may 503 when no asset store — fetch separately so
-        // its failure never blocks the others.
-        api
-          .taskCoverage(taskId)
-          .then((c) => {
-            if (!cancelled) setCoverage(c);
-          })
-          .catch(() => {
-            // A transient coverage failure is retried by the next poll.
-          });
+        await load();
       } catch {
         // transient errors are ignored; the next poll will retry
       } finally {
@@ -396,13 +399,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       }
     };
 
-    void load();
+    void guardedLoad();
     void loadScope();
     void loadTokens();
     void loadGoals();
     void loadConstraints();
     const timer = setInterval(() => {
-      void load();
+      void guardedLoad();
       void loadTokens();
       void loadGoals();
       void loadConstraints();
@@ -411,11 +414,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
+  }, [taskId, load, loadScope, loadTokens, loadGoals, loadConstraints]);
 
   const running = intents.filter((i) => i.state === "running");
   const open = intents.filter((i) => i.state === "open");
-  const blocked = intents.filter((i) => i.state === "blocked");
+  const rerunnable = intents.filter((i) => i.state === "blocked" || i.state === "exhausted" || i.state === "stopped");
   const taskFindings = findings.filter((f) => f.task_id === taskId);
   const goalsPct = task?.goals_total ? Math.round(((task.goals_met ?? 0) / task.goals_total) * 100) : 0;
   // token 合计（跨全部模型），用于卡片头部总览。
@@ -977,8 +980,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               <div className="text-xs text-muted-foreground">frontier 待领</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">{blocked.length}</div>
-              <div className="text-xs text-muted-foreground">被拦意图</div>
+              <div className="text-2xl font-semibold tabular-nums text-red-600">{rerunnable.length}</div>
+              <div className="text-xs text-muted-foreground">可重跑意图</div>
             </div>
           </CardContent>
         </Card>
@@ -1001,14 +1004,14 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         </Card>
       </div>
 
-      {/* Blocked intents — 出错/被拦(如 LLM 网络问题)的意图，可一键重跑：置回 open，
-          worker 会重新认领、从头再跑（已写回图谱的数据保留）；任务若已终态/暂停会自动复活。 */}
-      {blocked.length > 0 && (
+      {/* Recoverable intents — blocked/exhausted/stopped 可一键重跑：由服务端按执行器置回 open/proposed，
+          重新认领后从头再跑（已写回图谱的数据保留）；任务若已终态/暂停会自动复活。 */}
+      {rerunnable.length > 0 && (
         <Card className="border-red-500/30">
           <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
             <CardTitle className="flex items-center gap-2 text-sm">
-              <AlertTriangleIcon className="size-4 text-red-500" /> 被拦/出错意图
-              <span className="text-xs font-normal text-muted-foreground">（共 {blocked.length} 条，可重跑）</span>
+              <AlertTriangleIcon className="size-4 text-red-500" /> 可重跑意图
+              <span className="text-xs font-normal text-muted-foreground">（共 {rerunnable.length} 条，可重跑）</span>
             </CardTitle>
             <Button size="sm" variant="outline" disabled={rerunning.has("__all__")} onClick={() => void rerunAll()}>
               <RefreshCwIcon className={`size-3.5 ${rerunning.has("__all__") ? "animate-spin" : ""}`} />
@@ -1016,7 +1019,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </Button>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {blocked.slice(0, 20).map((i) => (
+            {rerunnable.slice(0, 20).map((i) => (
               <div key={i.id} className="flex items-center gap-2 text-sm">
                 <StatusBadge domain="intent" value={i.state} />
                 <span className="min-w-0 flex-1 truncate">{i.payload}</span>
@@ -1032,9 +1035,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 </Button>
               </div>
             ))}
-            {blocked.length > 20 && (
+            {rerunnable.length > 20 && (
               <p className="text-xs text-muted-foreground">
-                仅显示前 20 条，点「全部重跑」处理剩余 {blocked.length - 20} 条。
+                仅显示前 20 条，点「全部重跑」处理剩余 {rerunnable.length - 20} 条。
               </p>
             )}
           </CardContent>

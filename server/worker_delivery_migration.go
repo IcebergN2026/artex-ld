@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - injectWorkerDeliveryFactSpec：仅对含原锚点的内置模板正文注入投放契约（幂等，不重复注入）。
 //   - upgradeWorkerDeliveryFacts：扫描内置模板与 worker 当前提示词执行注入，完成后打幂等标记。
+
 package server
 
 import (

@@ -5,6 +5,7 @@
 //   - SetDB：一次性接入 DB，回填最近日志并启动异步落库与定期清理。
 //   - Write / add / recent / subscribe：解析写入日志行、维护环形缓冲、按游标取近期日志、管理订阅通道。
 //   - parseLog / levelOf：从原始日志行解析时间与级别。
+
 package server
 
 import (

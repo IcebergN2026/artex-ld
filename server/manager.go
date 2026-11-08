@@ -5,6 +5,7 @@
 //   - ConcurrencyLimit / SetConcurrency、Workers / SetWorkers：并发上限与工作线程数的读写。
 //   - TrafficEnabled / SetTrafficEnabled、LLMRecordEnabled / SetLLMRecordEnabled、WebSearch / SetWebSearch：流量录制、LLM 录制与联网搜索开关及配置。
 //   - syncBrowserMCPProxy：让预置浏览器 MCP 的代理参数与流量录制状态保持一致。
+
 package server
 
 import (
@@ -70,6 +71,7 @@ type Task struct {
 	CoverageEnabled      bool `json:"coverage_enabled"`       // 资产覆盖度功能开关(创建时定,默认开)
 	// 【二开·P-INTENT·D7】起 —— db.Task 镜像（taskFromPG 透传；S10 种子 executor / P3 模板快照 / 任务级 worker 池）
 	PreAgent              string `json:"pre_agent,omitempty"`               // 种子意图预选执行器 executor_key（空=默认 worker）
+	PreAgentRestored      bool   `json:"-"`                                 // 仅 LoadExisting 重建：恢复时不重放 on_task_create
 	PlannerPromptOverride string `json:"planner_prompt_override,omitempty"` // planner 提示词任务级快照（空=走全局/默认链）
 	WorkerPromptOverride  string `json:"worker_prompt_override,omitempty"`  // Worker 提示词任务级快照（空=走全局/默认链）
 	WorkerCount           int    `json:"worker_count"`                      // 任务级 worker 池：0=跟随全局，1~16 专属
@@ -963,8 +965,6 @@ func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.Task
 		return nil, err
 	}
 	t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
-	// 【二开·P-INTENT·D7】PreAgent 不落 tasks 表（仅建任务时透传）：db 侧 RETURNING 不回读，这里直接从 opts 补镜像
-	t.PreAgent = opts.PreAgent
 	m.mu.Lock()
 	m.tasks[t.ID] = t
 	m.active = t.ID
@@ -1170,6 +1170,7 @@ func (m *Manager) LoadExisting() []*Task {
 			continue
 		}
 		t := taskFromPG(pt, m.pg.Exploration(pt.ExplorationID), m.interceptor)
+		t.PreAgentRestored = t.PreAgent != ""
 		m.tasks[id] = t
 		loaded = append(loaded, t)
 	}

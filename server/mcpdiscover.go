@@ -3,6 +3,7 @@
 //   - mcpClient / connectMCP：按 stdio/http/sse 传输方式连接一个 MCP server。
 //   - discoverAndCacheMCP：连接 MCP、列出工具并把工具名落库缓存，供 UI 免活连接展示。
 //   - discoverEmptyMCPsOnStartup：启动时为尚无工具缓存的启用 MCP 顺序补做发现，不阻塞启动。
+
 package server
 
 import (

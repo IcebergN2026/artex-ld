@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - injectInternalWorkerTopologyRule：仅对含场景段与锚点的内置正文注入拓扑关系规则（幂等）。
 //   - upgradeInternalWorkerTopologyPrompt：扫描并更新内置内网渗透模板，完成后打幂等标记。
+
 package server
 
 import (

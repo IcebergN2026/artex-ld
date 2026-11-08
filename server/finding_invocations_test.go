@@ -286,7 +286,7 @@ func TestDispatchFindingToAgentEnqueuesAndDedupes(t *testing.T) {
 	}
 
 	// Conversation 创建并回填后，第二次调用才返回 already_invoked；队列不增长。
-	s.runTriggeredRun(fiPopRun(t, s, "fitest_alpha"))
+	s.runTriggeredRun(s.ctx, fiPopRun(t, s, "fitest_alpha"))
 	conversationID := fiConversationID(t, m, "fitest_alpha", findingID)
 	if conversationID == nil {
 		t.Fatal("首轮运行后应回填 conversation_id")
@@ -330,7 +330,7 @@ func TestDispatchFindingToTraceCleaner(t *testing.T) {
 	if item.agentKey != "trace_cleaner" || len(item.invocations) != 1 {
 		t.Fatalf("Cleaner 队列项错误: %+v", item)
 	}
-	s.runTriggeredRun(item)
+	s.runTriggeredRun(s.ctx, item)
 	conversationID := fiConversationID(t, m, "trace_cleaner", findingID)
 	if conversationID == nil {
 		t.Fatal("Cleaner Conversation 创建后应回填 conversation_id")
@@ -432,7 +432,7 @@ func TestRunTriggeredRunBackfillsInvocationConversation(t *testing.T) {
 		t.Fatal("dispatch 不应报错")
 	}
 	item := fiPopRun(t, s, "fitest_backfill")
-	s.runTriggeredRun(item)
+	s.runTriggeredRun(s.ctx, item)
 	convID := fiConversationID(t, m, "fitest_backfill", findingA)
 	if convID == nil {
 		t.Fatal("runTriggeredRun 后 conversation_id 应已回填")
@@ -462,7 +462,7 @@ func TestRunTriggeredRunBackfillsInvocationConversation(t *testing.T) {
 	if len(merged.invocations) != 2 {
 		t.Fatalf("合并 run 应携带 2 条 ref，实际 %d", len(merged.invocations))
 	}
-	s.runTriggeredRun(merged)
+	s.runTriggeredRun(s.ctx, merged)
 	idB := fiConversationID(t, m, "fitest_backfill", findingB)
 	idC := fiConversationID(t, m, "fitest_backfill", findingC)
 	if idB == nil || idC == nil {

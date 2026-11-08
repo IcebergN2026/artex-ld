@@ -6,6 +6,10 @@
 //   - Link / Anchor：建立探索边并把节点锚定到资产。
 //   - SetNodeState / CompareAndSetIntentState：节点状态更新与 intent 状态的 CAS 并发控制。
 //   - TokenDailyAll / TokenUsage / SessionTokenUsage：token 用量的结构与按天统计。
+//   - ClaimExecutorIntent / ClaimIntent / DispatchFrontier：自定义执行器领取、Worker 抢占与可派发前沿查询。
+//   - ReopenIntent / ReopenRecoverableIntents / ResetRunningIntents：中断/失败意图的重开与启动恢复。
+//   - AddProposedIntent / ApproveIntentAt / RequestRevisionAt / SetPrescreenVerdict：待审意图落库与版本化审核处置。
+//   - FindingLineage / FindingIntents / FindingIntentsTerminal：finding 证据链与关联意图查询。
 
 package db
 
@@ -319,13 +323,12 @@ func (s *ExplorationStore) DeleteGoal(id int64) error {
 	return nil
 }
 
-// SetIntentState updates an intent node's state.
 // ResetRunningIntents returns any intent left in 'running' back to 'open' so it
 // is re-claimed. Called on startup: a 'running' intent with no live worker (a
 // backend restart or crashed worker goroutine left it stuck) would otherwise spin
 // forever in the UI. Workers resume from their transcript, so reopening is safe.
 func (s *ExplorationStore) ResetRunningIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state=`+queuedIntentStateExpr("")+`, owner=NULL, completed_at=NULL, blocked_reason=NULL
 WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 	if err != nil {
 		return 0, err
@@ -334,13 +337,14 @@ WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 	return n, nil
 }
 
-// ReopenIntent flips ONE not-successfully-finished intent (blocked/exhausted/stopped)
-// back to 'open' so a worker re-claims it (graph writes it already produced stay).
-// The worker resumes from its prior LLM transcript instead of restarting from scratch.
-// done/open/running are left untouched. Returns whether a row changed. Used by "重跑".
+// ReopenIntent flips ONE recoverable intent (blocked/exhausted/stopped) back to
+// its queued state: proposed for a custom executor, open for the default worker.
+// Graph writes it already produced stay. The worker resumes from its prior LLM
+// transcript instead of restarting from scratch. done/open/running are left
+// untouched. Returns whether a row changed. Used by "重跑".
 func (s *ExplorationStore) ReopenIntent(id int64) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state='open', completed_at=NULL, blocked_reason=NULL
+SET state=`+queuedIntentStateExpr("")+`, owner=NULL, completed_at=NULL, blocked_reason=NULL
 WHERE id=$1 AND exploration_id=$2 AND kind='intent'
   AND state IN ('blocked','exhausted','stopped')`, id, s.expID)
 	if err != nil {
@@ -350,12 +354,13 @@ WHERE id=$1 AND exploration_id=$2 AND kind='intent'
 	return n > 0, nil
 }
 
-// ReopenBlockedIntents flips EVERY 'blocked' intent in this exploration back to 'open'
-// (batch rerun after e.g. an LLM/network outage that blocked many at once). Returns the
-// number reopened. Workers resume from their transcripts; kept graph writes remain.
-func (s *ExplorationStore) ReopenBlockedIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
-WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
+// ReopenRecoverableIntents reopens EVERY blocked, exhausted, or stopped intent in
+// this exploration (batch rerun after e.g. an LLM/network outage). Custom intents
+// return to proposed and default intents to open. Workers resume from their
+// transcripts; kept graph writes remain. Returns the number reopened.
+func (s *ExplorationStore) ReopenRecoverableIntents() (int64, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state=`+queuedIntentStateExpr("")+`, owner=NULL, completed_at=NULL, blocked_reason=NULL
+WHERE exploration_id=$1 AND kind='intent' AND state IN ('blocked','exhausted','stopped')`, s.expID)
 	if err != nil {
 		return 0, err
 	}
@@ -363,12 +368,15 @@ WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
 	return n, nil
 }
 
+// SetIntentState updates an intent node's state.
 func (s *ExplorationStore) SetIntentState(id int64, state string) error {
 	// terminal states stamp completed_at; reopening (back to open/running) clears it.
 	terminal := state == "done" || state == "blocked" || state == "exhausted" || state == "stopped"
+	clearOwner := state == "open" || state == "proposed"
 	_, err := s.db.Exec(`UPDATE exploration_nodes
-SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $4 THEN now() ELSE NULL END
-WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, terminal)
+SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $4 THEN now() ELSE NULL END,
+    owner = CASE WHEN $5 THEN NULL ELSE owner END
+WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, terminal, clearOwner)
 	return err
 }
 
@@ -377,9 +385,11 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, termin
 // worker settlement, so a stale API read cannot overwrite a concurrent finish.
 func (s *ExplorationStore) CompareAndSetIntentState(id int64, expected, state string) (bool, error) {
 	terminal := state == "done" || state == "blocked" || state == "exhausted" || state == "stopped"
+	clearOwner := state == "open" || state == "proposed"
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $5 THEN now() ELSE NULL END
-WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.expID, expected, terminal)
+SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $5 THEN now() ELSE NULL END,
+    owner = CASE WHEN $6 THEN NULL ELSE owner END
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.expID, expected, terminal, clearOwner)
 	if err != nil {
 		return false, err
 	}
@@ -401,7 +411,7 @@ type IntentCleanup struct {
 // 删除原因记入 delete_reason 字段,保留意图节点及其全部产出/血缘(不再像旧实现那样在图上
 // 另挂一条 fact)。返回删除前意图的 summary,供 planner 通知使用。副会话随删除态一并清理。
 // 调用方须先停掉运行中的 worker,避免其后续写入。
-func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, error) {
+func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string, expectedState string) (string, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return "", err
@@ -417,7 +427,10 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, er
 		}
 		return "", err
 	}
-	if state != "running" && state != "paused" && state != "open" && state != "proposed" { // 【二开·P-INTENT·D4】白名单加 proposed（待审意图可假删除）
+	if state != expectedState {
+		return "", fmt.Errorf("%w: expected state %s, got %s", ErrIntentStateConflict, expectedState, state)
+	}
+	if state != "running" && state != "paused" && state != "open" && state != "proposed" && state != "blocked" && state != "exhausted" && state != "stopped" {
 		return "", fmt.Errorf("%w: intent state %s cannot be deleted", ErrIntentStateConflict, state)
 	}
 	if _, err := tx.Exec(`UPDATE exploration_nodes
@@ -446,7 +459,7 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, er
 // 其它分支、产生断链。被删的每个 intent 先做 token rollup(保留不可逆计量)并清理其 activity
 // 与副会话;被删的 finding 先删 findings 表行(node_id FK 为 ON DELETE SET NULL,否则留孤儿)。
 // 边随节点 CASCADE 清理,整个清理保持在一个事务内。调用方须先停掉运行中的 worker 防止其后续写入。
-func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
+func (s *ExplorationStore) CancelIntent(id int64, expectedState string) (IntentCleanup, error) {
 	var out IntentCleanup
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -454,14 +467,17 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 	}
 	defer tx.Rollback()
 
-	// 锁定意图行确认存在(幂等:已删则 not found)。状态不校验——真删除对任何状态成立,
-	// running 的 worker 由调用方先停。
-	if err := tx.QueryRow(`SELECT 1 FROM exploration_nodes
-		WHERE id=$1 AND exploration_id=$2 AND kind='intent' FOR UPDATE`, id, s.expID).Scan(new(int)); err != nil {
+	// 锁定意图行确认存在并校验状态(幂等:已删则 not found)。
+	var state string
+	if err := tx.QueryRow(`SELECT state FROM exploration_nodes
+		WHERE id=$1 AND exploration_id=$2 AND kind='intent' FOR UPDATE`, id, s.expID).Scan(&state); err != nil {
 		if err == sql.ErrNoRows {
 			return out, fmt.Errorf("intent not found")
 		}
 		return out, err
+	}
+	if state != expectedState {
+		return out, fmt.Errorf("%w: expected state %s, got %s", ErrIntentStateConflict, expectedState, state)
 	}
 
 	// 载入全图节点(判 protected)与边(算向下可达 + 父集)。图规模对真实任务很小。
@@ -811,11 +827,10 @@ func (s *ExplorationStore) countByKindFiltered(kind, q string) (int, error) {
 	return n, err
 }
 
-// ═══ ARTEX 二开 · [LIST-INTENTS·D2 状态过滤意图分页] ═══
+// 【二开·LIST-INTENTS·D2 状态过滤意图分页】
 // 功能介绍：listIntentsPageFiltered/countIntentsFiltered——仿 listByKindPageFiltered/countByKindFiltered，
 //           固定 kind=intent，多一个 states 白名单 IN 过滤（空=全部状态）；仅供 ListIntentsPageWithSources
 //           （db/exploration_sources.go）调用。动态 $N 占位符拼法与 :769 同款。
-// 二开日期：2026-10-22
 
 // listIntentsPageFiltered 分页列意图（before 游标、states 过滤、summary ILIKE 关键词，最新在前，多取一行探 hasMore）。
 func (s *ExplorationStore) listIntentsPageFiltered(states []string, before int64, limit int, q string) ([]*Node, error) {
@@ -1238,6 +1253,163 @@ func (s *ExplorationStore) FindingIntentsTerminal() (map[int64]int64, error) {
 	return out, rows.Err()
 }
 
+// customExecutorCols 生成自定义执行器过滤片段：payload.executor 非空且非 review。
+// 用于区分「由自定义 agent 执行的意图」与「默认 worker 执行的意图」以及「人工审核意图」。
+// alias 为空时不加表前缀（单表查询）；非空时自动附加 "alias." 前缀（JOIN 查询用）。
+func customExecutorCols(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return `COALESCE(` + p + `payload->>'executor','') NOT IN ('','review')`
+}
+
+// executorDispatchProposedCols 生成待分派 proposed 过滤片段（含空 executor，
+// 使畸形 proposed 也能被领取后直接 blocked，而不是永久僵尸）。
+// 设计要点：COALESCE(...,”)<>'review' 同时匹配「有自定义 executor」和「无 executor」，
+// 确保空 executor 的 proposed 不会被永久滞留——它会被 exec:<unassigned> 领取并快速 blocked。
+func executorDispatchProposedCols(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return p + `kind='intent' AND ` + p + `state='proposed' AND COALESCE(` + p + `payload->>'executor','')<>'review'`
+}
+
+// assignedIntentCols 生成有效自定义待执行意图过滤片段（非空 executor 且非 review）。
+// 仅表示「已明确指定执行器、等待领取」的意图，供 planner 去重和心跳抑制使用。
+// 与 executorDispatchProposedCols 的区别：排除了空 executor 的畸形 proposed。
+func assignedIntentCols(alias string) string {
+	return executorDispatchProposedCols(alias) + ` AND ` + customExecutorCols(alias)
+}
+
+// queuedIntentStateExpr 生成恢复待执行状态的 SQL 表达式：
+// 有自定义 executor 或 owner='exec:<unassigned>' 时回 proposed，否则回 open。
+// 所有批量恢复语句（ResetRunningIntents/ReopenIntent/ReopenRecoverableIntents 等）共用此表达式，
+// 保证恢复语义一致：custom 意图永远回到 proposed 等待原执行器，不会被默认 worker 错误领取。
+// owner 在表达式求值后再清空（SQL 的 SET 子句顺序保证）。
+func queuedIntentStateExpr(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return `CASE WHEN ` + customExecutorCols(alias) + ` OR ` + p + `owner='exec:<unassigned>' THEN 'proposed' ELSE 'open' END`
+}
+
+// DispatchFrontier 返回可分派的意图列表：open + custom proposed（排除 review proposed）。
+// 与 Frontier() 的区别：Frontier 只返回 open（默认 worker 池专用），
+// DispatchFrontier  additionally 包含 custom proposed（自定义执行器待领取）。
+// 统一 ORDER BY priority DESC, id ASC，保证高优先级意图先被领取、同优先级按创建顺序 FIFO。
+// review proposed（executor='review'）被明确排除，永不进入执行分派流程。
+func (s *ExplorationStore) DispatchFrontier(limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND (state='open' OR `+executorDispatchProposedCols("")+`)
+ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// ClaimExecutorIntent 原子领取一条 open 或 proposed 意图，将其状态置为 running 并记录执行者 owner。
+// 与 ClaimIntent 的区别：ClaimIntent 只认 open（默认 worker 池），
+// ClaimExecutorIntent 支持 open/proposed 两种起始状态，且通过 executorKey 匹配确保只有指定的执行器能领取。
+// expectedState 仅允许 open/proposed；非空 key 必须非 review（防止人工审核意图被执行器领取）；
+// 空 key 仅允许 proposed（对应 exec:<unassigned> 场景，领取后由 runIntent 直接 blocked）。
+// SQL 同时匹配 id/exploration_id/kind/state/executor，任何不匹配返回 (false, nil) 表示领取失败。
+// 并发安全：通过数据库行级 CAS 保证同一时刻只有一个执行器能成功领取。
+func (s *ExplorationStore) ClaimExecutorIntent(id int64, expectedState, executorKey, owner string) (bool, error) {
+	if expectedState != "open" && expectedState != "proposed" {
+		return false, fmt.Errorf("invalid expectedState %q", expectedState)
+	}
+	if executorKey == "review" {
+		return false, fmt.Errorf("review executor cannot be claimed")
+	}
+	if executorKey == "" && expectedState != "proposed" {
+		return false, fmt.Errorf("empty executor only allowed for proposed")
+	}
+	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1
+WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4
+  AND COALESCE(payload->>'executor','')=$5`, owner, id, s.expID, expectedState, executorKey)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// AssignedIntents lists valid custom-executor proposed intents (non-empty executor, not review).
+func (s *ExplorationStore) AssignedIntents(limit int) ([]*Node, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND `+assignedIntentCols("")+`
+ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
+// HasAssignedIntent reports whether any valid custom-executor proposed intent exists.
+func (s *ExplorationStore) HasAssignedIntent() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE exploration_id=$1 AND `+assignedIntentCols("")+`)`, s.expID).Scan(&exists)
+	return exists, err
+}
+
+// HasExecutorDispatchWork reports whether there is work that requires an executor:
+// open/running custom intents, or any dispatchable proposed intent (including empty executor).
+// Plain default open intents do not count.
+func (s *ExplorationStore) HasExecutorDispatchWork() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND (
+  (state IN ('open','running') AND `+customExecutorCols("")+`)
+  OR `+executorDispatchProposedCols("")+`
+))`, s.expID).Scan(&exists)
+	return exists, err
+}
+
+// HasPendingUncontrolledCustomIntent 是「不受 Planner 控制」意图的单一门控查询（全局权威语义）：
+// kind='intent'、payload.executor 非空且非 'review'、且该执行器 Agent 的当前配置
+// planner_controlled=false（LEFT JOIN agents a ON a.executor_key=payload->>'executor'；
+// Agent 缺失按默认 true 即不受门控），state 未达放行终态（done 放行；deleted/物理删除无行即放行）。
+// 不再匹配 origin 或 payload.planner_policy 快照——Agent 当前配置即时生效，已有 intent 也按当前配置判定。
+// proposed/open/running/paused/stopped/blocked/exhausted 一律视为 pending ⇒ true。
+// 多条匹配 intent 时任一未放行即 true；Agent 开关切换立即反映到本查询。
+func (s *ExplorationStore) HasPendingUncontrolledCustomIntent() (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
+LEFT JOIN agents a ON a.executor_key=exploration_nodes.payload->>'executor'
+WHERE exploration_id=$1 AND kind='intent'
+  AND COALESCE(payload->>'executor','') NOT IN ('','review')
+  AND COALESCE(a.planner_controlled,true)=false
+  AND state NOT IN ('done','deleted'))`, s.expID).Scan(&exists)
+	return exists, err
+}
+
+// CustomSeedIntent returns the earliest seed intent assigned to executorKey.
+// It is an execution-state lookup only: every state, including done, deleted, and
+// recoverable states, remains eligible so callers can distinguish completion from
+// an intent that was manually reopened. Returns nil when no matching seed exists.
+func (s *ExplorationStore) CustomSeedIntent(executorKey string) (*Node, error) {
+	n, err := scanNode(s.db.QueryRow(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind='intent' AND origin='seed' AND payload->>'executor'=$2
+ORDER BY id ASC LIMIT 1`, s.expID, executorKey))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return n, err
+}
+
 // Frontier returns open intents ordered by priority desc then id (FIFO tiebreak).
 func (s *ExplorationStore) Frontier(limit int) ([]*Node, error) {
 	if limit <= 0 {
@@ -1254,14 +1426,15 @@ ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
 }
 
 // HasActiveIntent reports whether this exploration has any intent still in play
-// (state open OR running). Used to decide whether to kick the FIRST planner round:
-// a seeded task's intent may already have been claimed (open→running) by a worker
-// before the check, so counting only 'open' (Frontier) races with worker claim and
-// wrongly kicks a redundant first round. Counting open+running is race-proof.
+// (state open OR running, or custom-executor proposed). Used to decide whether to
+// kick the FIRST planner round: a seeded task's intent may already have been claimed
+// (open→running) by a worker before the check, so counting only 'open' (Frontier)
+// races with worker claim and wrongly kicks a redundant first round. Counting
+// open+running+proposed is race-proof.
 func (s *ExplorationStore) HasActiveIntent() (bool, error) {
 	var exists bool
 	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running'))`, s.expID).Scan(&exists)
+WHERE exploration_id=$1 AND kind='intent' AND (state IN ('open','running') OR `+executorDispatchProposedCols("")+`))`, s.expID).Scan(&exists)
 	return exists, err
 }
 
@@ -2149,11 +2322,10 @@ func (s *ExplorationStore) AddStandaloneFinding(taskID, nodeID int64, vulnclass,
 	return s.db.AddFinding(taskID, nodeID, vulnclass, name, severity, summary, evidence, worker, assetIDs)
 }
 
-// ═══ ARTEX 二开 · [P-INTENT·D3 proposed 查询/写入方法] ═══
+// 【二开·P-INTENT·D3-1 proposed 事务与辅助】起 —— withTx、payload 弱类型读取与截断辅助
 // 功能介绍：意图人工审核闸门的 db 层数据口（01 册 D3）。审核模式双条件（m00960/m00973 拍板）：
 //           state='proposed' 且 payload->>'executor'='review'——executor≠'review' 的 proposed
 //           意图不进审核面板（那是留给自定义 agent 领取路由的）。本组方法全部带该过滤。
-// 二开日期：2026-10-21
 
 // withTx 在单个事务内执行 fn，fn 返回 nil 时提交、否则回滚。
 func (s *ExplorationStore) withTx(fn func(tx *sql.Tx) error) error {
@@ -2198,6 +2370,9 @@ func truncateRunes(s string, max int) string {
 	return string(rs[:max])
 }
 
+// 【二开·P-INTENT·D3-1 proposed 事务与辅助】止
+
+// 【二开·P-INTENT·D3-2 proposed 过滤片段与哨兵错】起 —— 待审/驳回过滤片段与审核写路径哨兵错误
 // proposedPendingCols 生成审核域【待审】过滤片段（§3.6：单一过滤器，全链路复用）：
 // state='proposed' + executor='review' 占位 + review_status='pending'。
 // alias 为空时不加表前缀（exploration_nodes 单表查询）；COALESCE 兼容未迁移的旧行
@@ -2237,6 +2412,9 @@ var (
 	ErrNoteRequired = errors.New("review note required")
 )
 
+// 【二开·P-INTENT·D3-2 proposed 过滤片段与哨兵错】止
+
+// 【二开·P-INTENT·D3-3 proposed 待审意图查询】起 —— HasProposedIntent/HasRejectedIntent/Proposed/Rejected/Fresh 列表
 // HasProposedIntent 报告本探索是否存在待审意图（pending）。planner 心跳抑制（S3）与
 // goalless 判定（S4）共用：有待审意图 = 人在决策环里，不算空转、不重复派单。
 func (s *ExplorationStore) HasProposedIntent() (bool, error) {
@@ -2303,6 +2481,9 @@ ORDER BY priority DESC, id ASC LIMIT $2`, s.expID, limit)
 	return scanNodes(rows)
 }
 
+// 【二开·P-INTENT·D3-3 proposed 待审意图查询】止
+
+// 【二开·P-INTENT·D3-4 proposed 批准写回】起 —— ApproveIntentAt/ApprovePrescreenPass（expected_version CAS + 执行器转正）
 // 【二开·审核流 PR3】版本化审核写回（§8.1）：所有审核处置走 expected_version CAS。
 // 版本翻转只有三种会推 content_version：正文编辑、pending→rejected、rejected→pending（§8.2）；
 // 批准转 open 是状态机迁移也推版本；review_note/pre_review/reviewed_version 属审核元数据，不推版本。
@@ -2377,6 +2558,9 @@ WHERE id=$1 AND exploration_id=$2`, id, s.expID, string(raw)); err != nil {
 	return ok, nil
 }
 
+// 【二开·P-INTENT·D3-4 proposed 批准写回】止
+
+// 【二开·P-INTENT·D3-5 proposed 驳回修订】起 —— RequestRevisionAt：rejected 翻转与 review_note
 // RequestRevisionAt 驳回待审意图退回修订（§8.1.1）：state 保持 proposed，review_status 翻为
 // 'rejected'，记 review_note/reviewed_version/revision_count+1，content_version+1（版本翻转）。
 // note 取值优先级：新填 > 既有 payload.review_note > ErrNoteRequired；统一截断 2000 字。
@@ -2431,6 +2615,9 @@ WHERE id=$1 AND exploration_id=$2 AND `+ProposedPendingFilter+` AND content_vers
 	return summary, newVersion, ok, err
 }
 
+// 【二开·P-INTENT·D3-5 proposed 驳回修订】止
+
+// 【二开·P-INTENT·D3-6 proposed 审核元数据标注】起 —— SetReviewNoteAt/SetPrescreenVerdict/SetPrescreenPassNote
 // SetReviewNoteAt 写人工批注（§8.1）：审核元数据，不推 content_version；带 pending 闸门与版本 CAS。
 func (s *ExplorationStore) SetReviewNoteAt(id int64, note string, expectedVersion int) (bool, error) {
 	var ok bool
@@ -2497,6 +2684,9 @@ WHERE id=$1 AND exploration_id=$2 AND `+ProposedPendingFilter+` AND content_vers
 	return ok, err
 }
 
+// 【二开·P-INTENT·D3-6 proposed 审核元数据标注】止
+
+// 【二开·P-INTENT·D3-7 proposed 诊断与落审】起 —— diagnoseRevisionMiss/reviewStatusOf/AddProposedIntent
 // diagnoseRevisionMiss 在 CAS 未命中时细分原因（§8.1.1）：不存在 / 不在待审态 / 版本冲突。
 // 调用时外层已持有该行的 FOR UPDATE 锁或刚从唯一索引查到，诊断结果仅作错误分类。
 func (s *ExplorationStore) diagnoseRevisionMiss(tx *sql.Tx, id int64, expectedVersion int) error {
@@ -2544,4 +2734,4 @@ func (s *ExplorationStore) AddProposedIntent(payload map[string]any, priority in
 	return s.AddNode("intent", payload, priority, "proposed", origin, anchors)
 }
 
-// 【二开·P-INTENT·D3】止
+// 【二开·P-INTENT·D3-7 proposed 诊断与落审】止

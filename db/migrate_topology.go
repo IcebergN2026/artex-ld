@@ -4,6 +4,7 @@
 //   - ensureTaskTopologyTwoKinds：重建边类型约束，去掉 lateral/pending 旧枚举值。
 //   - rewriteTopologySystemEdgeLabels：二次启动时仅重写新增系统边的 label。
 //   - migrateTaskTopologyOverrides：拓扑启动迁移的入口编排（先补列再做 legacy 早退）。
+
 package db
 
 import (
@@ -13,21 +14,6 @@ import (
 	"strings"
 )
 
-// migrateTaskTopologyOverrides moves the legacy read-time topology projection
-// (task_topology_overrides: one row per node_ip with an optional parent_ip edge
-// and entry_status) into the three-table editor model, then drops the legacy
-// table.
-//
-// Mapping per row: node_ip becomes a task_topology_nodes row (display_label and
-// entry_status carried over), parent_ip becomes a node too when it is missing so
-// the edge always has both endpoints, and parent_ip→node_ip becomes one edge —
-// kind=solid for an entry row (entry_status set), else kind=pending, because the
-// editor's kind set has no "evidence"; the old evidence_ref is preserved. Rows
-// without a parent leave their node edge-less, so the editor's fallback pending
-// edge is added afterwards (the editor forbids 游离节点).
-//
-// Idempotent: it no-ops once task_topology_overrides is gone, so every startup
-// can call it under the schema advisory lock.
 // ensureTaskTopologyColorColumns 给存量库补齐节点/连线自定义颜色列 color
 // （TEXT NOT NULL，默认空串；空串=默认配色：节点灰蓝边框，连线退回线型颜色）。
 // 新库由 schema.sql 建表自带；建表早于该列的存量库（如已搬迁完、legacy 表已
@@ -215,6 +201,21 @@ WHERE evidence_ref = '' AND system_label = '' AND label = ''`, TopologyFallbackL
 	return nil
 }
 
+// migrateTaskTopologyOverrides moves the legacy read-time topology projection
+// (task_topology_overrides: one row per node_ip with an optional parent_ip edge
+// and entry_status) into the three-table editor model, then drops the legacy
+// table.
+//
+// Mapping per row: node_ip becomes a task_topology_nodes row (display_label and
+// entry_status carried over), parent_ip becomes a node too when it is missing so
+// the edge always has both endpoints, and parent_ip→node_ip becomes one edge —
+// kind=solid for an entry row (entry_status set), else kind=pending, because the
+// editor's kind set has no "evidence"; the old evidence_ref is preserved. Rows
+// without a parent leave their node edge-less, so the editor's fallback pending
+// edge is added afterwards (the editor forbids 游离节点).
+//
+// Idempotent: it no-ops once task_topology_overrides is gone, so every startup
+// can call it under the schema advisory lock.
 func migrateTaskTopologyOverrides(ctx context.Context, conn *sql.Conn) error {
 	// 颜色列修复必须先于 legacy 早退：legacy 表已删除的存量库同样可能缺列。
 	if err := ensureTaskTopologyColorColumns(ctx, conn); err != nil {

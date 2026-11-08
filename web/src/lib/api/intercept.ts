@@ -1,6 +1,6 @@
-// intercept 域：全局拦截规则、资产拦截黑名单、人工/模型审批（pending/history/
-// task 维度）、全局工具拦截范围与 LLM 兜底审批配置。
 /**
+ * intercept.ts：拦截域——全局拦截规则、资产拦截黑名单、人工/模型审批（pending/history/
+ * task 维度）、全局工具拦截范围与 LLM 兜底审批配置。
  * 主要函数/类型：
  *   - interceptApi / InterceptApi：拦截域 API 聚合对象及其类型
  *   - interceptRules 系列：全局拦截规则 CRUD 与开关

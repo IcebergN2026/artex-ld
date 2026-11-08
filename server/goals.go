@@ -5,6 +5,7 @@
 //   - reconcileConcurrency：对账并发占用——LLM 不可用任务持久化入队并按 FIFO 提升排队任务。
 //   - createGoals：用任务同款 LLM 把任务目标拆解为可判定目标，无产出时回退原始目标。
 //   - runningTaskCount / hasReadyQueuedTask：并发占用统计与排队任务探查辅助。
+
 package server
 
 import (
@@ -87,7 +88,7 @@ func (s *Server) occupiesConcurrencySlot(t *Task) bool {
 	if s.engine.IsDeleting(t.ID) {
 		return true
 	}
-	return !s.engine.IsPaused(t.ID) && (s.engine.ReadyFor(t) || s.engine.ActiveLLMCalls(t.ID) > 0)
+	return !s.engine.IsPaused(t.ID) && (s.engine.CanDispatch(t) || s.engine.ActiveLLMCalls(t.ID) > 0)
 }
 
 func (s *Server) runningTaskCount(excludeID string) int {
@@ -149,7 +150,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	wasQueued := lifecycle.Queued
 	engineWasPaused := s.engine.IsPaused(t.ID)
 	enabled, limit := s.m.ConcurrencyLimit()
-	ready := s.engine.ReadyFor(t)
+	ready := s.engine.CanDispatch(t)
 
 	// Work added to a task that is already admitted only needs a wake-up. This
 	// matters when the configured limit was lowered below the current running
@@ -224,7 +225,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 func (s *Server) hasReadyQueuedTask(excludeID string) bool {
 	for _, task := range s.m.List() {
 		lifecycle := task.lifecycleSnapshot()
-		if task.ID != excludeID && lifecycle.Queued && !lifecycle.Paused && !isTerminalStatus(lifecycle.Status) && s.engine.ReadyFor(task) {
+		if task.ID != excludeID && lifecycle.Queued && !lifecycle.Paused && !isTerminalStatus(lifecycle.Status) && s.engine.CanDispatch(task) {
 			return true
 		}
 	}
@@ -269,7 +270,7 @@ func (s *Server) reconcileConcurrency() {
 		for _, task := range s.m.List() {
 			lifecycle := task.lifecycleSnapshot()
 			if lifecycle.Queued || lifecycle.Paused || s.engine.IsPaused(task.ID) || s.engine.IsDeleting(task.ID) ||
-				isTerminalStatus(lifecycle.Status) || s.engine.ReadyFor(task) || s.engine.ActiveLLMCalls(task.ID) > 0 {
+				isTerminalStatus(lifecycle.Status) || s.engine.CanDispatch(task) || s.engine.ActiveLLMCalls(task.ID) > 0 {
 				continue
 			}
 			mode := s.resumeAdmissionMode(task)
@@ -330,7 +331,7 @@ func (s *Server) reconcileConcurrency() {
 		// Keep FIFO order, but do not consume a concurrency slot for a task
 		// whose explicit chain/global provider is unavailable. It will be retried
 		// after the user configures or resets its LLM chain.
-		if lifecycle.Paused || (enabled && !s.engine.ReadyFor(task)) {
+		if lifecycle.Paused || (enabled && !s.engine.CanDispatch(task)) {
 			continue
 		}
 		mode := lifecycle.QueueMode

@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - deferredSystem：按 DeferredInfo 构造系统提示段与缓存边界（deferred 工具名列作末段）。
 //   - seedUnlockFromHistory：回放历史 Skill 调用，恢复会话的技能门控 MCP 解锁集。
+
 package agent
 
 import (

@@ -4,6 +4,7 @@
 //   - InsertLog：追加一条日志并返回自增 id。
 //   - RecentLogs / ListLogsBefore：按时间正序读取最近日志 / 按 id 游标向前翻页。
 //   - DeleteOldLogs：删除 N 天前的旧日志并返回删除行数。
+
 package db
 
 import (

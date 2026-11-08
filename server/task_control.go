@@ -4,6 +4,7 @@
 //   - applyIntentControl：意图的暂停、恢复与 soft/hard 删除（取消）。
 //   - controlTasksBatch：批量对 1-100 个任务执行暂停/继续。
 //   - resumeAdmissionMode / normalizeBatchTaskIDs：恢复入队判定与批量 id 归一。
+
 package server
 
 import (
@@ -197,7 +198,8 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 		if node.State != "paused" {
 			return out, fmt.Errorf("仅已暂停的意图可以恢复")
 		}
-		changed, err := t.Store.CompareAndSetIntentState(iid, "paused", "open")
+		targetState := queuedIntentState(node)
+		changed, err := t.Store.CompareAndSetIntentState(iid, "paused", targetState)
 		if err != nil {
 			return out, err
 		}
@@ -205,7 +207,7 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 			return out, fmt.Errorf("%w: 意图不再是 paused 状态", db.ErrIntentStateConflict)
 		}
 		t.Notify()
-		out.State = "open"
+		out.State = targetState
 	case "cancel":
 		// 删除支持两种模式:
 		//   soft(默认,假删除):意图停到 state='deleted'、删除原因记入 delete_reason 字段,
@@ -213,21 +215,25 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 		//   hard(真删除):物理删除该意图及"仅由它支撑"的独占子孙节点(级联到叶子),避免留下
 		//     孤立数据;共享节点、goal、任务根事实保留。
 		// 两种模式都用 cancelled 触发告知 planner(意图内容 + 删除原因),让它据此重规划。
-		if node.State != "running" && node.State != "paused" && node.State != "open" {
-			return out, fmt.Errorf("仅待领/运行中/已暂停的意图可以删除")
+		if node.State != "running" && node.State != "paused" && node.State != "open" && node.State != "proposed" &&
+			node.State != "blocked" && node.State != "exhausted" && node.State != "stopped" {
+			return out, fmt.Errorf("仅待领/运行中/已暂停/待执行/失败终态的意图可以删除")
 		}
 		reason = strings.TrimSpace(reason)
 		if reason == "" {
 			return out, fmt.Errorf("请填写删除原因")
 		}
+		expectedState := node.State
 		if node.State == "running" {
 			if err := s.engine.ControlWork(ctx, iid, "cancel"); err != nil {
 				return out, err
 			}
+			// running 的 worker 停止后落 paused，删除期望状态改为 paused。
+			expectedState = "paused"
 		}
 		summary := intentSummaryOf(node)
 		if mode == "hard" {
-			cleanup, err := t.Store.CancelIntent(iid)
+			cleanup, err := t.Store.CancelIntent(iid, expectedState)
 			if err != nil {
 				return out, err
 			}
@@ -236,7 +242,7 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 			out.Deleted = &cleanup
 			out.State = "" // 节点已删除,前端据 Deleted 从列表移除
 		} else {
-			if _, err := t.Store.SoftDeleteIntent(iid, reason); err != nil {
+			if _, err := t.Store.SoftDeleteIntent(iid, reason, expectedState); err != nil {
 				return out, err
 			}
 			s.cancelWorkerSide(t.ID, t.ExpID, iid)
@@ -250,13 +256,11 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 }
 
 func (s *Server) controlTasksBatch(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
 	var req struct {
 		TaskIDs []string `json:"task_ids"`
 		Action  string   `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "bad json: "+err.Error())
+	if !decodeJSON(w, r, &req, maxBatchJSONBodyBytes) {
 		return
 	}
 	if req.Action != "pause" && req.Action != "resume" {

@@ -5,6 +5,7 @@
 //   - notifyTestChannel：发送测试消息验证渠道可用性。
 //   - notifyListDeliveries / notifyRetryDelivery：投递记录查询与失败重投接口。
 //   - notifyMeta / notifierBaseURL：通知元信息接口与对外基础地址解析。
+
 package server
 
 import (
@@ -188,8 +189,7 @@ func (s *Server) notifyCreateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req notifyChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "请求体不是合法 JSON: "+err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 	if req.Kind == nil || !notify.ValidKind(*req.Kind) {
@@ -274,8 +274,7 @@ func (s *Server) notifyUpdateChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req notifyChannelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, 400, "请求体不是合法 JSON: "+err.Error())
+	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
 		return
 	}
 

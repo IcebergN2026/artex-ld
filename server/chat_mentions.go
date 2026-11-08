@@ -3,6 +3,7 @@
 //   - parseChatMentions：解析消息中的引用标记并做数量与 ID 合法性校验。
 //   - searchChatMentions：按类型与关键词分页搜索可引用的记录。
 //   - composeChatMentionMessage / loadChatMention：把引用展开为可读内容拼回消息。
+
 package server
 
 import (

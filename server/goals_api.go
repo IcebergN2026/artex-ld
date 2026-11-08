@@ -1,10 +1,10 @@
 // goals_api.go：任务目标（Goal）的增删改查 HTTP API。
 // 主要函数/类型：
 //   - listGoals / addGoal / editGoal / deleteGoal：目标列表/新增/编辑/删除。
+
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,8 +50,7 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 		Text      string `json:"text"`
 		VulnClass string `json:"vulnclass"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, 400, "invalid JSON")
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	text := strings.TrimSpace(body.Text)
@@ -104,8 +103,7 @@ func (s *Server) editGoal(w http.ResponseWriter, r *http.Request) {
 		Text      string `json:"text"`
 		VulnClass string `json:"vulnclass"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeErr(w, 400, "invalid JSON")
+	if !decodeJSON(w, r, &body, maxMediumJSONBodyBytes) {
 		return
 	}
 	text := strings.TrimSpace(body.Text)

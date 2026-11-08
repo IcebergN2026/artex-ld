@@ -2,6 +2,7 @@
 // 主要函数/类型：
 //   - enableNoa：开关开启时把 noa 压缩器接入 agentcore.Options，启用失败回退内置压缩。
 //   - noaWarn：带会话标签的 noa 非致命诊断日志 sink。
+
 package agent
 
 import (

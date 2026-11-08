@@ -56,13 +56,15 @@ const nextConfig = {
     removeConsole: process.env.NODE_ENV === "production",
   },
   ...environmentConfig(isExport, isMock),
-  webpack: (config) => {
+  // 仅显式 webpack 构建（next build --webpack）会调用此回调；默认的 Turbopack
+  // 构建不调用，mock 排除由上面的 turbopack.resolveAlias 负责。
+  webpack: (config, { webpack }) => {
     // 强制内联 NEXT_PUBLIC_MOCK：未设置时 Next 不会替换 process.env 引用，导致
     // lib/api/http.ts 里 `if (process.env.NEXT_PUBLIC_MOCK === "1") import(...)`
     // 无法折成死分支、6800 行 mock 数据被动态 import 带进生产 bundle。
     // 显式 DefinePlugin 后生产构建为 if(false)（import 被消除），MOCK 构建为 if(true)。
     config.plugins.push(
-      new config.webpack.DefinePlugin({
+      new webpack.DefinePlugin({
         "process.env.NEXT_PUBLIC_MOCK": JSON.stringify(process.env.NEXT_PUBLIC_MOCK),
       }),
     );

@@ -4,6 +4,7 @@
 //   - pgListTaskCategories / pgCreateTaskCategory / pgRenameTaskCategory / pgDeleteTaskCategory：分类的查/建/改名/删。
 //   - updateTaskCategory：PATCH 更新单个任务的分类归属。
 //   - updateTasksCategoryBatch：批量调整多个任务的分类。
+
 package server
 
 import (
@@ -34,15 +35,8 @@ type taskCategoryRequest struct {
 }
 
 func decodeTaskCategoryRequest(w http.ResponseWriter, r *http.Request) (*taskCategoryRequest, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskCategoryRequestBytes)
 	var request taskCategoryRequest
-	if err := decode(r, &request); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
+	if !decodeJSON(w, r, &request, maxTaskCategoryRequestBytes) {
 		return nil, false
 	}
 	hasPreset := request.DefaultReviewEnabled != nil || request.DefaultPlannerTemplateID != nil || request.DefaultWorkerTemplateID != nil || request.AssetMode != nil || request.DefaultDescription != nil || request.SeedFirstIntent != nil || request.SeedExecutor != nil
@@ -209,12 +203,10 @@ func (s *Server) updateTaskCategory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "task not found")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskCategoryRequestBytes)
 	var request struct {
 		CategoryID json.RawMessage `json:"category_id"`
 	}
-	if err := decode(r, &request); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+	if !decodeJSON(w, r, &request, maxTaskCategoryRequestBytes) {
 		return
 	}
 	categoryID, ok := parseCategoryIDField(w, request.CategoryID)
@@ -242,18 +234,11 @@ type batchCategoryItem struct {
 // entries only distinguish ids that never resolved to a live task, so a partial
 // success here means those tasks were deleted, not that the move half-applied.
 func (s *Server) updateTasksCategoryBatch(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskCategoryRequestBytes)
 	var request struct {
 		TaskIDs    []string        `json:"task_ids"`
 		CategoryID json.RawMessage `json:"category_id"`
 	}
-	if err := decode(r, &request); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
+	if !decodeJSON(w, r, &request, maxTaskCategoryRequestBytes) {
 		return
 	}
 	categoryID, ok := parseCategoryIDField(w, request.CategoryID)

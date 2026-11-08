@@ -194,3 +194,93 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestAgentPlannerControlled pins the first-custom-seed gating switch chain:
+// schema default true, set false → read back false (all agent read paths),
+// built-in agents rejected, and a legacy export doc missing the field imports
+// as true. Synthetic keys only; no historical tasks touched.
+func TestAgentPlannerControlled(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	// default on create
+	a, err := d.CreateAgent("t_planner_ctl", "t planner ctl", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM agents WHERE key='t_planner_ctl'`)
+	if a.PlannerControlled != true {
+		t.Fatalf("new custom agent PlannerControlled=%v, want default true", a.PlannerControlled)
+	}
+	byKey, err := d.GetAgentByKey("t_planner_ctl")
+	if err != nil || byKey == nil {
+		t.Fatalf("GetAgentByKey: %v", err)
+	}
+	if byKey.PlannerControlled != true {
+		t.Fatalf("GetAgentByKey PlannerControlled=%v, want true", byKey.PlannerControlled)
+	}
+
+	// set false → every read path sees false
+	if err := d.SetAgentPlannerControlled("t_planner_ctl", false); err != nil {
+		t.Fatal(err)
+	}
+	byKey, _ = d.GetAgentByKey("t_planner_ctl")
+	if byKey.PlannerControlled != false {
+		t.Fatalf("after set false: PlannerControlled=%v, want false", byKey.PlannerControlled)
+	}
+	found := false
+	list, err := d.ListAgents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, la := range list {
+		if la.Key == "t_planner_ctl" {
+			found = true
+			if la.PlannerControlled != false {
+				t.Fatalf("ListAgents PlannerControlled=%v, want false", la.PlannerControlled)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ListAgents missing t_planner_ctl")
+	}
+
+	// back to true
+	if err := d.SetAgentPlannerControlled("t_planner_ctl", true); err != nil {
+		t.Fatal(err)
+	}
+	byKey, _ = d.GetAgentByKey("t_planner_ctl")
+	if byKey.PlannerControlled != true {
+		t.Fatalf("after set true: PlannerControlled=%v, want true", byKey.PlannerControlled)
+	}
+
+	// built-in agents rejected
+	if err := d.SetAgentPlannerControlled("planner", false); err == nil {
+		t.Fatal("SetAgentPlannerControlled on built-in planner should fail")
+	}
+
+	// legacy export doc (no planner_controlled field) must import as true —
+	// same COALESCE semantics as scripts/artex-config.sh agents_custom import.
+	d.Exec(`DELETE FROM agents WHERE key='t_planner_ctl_legacy'`)
+	_, err = d.Exec(`
+INSERT INTO agents (key, name, description, role, enabled, builtin, planner_controlled)
+SELECT doc->>'key', doc->>'name', doc->>'description', doc->>'role',
+       COALESCE((doc->>'enabled')::bool, true), false,
+       COALESCE((doc->>'planner_controlled')::bool, true)
+FROM (SELECT '{"key":"t_planner_ctl_legacy","name":"legacy","role":"assistant"}'::jsonb AS doc) _st
+WHERE NOT EXISTS (SELECT 1 FROM agents a WHERE a.key = _st.doc->>'key')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM agents WHERE key='t_planner_ctl_legacy'`)
+	legacy, err := d.GetAgentByKey("t_planner_ctl_legacy")
+	if err != nil || legacy == nil {
+		t.Fatalf("legacy import readback: %v", err)
+	}
+	if legacy.PlannerControlled != true {
+		t.Fatalf("legacy import (field missing) PlannerControlled=%v, want default true", legacy.PlannerControlled)
+	}
+}

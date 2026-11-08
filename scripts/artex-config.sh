@@ -85,7 +85,7 @@ SELECT row_to_json(t) FROM (
          a.wrapup_prompt, a.wrapup_max_turns,
          a.task_timeout_wrapup_prompt, a.task_timeout_wrapup_max_turns,
          a.trigger_run_mode, a.trigger_merge_mode, a.trigger_max_parallel,
-         a.executor_key,
+         a.executor_key, a.planner_controlled,
          p.name AS llm_profile_name
   FROM agents a
   LEFT JOIN llm_profiles p ON p.id = a.llm_profile_id
@@ -335,7 +335,7 @@ INSERT INTO agents (key, name, description, role, enabled, builtin,
                     wrapup_prompt, wrapup_max_turns,
                     task_timeout_wrapup_prompt, task_timeout_wrapup_max_turns,
                     trigger_run_mode, trigger_merge_mode, trigger_max_parallel,
-                    executor_key, llm_profile_id)
+                    executor_key, planner_controlled, llm_profile_id)
 SELECT doc->>'key', doc->>'name', doc->>'description', doc->>'role',
        COALESCE((doc->>'enabled')::bool, true), false,
        (doc->>'max_turns')::int, (doc->>'run_seconds')::int,
@@ -344,6 +344,7 @@ SELECT doc->>'key', doc->>'name', doc->>'description', doc->>'role',
        doc->>'task_timeout_wrapup_prompt', (doc->>'task_timeout_wrapup_max_turns')::int,
        doc->>'trigger_run_mode', doc->>'trigger_merge_mode', (doc->>'trigger_max_parallel')::int,
        doc->>'executor_key',
+       COALESCE((doc->>'planner_controlled')::bool, true),
        (SELECT id FROM llm_profiles p WHERE p.name = _st.doc->>'llm_profile_name')
 FROM _st
 WHERE NOT EXISTS (SELECT 1 FROM agents a WHERE a.key = _st.doc->>'key');"

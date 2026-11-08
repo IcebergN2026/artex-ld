@@ -71,7 +71,7 @@ func TestSideActualChatCheckpointToolResultAndTranscriptIsolation(t *testing.T) 
 			var snapshots []sidequestion.Snapshot
 			var activities []db.Activity
 			ctx := sidequestion.WithPublisher(t.Context(), func(s sidequestion.Snapshot) { snapshots = append(snapshots, s) })
-			if _, err := chat.Chat(ctx, "mainagent", "conv-987654", "Read the local fixture", 5, time.Minute, false, func(a db.Activity) { activities = append(activities, a) }); err != nil {
+			if _, _, err := chat.Chat(ctx, "mainagent", "conv-987654", "Read the local fixture", 5, time.Minute, false, func(a db.Activity) { activities = append(activities, a) }); err != nil {
 				t.Fatal(err)
 			}
 			if len(snapshots) < 3 {

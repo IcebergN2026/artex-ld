@@ -4,7 +4,7 @@
 //   - NewToolSet：按探索存储与 worker 名创建工具集。
 //   - compactIntents：把意图节点折叠为列表展示的紧凑摘要。
 //   - WriteCounts：事实/资产/发现的写回计数及汇总。
-//   - SetNotifyGoal / SetNotifyReview 等 Set 系列：挂接目标达成、审核唤醒等回调。
+//   - SetNotifyGoal / SetNotifyReview / SetExecutorKey 等 Set 系列：挂接目标达成、审核唤醒、执行器身份等回调。
 //   - DropCoverageTools / CoverageDisabled：按覆盖开关裁剪仅覆盖类工具。
 
 package agent
@@ -74,7 +74,8 @@ type ToolSet struct {
 	cs              *db.CompanyStore // company store (optional)
 	ts              *db.ExplorationStore
 	worker          string
-	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	executorKey     string // canonical executor_key；Agent.Key/worker 名不作为领取身份
+	taskID          int64  // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData drops coverage metrics while
@@ -128,7 +129,7 @@ type ToolSet struct {
 	// 【二开·审核流 PR1/§2.6】notifyReview 是 ReviewRunner 的专用唤醒通道：add_review_intent
 	// 送审成功、update_intent 重送成功后调用一次（批量合并为一次），参数为 tasks.id。
 	// 不复用 notify（planner wake）——叫醒 planner 只会被待审抑制门丢弃触发。
-	// nil = 未接线，退化为 ReviewRunner 的 60s ticker 兜底。
+	// nil = 未接线，退化为 ReviewRunner 的 15s ticker 兜底。
 	notifyReview func(taskID int64)
 	// 【二开·审核流 PR5/§4.2.3】notifyRevision 是「驳回退回修订」事件通道：
 	// set_intent_status(reject) 成功后调用，携带 (intentID, reason)，由 Task
@@ -222,8 +223,16 @@ func (w WriteCounts) String() string {
 func (t *ToolSet) Writes() WriteCounts { return t.writes }
 
 func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
-	return &ToolSet{ts: ts, worker: worker}
+	t := &ToolSet{ts: ts, worker: worker}
+	if strings.HasPrefix(worker, "exec:") {
+		t.executorKey = strings.TrimPrefix(worker, "exec:")
+	}
+	return t
 }
+
+// SetExecutorKey sets the canonical executor_key used by claim_executor_intent.
+// Conversation Agents must set this separately from their Agent.Key/worker name.
+func (t *ToolSet) SetExecutorKey(key string) { t.executorKey = key }
 
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
@@ -492,6 +501,11 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		}
 	}
 	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	// assigned_intents：已指定自定义执行器、等待领取的 proposed 意图（非 review）。
+	// planner 去重和停摆判断必须把它算作"在推进的工作"，避免重复派单。
+	if assigned, err := t.ts.AssignedIntents(20); err == nil && len(assigned) > 0 {
+		out["assigned_intents"] = compactIntents(assigned, parentsOf, yieldsOf)
+	}
 	// 【二开·P-INTENT·A6】起 —— proposed_intents 块（01 册 A6）
 	// planner 每轮看到待审意图清单：知道"哪些意图在等人审"，去重时不把待审当不存在、
 	// 也不为同方向重复提交审核。双条件过滤（executor='review'）与 db 层一致。
@@ -1056,13 +1070,11 @@ func compactNode(n *db.Node) map[string]any {
 	return m
 }
 
-// ═══ ARTEX 二开 · [LIST-INTENTS·A2 意图紧凑行] ═══
+// 【二开·LIST-INTENTS·A2 意图紧凑行】
 // 功能介绍：compactIntent——compactNode 加 intent 特有字段（priority/executor/pending_executor/review_note/
 //
 //	replaces/asset_ids/blocked_reason/delete_reason），summary 160 符文截断（factSummaryMax 同款）。
 //	pending_executor/review_note 使 K4 取代后 review agent 看到的字段与旧 get_proposed_intents 等价。
-//
-// 二开日期：2026-10-22
 const intentSummaryMax = 160
 
 func compactIntent(n *db.Node) map[string]any {
@@ -1411,11 +1423,10 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 		})
 }
 
-// ═══ ARTEX 二开 · [LIST-INTENTS·A1 list_intents 工具] ═══
+// 【二开·LIST-INTENTS·A1 list_intents 工具】
 // 功能介绍：list_intents——list_facts 同款游标分页范式补到 intent kind（docs/获取intent工具计划书）：
 //           states 白名单过滤/q 关键词/limit 20~100/before 游标；紧凑行 compactIntent，全文 node_detail 兜底。
 //           K4=取代 get_proposed_intents：review agent 用 list_intents(states=["proposed"])。
-// 二开日期：2026-10-22
 
 // listIntentStates intent 合法 state 全集（K5 白名单校验；与 db/schema.sql ck_node_state 对齐）。
 var listIntentStates = []string{"open", "running", "paused", "done", "blocked", "exhausted", "stopped", "deleted", "proposed"}
@@ -1627,11 +1638,6 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 	})
 }
 
-// recordFact writes a general exploration RESULT/conclusion (not a vuln, not a
-// new asset) into the EXPLORATION graph, chained to the intent that produced it.
-// This is the home for observations and — importantly — negative results
-// ("port closed", "param not injectable", "no login found"). Such conclusions
-// must NOT be stuffed into the asset graph via upsert_asset.
 // factItem 是 record_fact 批量/单条的一条事实。
 type factItem struct {
 	Summary    string            `json:"summary"`
@@ -1699,6 +1705,11 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	return id, nil
 }
 
+// recordFact writes a general exploration RESULT/conclusion (not a vuln, not a
+// new asset) into the EXPLORATION graph, chained to the intent that produced it.
+// This is the home for observations and — importantly — negative results
+// ("port closed", "param not injectable", "no login found"). Such conclusions
+// must NOT be stuffed into the asset graph via upsert_asset.
 func (t *ToolSet) recordFact() actool.CoreTool {
 	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。用于记录探索结果——包括指纹/枚举等【正向结论】，和'端口关闭'/'参数不可注入'/'未发现登录入口'等【否定结论】。\n"+
 		"⚠️一次探索的多个观察要【汇总成一条事实】，不要拆成多条，可以合并成一条事实的就尽量用一条事实表示：summary=对本次结论的总结性一句话，detail=相关细节（可含多个具体项）。例：指纹意图→一条事实 {summary:'识别了 X 站点的技术栈与响应特征', detail:'nginx 1.25 / Vue3 / 200 / title=.. / body_len=..'}，而不是状态码、指纹、标题各记一条。一条意图通常只产出一条事实，拆太碎会让图谱无限膨胀。\n"+

@@ -55,7 +55,7 @@ func TestSoftDeleteIntent(t *testing.T) {
 	if err := es.SetIntentState(intent, "paused"); err != nil {
 		t.Fatal(err)
 	}
-	summary, err := es.SoftDeleteIntent(intent, "方向判断错误")
+	summary, err := es.SoftDeleteIntent(intent, "方向判断错误", "paused")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestSoftDeleteIntent(t *testing.T) {
 	}
 	// 待领(open)意图也允许假删除。
 	openIntent := mustIntent(t, es, "待领意图")
-	if _, err := es.SoftDeleteIntent(openIntent, "方向不需要了"); err != nil {
+	if _, err := es.SoftDeleteIntent(openIntent, "方向不需要了", "open"); err != nil {
 		t.Fatalf("soft delete open intent: %v", err)
 	}
 	if n, err := es.GetNode(openIntent); err != nil || n == nil || n.State != StateIntentDeleted {
@@ -79,7 +79,7 @@ func TestSoftDeleteIntent(t *testing.T) {
 	}
 
 	// 已删除(deleted)等其它状态不能再假删除。
-	if _, err := es.SoftDeleteIntent(intent, "再删"); err == nil {
+	if _, err := es.SoftDeleteIntent(intent, "再删", "deleted"); err == nil {
 		t.Fatal("soft-deleting an already-deleted intent unexpectedly succeeded")
 	}
 }
@@ -107,7 +107,7 @@ func TestHardDeleteCascadesExclusiveDescendants(t *testing.T) {
 	fact2 := mustNode(t, es, KindFact, "事实2")
 	mustLink(t, es, intent2, RelYields, fact2)
 
-	cleanup, err := es.CancelIntent(intent1)
+	cleanup, err := es.CancelIntent(intent1, "open")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestHardDeletePreservesSharedAndGoal(t *testing.T) {
 	intent2 := mustIntent(t, es, "由共享事实衍生")
 	mustLink(t, es, shared, RelDerivedFrom, intent2)
 
-	cleanup, err := es.CancelIntent(intent1)
+	cleanup, err := es.CancelIntent(intent1, "open")
 	if err != nil {
 		t.Fatal(err)
 	}

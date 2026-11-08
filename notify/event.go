@@ -3,6 +3,7 @@
 //   - Snapshot：notification_events.snapshot JSONB 列的契约，冗余存事发当时的漏洞字段。
 //   - Item / Title / IsStatusChange：一条待推送漏洞条目及其标题回退规则。
 //   - Message：一次渠道发送的完整内容（单条或整批 digest）。
+
 package notify
 
 // Snapshot 是 notification_events.snapshot 这一 JSONB 列的契约。写方是 db 层的

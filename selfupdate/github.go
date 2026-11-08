@@ -4,6 +4,7 @@
 //   - NewClient：构造支持代理、带重定向白名单限制的 HTTP 客户端。
 //   - FetchLatest：请求最新 Release 接口并解析为 Release。
 //   - AssetName / FindAsset：按系统架构生成资源文件名并查找对应资源。
+
 package selfupdate
 
 import (

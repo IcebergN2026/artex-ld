@@ -5,6 +5,7 @@
 //   - runFinalPlannerRound：驱动唯一一轮带超时词的终局规划并判定目标是否达成。
 //   - taskDeadline / stampFirstRun / clockCtx：截止时刻计算、首次运行盖章与带 deadline 的上下文。
 //   - beginTaskOperation / decInflight / inflightCount：在跑操作计数，作为收尾 drain 的依据。
+
 package server
 
 import (
@@ -17,6 +18,7 @@ import (
 
 	"artex/agent"
 	"artex/db"
+	"artex/xlog"
 )
 
 // 任务级超时协调器(见 docs/任务级超时与收尾设计.md §4/§8.5)。
@@ -238,6 +240,13 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 // LLM to be ready (bounded by ctx) so a completable task isn't mis-judged timeout.
 func (e *Engine) runFinalPlannerRound(ctx context.Context, t *Task) (met bool) {
 	if e.IsDeleting(t.ID) {
+		return false
+	}
+	// 不受 Planner 控制契约在超时收尾同样有效：未完成的自定义种子不再做终局规划，
+	// 由 settleTask 按 timeout 收尾，避免超时成为绕过 Planner 隔离的旁路。
+	if e.shouldHoldPlannerForUncontrolledAgent(t) {
+		xlog.Oncef("planner-uncontrolled-hold-timeout-"+t.ID, 5*time.Minute, xlog.LevelInfo,
+			"[deadline] task %s 超时收尾跳过终局规划：存在未完成的免规划自定义 intent", t.ID)
 		return false
 	}
 	planner, _ := e.snapshotFor(t)

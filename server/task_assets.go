@@ -4,6 +4,7 @@
 //   - detachTaskAsset：解除任务与指定资产的关联。
 //   - taskIntentAssets：查询任务下全部意图关联的资产。
 //   - writeTaskAssetError：把 db 资产错误映射为 4xx/5xx 响应。
+
 package server
 
 import (
@@ -33,19 +34,12 @@ func (s *Server) attachTaskAssets(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "task not found")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxTaskAssetRequestBytes)
 	var request struct {
 		AssetIDs      []int64            `json:"asset_ids"`
 		SourceSummary string             `json:"source_summary"`
 		Scope         companyScopeInputs `json:"scope"`
 	}
-	if err := decode(r, &request); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
+	if !decodeJSON(w, r, &request, maxTaskAssetRequestBytes) {
 		return
 	}
 	request.SourceSummary = strings.TrimSpace(request.SourceSummary)

@@ -290,7 +290,7 @@ export function ReviewPanel({ taskId }: { taskId: string }) {
 					)}
 					{reviewAuto && (
 						<Badge variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400">
-							自动审核中 · 每 60s 一轮
+							自动审核中 · 每 15s 一轮
 						</Badge>
 					)}
 				</div>

@@ -1,9 +1,7 @@
 -- ARTEX PostgreSQL schema (单一数据源)
 -- 幂等：可重复执行（IF NOT EXISTS / OR REPLACE / DROP TRIGGER IF EXISTS）。
 
--- =====================================================================
 -- 0. 通用：updated_at 触发器
--- =====================================================================
 CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
@@ -20,9 +18,7 @@ EXCEPTION WHEN others THEN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE STRICT;
 
--- =====================================================================
 -- A. 资产层：companies / assets / company_scope
--- =====================================================================
 
 CREATE TABLE IF NOT EXISTS companies (
     id         BIGSERIAL PRIMARY KEY,
@@ -147,9 +143,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_sv2_value ON company_scope(company_id, kind
 CREATE INDEX IF NOT EXISTS idx_sv2_icp ON company_scope(value) WHERE kind = 'icp';
 CREATE INDEX IF NOT EXISTS idx_sv2_company ON company_scope(company_id);
 
--- =====================================================================
 -- B. 推理探索层
--- =====================================================================
 CREATE TABLE IF NOT EXISTS explorations (
     id          BIGSERIAL PRIMARY KEY,
     description TEXT,
@@ -353,9 +347,7 @@ CREATE TABLE IF NOT EXISTS main_sessions (
     PRIMARY KEY (exploration_id, seq)
 );
 
--- =====================================================================
 -- C. LLM profiles
--- =====================================================================
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -488,9 +480,7 @@ CREATE TABLE IF NOT EXISTS llm_profile_health (
     last_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- =====================================================================
 -- D. 任务层
--- =====================================================================
 -- Global task categories are intentionally independent from task templates.
 -- Deleting a category only moves its tasks back to the uncategorized bucket.
 CREATE TABLE IF NOT EXISTS task_categories (
@@ -525,8 +515,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     company_id     BIGINT REFERENCES companies(id) ON DELETE SET NULL,
     parent_ref     TEXT,
     timeout_seconds INTEGER NOT NULL DEFAULT 0,
-    plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
+    plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 600,
     coverage_enabled BOOLEAN NOT NULL DEFAULT true,
+    pre_agent      TEXT NOT NULL DEFAULT '',
     pinned_at      TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
@@ -541,14 +532,36 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE dele
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
--- planner 心跳触发间隔(秒);补旧库。默认 300s(5min)。见 docs/planner-trigger-impl-plan.md
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300;
+-- planner 心跳触发间隔(秒);补旧库。默认 600s(10min)，与 db.MinPlanHeartbeatSeconds 一致。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 600;
+-- 存量库该列可能由早期版本以 300 默认值创建：ADD COLUMN IF NOT EXISTS 不会改已存在列的默认，
+-- 这里显式 SET DEFAULT 600（幂等）。不回填历史行；新任务由 CreateTask 归一，
+-- 存量历史行由 engine 运行时 <600 夹逼按 600 生效。
+ALTER TABLE tasks ALTER COLUMN plan_heartbeat_seconds SET DEFAULT 600;
 -- 并发上限挂起态;补旧库。true=因并发上限排队、等待空位自动启动。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false;
 -- 资产覆盖度功能开关;补旧库。true(默认)=计算/展示测试覆盖度、自动累积测试范围、
 -- 给 agent 开放 add_task_scope/list_untested_assets;false=全部关闭(见 task_scope.go)。
 -- 存量任务默认 true 保持原行为;company 关联(task_scope kind=company)不受此开关影响。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
+-- 前置执行器随任务持久化；旧库仅从仍在活动的 custom seed 恢复元数据，不改变任务或意图状态。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pre_agent TEXT NOT NULL DEFAULT '';
+WITH seed_executor AS (
+    SELECT DISTINCT ON (task.id) task.id AS task_id, node.payload->>'executor' AS executor
+    FROM tasks task
+    JOIN exploration_nodes node ON node.exploration_id=task.exploration_id
+    WHERE task.deleted_at IS NULL
+      AND task.pre_agent=''
+      AND node.origin='seed'
+      AND node.kind='intent'
+      AND node.state IN ('proposed','open','running','paused')
+      AND COALESCE(node.payload->>'executor','') NOT IN ('','review')
+    ORDER BY task.id, node.id
+)
+UPDATE tasks
+SET pre_agent=seed_executor.executor
+FROM seed_executor
+WHERE tasks.id=seed_executor.task_id;
 -- 【二开·P-TPL·D2】起 —— tasks 两新列：planner 提示词任务级快照 + 任务级 worker 池大小（0=跟随全局，1~16 专属）
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_prompt_override TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_prompt_override TEXT NOT NULL DEFAULT '';
@@ -658,9 +671,7 @@ DROP TRIGGER IF EXISTS trg_task_templates_upd ON task_templates;
 CREATE TRIGGER trg_task_templates_upd BEFORE UPDATE ON task_templates
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- ═══ ARTEX 二开 · [P-TPL·D11 planner_templates 表] ═══
 -- 功能介绍：planner 提示词模板库——多套预设正文 + 全库唯一默认；建任务选中即把正文快照进 tasks.planner_prompt_override（本表只服务"以后的新任务"）
--- 二开日期：2026-10-21
 -- 【二开·P-TPL·D11】起
 -- Reusable planner system-prompt presets (段 [A] 全文替换体)。nkey 是归一化大小写
 -- 不敏感身份，用于拒绝视觉等价重名；builtin 行只读禁删；is_default 全库至多一行
@@ -839,9 +850,7 @@ CREATE INDEX IF NOT EXISTS idx_ts_domain  ON task_scope(domain) WHERE kind IN ('
 CREATE INDEX IF NOT EXISTS idx_ts_net     ON task_scope USING GIST(net inet_ops) WHERE kind IN ('ip','cidr');
 CREATE INDEX IF NOT EXISTS idx_ts_company ON task_scope(company_id) WHERE kind = 'company';
 
--- =====================================================================
 -- E. Agents / 提示词模板 / 变量目录
--- =====================================================================
 CREATE TABLE IF NOT EXISTS agents (
     id                BIGSERIAL PRIMARY KEY,
     key               TEXT NOT NULL UNIQUE CHECK (key ~ '^[a-z][a-z0-9_]*$'),
@@ -876,9 +885,8 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_profile_id BIGINT REFERENCES llm
 -- run_seconds 单次 run 墙钟默认 600→1200:只改列默认(影响将来新插入的行),不动旧库存量行。
 ALTER TABLE agents ALTER COLUMN run_seconds SET DEFAULT 1200;
 CREATE INDEX IF NOT EXISTS idx_agents_llm_profile ON agents(llm_profile_id) WHERE llm_profile_id IS NOT NULL;
--- ═══ ARTEX 二开 · [P-EXEC·D10 执行器标识列] ═══
+-- 【二开·P-EXEC·D10 执行器标识列】
 -- 功能介绍：agents 表加 executor_key——自定义 agent 声明「我是某种执行器」供意图 payload.executor 引用（K18 独立列，K23 opt-in）
--- 二开日期：2026-10-21
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS executor_key TEXT;
 -- 格式约束：与 agents.key 同款小写蛇形（空 = 未声明执行器，K23）
 ALTER TABLE agents DROP CONSTRAINT IF EXISTS agents_executor_key_ck;
@@ -887,9 +895,12 @@ ALTER TABLE agents ADD CONSTRAINT agents_executor_key_ck
 -- 部分唯一索引：同一 executor_key 只能被一个 agent 声明（内置 agent 禁止声明，S2 三层校验兜底）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_executor_key ON agents(executor_key)
     WHERE executor_key IS NOT NULL;
-DROP TRIGGER IF EXISTS trg_agents_upd ON agents;
-CREATE TRIGGER trg_agents_upd BEFORE UPDATE ON agents
-    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- 功能介绍：agents 表加 planner_controlled——自定义 agent 的所有 custom intent 是否受 Planner 控制。
+--          true=保持现有 Planner 控制行为（默认值，兼容旧数据与旧导出）；false=该 Agent 的所有
+--          custom intent 均不受 Planner 控制。运行时读取 Agent 当前配置，已有 intent 同步生效。
+
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS planner_controlled BOOLEAN NOT NULL DEFAULT TRUE;
 
 CREATE TABLE IF NOT EXISTS agent_prompts (
     id            BIGSERIAL PRIMARY KEY,
@@ -917,9 +928,7 @@ CREATE TABLE IF NOT EXISTS agent_prompt_vars (
     UNIQUE (agent_id, var_name)
 );
 
--- =====================================================================
 -- F. MCP 服务
--- =====================================================================
 CREATE TABLE IF NOT EXISTS mcp_servers (
     id          BIGSERIAL PRIMARY KEY,
     name        TEXT NOT NULL UNIQUE,
@@ -961,9 +970,7 @@ CREATE TABLE IF NOT EXISTS mcp_tools_cache (
     UNIQUE (server_id, tool_name)
 );
 
--- =====================================================================
 -- G. 可见性：agent × mcp / skill
--- =====================================================================
 CREATE TABLE IF NOT EXISTS agent_visibility (
     agent_id      BIGINT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     resource_kind TEXT   NOT NULL CHECK (resource_kind IN ('mcp')),
@@ -1019,9 +1026,7 @@ CREATE TABLE IF NOT EXISTS tool_usage (
 CREATE INDEX IF NOT EXISTS idx_tool_usage_tool ON tool_usage(tool_key, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tool_usage_task ON tool_usage(task_id);
 
--- =====================================================================
 -- H. 内置工具目录
--- =====================================================================
 CREATE TABLE IF NOT EXISTS tools (
     key         TEXT PRIMARY KEY,
     system      BOOLEAN NOT NULL DEFAULT true,
@@ -1038,9 +1043,7 @@ DROP TRIGGER IF EXISTS trg_tools_upd ON tools;
 CREATE TRIGGER trg_tools_upd BEFORE UPDATE ON tools
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- =====================================================================
 -- I. 会话（对话页）
--- =====================================================================
 CREATE TABLE IF NOT EXISTS conversations (
     id             BIGSERIAL PRIMARY KEY,
     agent_key      TEXT NOT NULL,
@@ -1077,9 +1080,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_act ON conversation_activities(conversation_
 CREATE INDEX IF NOT EXISTS idx_conv_act_tool_call ON conversation_activities(conversation_id, tool_use_id, id)
   WHERE kind IN ('tool_use', 'tool_result');
 
--- =====================================================================
 -- J. Agent 触发器
--- =====================================================================
 CREATE TABLE IF NOT EXISTS agent_triggers (
     id                          BIGSERIAL PRIMARY KEY,
     agent_key                   TEXT NOT NULL,
@@ -1117,9 +1118,7 @@ CREATE TABLE IF NOT EXISTS scheduler_state (
     value TEXT NOT NULL DEFAULT ''
 );
 
--- =====================================================================
 -- K. 拦截规则
--- =====================================================================
 CREATE TABLE IF NOT EXISTS intercept_rules (
     id              BIGSERIAL PRIMARY KEY,
     name            TEXT NOT NULL,
@@ -1165,9 +1164,7 @@ ALTER TABLE intercept_pending ADD COLUMN IF NOT EXISTS decision_source TEXT NOT 
 UPDATE intercept_pending SET decision_source=CASE WHEN rule_id IS NOT NULL THEN 'rule'
  WHEN reason LIKE '[模型]%' THEN 'model' ELSE 'unknown' END WHERE decision_source='';
 
--- =====================================================================
 -- L. 漏洞发现持久化
--- =====================================================================
 CREATE TABLE IF NOT EXISTS findings (
     id          BIGSERIAL PRIMARY KEY,
     task_id     BIGINT REFERENCES tasks(id) ON DELETE SET NULL,
@@ -1283,9 +1280,7 @@ CREATE INDEX IF NOT EXISTS idx_finding_agent_invocations_pending
     ON finding_agent_invocations (COALESCE(last_retry_at, created_at))
     WHERE conversation_id IS NULL;
 
--- =====================================================================
 -- M. 后端日志持久化
--- =====================================================================
 CREATE TABLE IF NOT EXISTS server_logs (
     id         BIGSERIAL PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1338,7 +1333,6 @@ CREATE INDEX IF NOT EXISTS idx_side_requests_history ON side_question_requests(s
 ALTER TABLE side_question_sessions ADD COLUMN IF NOT EXISTS memory JSONB NOT NULL DEFAULT '{}';
 ALTER TABLE side_question_requests ADD COLUMN IF NOT EXISTS context_info JSONB NOT NULL DEFAULT '{}';
 
--- =====================================================================
 -- 资产拦截规则（全局黑名单）
 -- 独立于 §K 命令拦截(intercept_rules)：intercept_rules 匹配工具名/入参文本，
 -- 这张表匹配「目标资产」——全等/模糊的域名·IP·URL 以及 CIDR 网段。
@@ -1347,7 +1341,6 @@ ALTER TABLE side_question_requests ADD COLUMN IF NOT EXISTS context_info JSONB N
 --   exact_domain / exact_ip / exact_url  —— 全等匹配
 --   fuzzy_domain / fuzzy_ip / fuzzy_url  —— 模糊匹配
 --   cidr                                 —— CIDR 网段
--- =====================================================================
 CREATE TABLE IF NOT EXISTS asset_intercept_rules (
     id          BIGSERIAL PRIMARY KEY,
     enabled     BOOLEAN NOT NULL DEFAULT true,
@@ -1366,14 +1359,12 @@ DROP TRIGGER IF EXISTS trg_asset_intercept_rules_upd ON asset_intercept_rules;
 CREATE TRIGGER trg_asset_intercept_rules_upd BEFORE UPDATE ON asset_intercept_rules
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- =====================================================================
 -- 任务级资产拦截/允许规则
 -- 与全局 asset_intercept_rules 同构（kind/pattern/note/enabled），但按 task_id
 -- 关联、随任务级联删除；创建任务时录入、任务详情里可编辑。
 -- action: 'block'=拦截(禁止测试)  'allow'=允许(白名单)。
 -- 执行判定：先按 拦截规则(全局 ∪ 任务block) 匹配，命中即禁止；未命中且该任务存在
 -- 启用的 allow 规则时，须命中某条 allow 才放行，否则「不允许测试」。
--- =====================================================================
 CREATE TABLE IF NOT EXISTS task_intercept_rules (
     id          BIGSERIAL PRIMARY KEY,
     task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -1395,7 +1386,6 @@ DROP TRIGGER IF EXISTS trg_task_intercept_rules_upd ON task_intercept_rules;
 CREATE TRIGGER trg_task_intercept_rules_upd BEFORE UPDATE ON task_intercept_rules
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- =====================================================================
 -- M. 漏洞 IM 推送
 --
 -- 三张表刻意分开，核心是**爆炸半径**：写漏洞的那个事务(RecordFindingTx，
@@ -1405,7 +1395,6 @@ CREATE TRIGGER trg_task_intercept_rules_upd BEFORE UPDATE ON task_intercept_rule
 --   notification_channels   渠道实例配置(可变、含凭据、UI 管理)
 --   notification_events     事件事实(写漏洞事务内盲插，含渲染快照)
 --   notification_deliveries 投递任务(事务外 fan-out 产生，承载状态/重试/批次)
--- =====================================================================
 
 -- 渠道实例：同一 kind 可配任意多个(如「应急群」「日常群」各一个钉钉机器人)。
 -- kind 取值由 server 侧白名单校验，不加 CHECK：与 findings.status 同理，
@@ -1495,7 +1484,7 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
 
--- ═══ ARTEX 二开 · [审核流 PR2] 存量审核行迁移（幂等，启动时随 schema 一起执行）═══
+-- 【二开·审核流 PR2 存量审核行迁移】
 -- 老待审行（proposed + executor='review'）补 review_status 子状态：
 -- 已带 review_note 的视为「被驳回待修订」（rejected），其余为「待审」（pending）。
 -- 只触碰缺 review_status 键的行，重复执行无副作用。
@@ -1509,9 +1498,10 @@ SET payload = jsonb_set(payload::jsonb, '{review_status}', '"pending"', true)::j
 WHERE kind='intent' AND state='proposed' AND payload->>'executor'='review'
   AND payload->>'review_status' IS NULL;
 
+-- 【二开·P-SCENARIO·D5 task_scenarios 旧表清理】起 —— 平行实体已并入 task_categories，删旧表
 -- 【二开·P-SCENARIO·MERGE】task_scenarios 平行实体已合并进 task_categories（种子两列），旧表清理：
 DROP TABLE IF EXISTS task_scenarios;
--- 【二开·P-SCENARIO·D5】止
+-- 【二开·P-SCENARIO·D5 task_scenarios 旧表清理】止
 
 -- 内网渗透拓扑：备注表。旧读时投影表 task_topology_overrides 已下线，
 -- 存量数据由 db/migrate_topology.go 一次性搬进编辑器三表后 DROP。

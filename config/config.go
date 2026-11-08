@@ -177,7 +177,7 @@ func (d Database) buildDSN() string {
 	return u.String()
 }
 
-// String is a redacted view of the resolved DSN (password masked) for logging.
+// Redact returns a redacted view of the resolved DSN (password masked) for logging.
 func Redact(dsn string) string {
 	u, err := url.Parse(dsn)
 	if err != nil {

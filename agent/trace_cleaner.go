@@ -1,5 +1,8 @@
 // trace_cleaner.go：痕迹清理 Agent 的代码默认提示词。
 // 清理确认是对话级约束，不应被描述为平台强制审批。
+// 主要函数/类型：
+//   - TraceCleanerDefaultPrompt：预置 trace_cleaner Agent 的默认可编辑提示词。
+
 package agent
 
 // TraceCleanerDefaultPrompt 是预置 trace_cleaner Agent 的默认可编辑提示词。

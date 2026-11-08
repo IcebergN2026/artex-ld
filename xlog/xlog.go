@@ -4,18 +4,9 @@
 //   - Level / LevelString / SetLevel：读取与热切换当前日志级别。
 //   - Debugf / Infof / Warnf / Errorf：按级别前缀输出日志的便捷函数。
 //   - Oncef：同一 key 在时间窗内只记一次的节流日志。
-//
-// ═══ ARTEX 二开 · [P-LOG·H1 日志级别开关（xlog 包）] ═══
-// 功能介绍：全部二开日志的统一级别开关。ARTEX 原生只有标准库 log + logsink 关键词
-//
-//	定级，无 level 概念；本包以最小侵入提供四级日志（debug/info/warn/error）：
-//	  - 级别前缀 [DEBUG]/[INFO]/[WARN]/[ERROR]，logsink 优先解析前缀定级，
-//	    解析不到再走旧的关键词兜底（存量 370 处 log.Printf 行为不变）；
-//	  - 过滤阈值：settings 表 log_level 键（UI 热切换，立即生效）＞
-//	    环境变量 ARTEX_LOG_LEVEL ＞ ARTEX_DEBUG=1（等价 debug）＞ 默认 info；
-//	  - debug 级在过滤阈值之上时零输出、零落库（logsink/内存环/server_logs 都不进）。
-//
-// 二开日期：2026-10-21（H1）；2026-10-25 扩展四级 + 热切换（ARTEX-日志增强计划书 M0）
+// 【二开·P-LOG·H1 日志级别开关】级别前缀 [DEBUG]/[INFO]/[WARN]/[ERROR]，阈值取 settings.log_level ＞
+// ARTEX_LOG_LEVEL ＞ ARTEX_DEBUG=1（等价 debug）＞ 默认 info；debug 级零输出、零落库。
+
 package xlog
 
 import (

@@ -1,6 +1,7 @@
 // intent_admission.go：任务准入失败时对已创建人工意图的补偿删除。
 // 主要函数/类型：
 //   - DiscardOpenIntent：任务准入被拒时补偿性删除未进入执行的意图及其关联 activity。
+
 package db
 
 import "fmt"

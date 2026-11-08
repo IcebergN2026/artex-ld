@@ -147,9 +147,7 @@ type topologyStore interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-// ---------------------------------------------------------------------------
 // 纯函数：成环检测 / 入口选择 / 孤儿修补 / 私网过滤
-// ---------------------------------------------------------------------------
 
 // topologyWouldCycle reports whether adding src→dst to edges would close a
 // cycle (a self-loop always does). Incomplete endpoints are the caller's
@@ -389,9 +387,7 @@ func planTopologySeed(ips []string, findings []topologySeedFinding) ([]TopologyN
 	return nodes, edges
 }
 
-// ---------------------------------------------------------------------------
 // 校验小工具
-// ---------------------------------------------------------------------------
 
 func topologyFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
@@ -508,9 +504,7 @@ func topologyUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-// ---------------------------------------------------------------------------
 // 读取
-// ---------------------------------------------------------------------------
 
 func loadTopologyGroups(q topologyStore, taskID int64) ([]TopologyGroup, error) {
 	rows, err := q.Query(`SELECT id,name,x,y,width,height,color,updated_by,updated_at

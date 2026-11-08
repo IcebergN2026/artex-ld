@@ -7,8 +7,8 @@
 //   - TestConnection：实测端点连通性并返回耗时与诊断信息。
 
 // Package agent wires real LLM-driven planner and work agents (on top of the
-// agent-core SDK) to the dual SQLite graph. See ARCHITECTURE.md (repo root)
-// §4.3 (planner) and §4.4 (work agent).
+// agent-core SDK) to the dual PostgreSQL graph (assets + exploration). See
+// ARCHITECTURE.md (repo root) §3: 项目目录树与每个文件的职责.
 //
 // Provider configuration is read from the environment so the system runs with
 // any Anthropic- or OpenAI-format endpoint. If no key is configured, FromEnv
@@ -291,12 +291,12 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	return llm.NewProvider(lc)
 }
 
-// IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
-// billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
-// authentication failures, network errors, and server failures are excluded.
 var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
 var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
 
+// IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
+// billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
+// authentication failures, network errors, and server failures are excluded.
 func IsQuotaExhaustedMessage(message string) bool {
 	message = strings.ToLower(message)
 	// Authentication/authorization and provider-side 5xx failures never rotate,

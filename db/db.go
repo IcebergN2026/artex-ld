@@ -225,9 +225,9 @@ var builtinAgents = []builtinAgent{
 	{"auto", "Auto", "assistant", "平台操作助手：用工具管理任务(建/看/暂停/给提示)与资产，并可创建/修改 skill、自定义工具、MCP。", nil, false, nil},
 	// 渗透测试:内置「独立渗透」agent。经对话页驱动,一人从侦察到收尾走完整条渗透链,自己规划自己执行自己验证。默认开启交互式 shell。
 	{"pentest", "渗透测试", "assistant", "独立渗透 agent：一人从侦察→找攻击面→深入利用→验证→收尾走完整条链，自己规划、自己执行、自己对抗式验证。", nil, true, intp(0)},
-	// ═══ ARTEX 二开 · [P-AGENT·D6 内置review agent种子] ═══
+	// 【二开·P-AGENT·D6 内置review agent种子】
 	// 功能介绍：builtinAgents 追加 review 行——意图审核 agent（AI预审+人对话协作者），role=assistant 免 CHECK 迁移
-	// 二开日期：2026-10-21
+
 	{"review", "审核", "assistant", "意图审核 agent：AI 预审待审意图（proposed+executor=review 双条件，质量/重复/危险度/executor 适配）并与人对话整理优化点；写动作经按钮确认卡由人放行。", []promptVar{
 		{"Goal", "当前任务目标", "拿下 example.com 的管理员权限", "exploration"},
 	}, false, nil},
@@ -602,6 +602,14 @@ ON CONFLICT DO NOTHING`,
 	return d.SetSetting("intercept_default_rules_v2", "done")
 }
 
+// deleteEndpointPathPattern matches delete-endpoint paths regardless of the HTTP
+// method. The pattern deliberately requires a separator after the verb so
+// /delivery, /details, /delta and /delegate do not match, while /deleteAll,
+// /delete_user and /delete-user do. destroy is re-covered here because v1's rule
+// does not allow a suffix (/destroyAll was missed). Exported as a package const
+// only so the seeded regex is unit-testable without a DB.
+const deleteEndpointPathPattern = `(?i)/(?:(?:delete|remove|unlink|erase|destroy)[-\w]*|del)(?:[/?#"'\s]|$)`
+
 // seedDefaultInterceptRulesV3 adds the delete-endpoint path rule. The v1 HTTP rules
 // only catch the DELETE *method* (curl -X DELETE, requests.delete(, method:'DELETE'),
 // and v1's path rule covers only /clear /wipe /flush /purge /truncate /drop /destroy
@@ -609,15 +617,6 @@ ON CONFLICT DO NOTHING`,
 // delete endpoint reached with GET/POST, which is how most web apps expose deletion)
 // slipped through every built-in rule. Own flag so it also lands on DBs that already
 // ran v1/v2, where editing the v1 seed would have no effect.
-//
-// The pattern deliberately requires a separator after the verb so /delivery,
-// /details, /delta and /delegate do not match, while /deleteAll, /delete_user and
-// /delete-user do. destroy is re-covered here because v1's rule does not allow a
-// suffix (/destroyAll was missed).
-//
-// Exported as a package const only so the seeded regex is unit-testable without a DB.
-const deleteEndpointPathPattern = `(?i)/(?:(?:delete|remove|unlink|erase|destroy)[-\w]*|del)(?:[/?#"'\s]|$)`
-
 func (d *DB) seedDefaultInterceptRulesV3() error {
 	if v, _, _ := d.GetSetting("intercept_default_rules_v3"); v == "done" {
 		return nil

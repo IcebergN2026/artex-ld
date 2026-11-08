@@ -6,6 +6,7 @@
 //   - installTaskArchiveFiles / taskArchiveRestoreFiles：恢复时安装归档文件（支持 rollback/commit）。
 //   - recoverTaskArchiveStages / recoverTaskArchiveRestoreStages / recoverTaskArchiveDeletePackages：启动时恢复中断的暂存/恢复/删除流程。
 //   - writeArchiveJournal：写阶段日志，支撑崩溃恢复。
+
 package server
 
 import (

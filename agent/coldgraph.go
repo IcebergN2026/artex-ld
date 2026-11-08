@@ -5,6 +5,7 @@
 //   - computeStampOps：cold_since_round 记戳/清戳操作推导。
 //   - group / block：并查集分块（实边相连 + 同父单例救援），父节点只作锚不作成员。
 //   - blockSignature / unionFind：块内容签名与并查集实现。
+
 package agent
 
 // cold-digest §2/§3: pure graph algorithms for cold-node compression.

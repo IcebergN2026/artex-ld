@@ -4,6 +4,7 @@
 //   - SeverityRank / AtLeast：级别序数映射与「达到门槛」判定。
 //   - SeverityLabel / StatusLabel：级别与处置状态的中文（带 emoji）展示名。
 //
+
 // Package notify 实现漏洞发现的 IM / 邮件推送渠道适配层。
 //
 // 分层：本包是**叶子包**，只依赖标准库。它不认识数据库、不认识 server。渠道配置

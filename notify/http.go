@@ -4,6 +4,7 @@
 //   - notifyTransport / httpClient：带拨号拦截与超时设置的共享 HTTP 客户端。
 //   - blockInternalDial / isBlockedDialIP：连接建立时拒绝环回、链路本地等敏感地址段。
 //   - redactRequestTarget / redactTransportError / redactURLsInText：错误信息中的 URL/凭据脱敏。
+
 package notify
 
 import (
@@ -22,6 +23,11 @@ import (
 	"time"
 )
 
+// AllowLocalTargetsEnv 是 allowLocalTargets 的逃生口开关名（设为 1/true 即允许）。
+// 导出是为了让测试能明确地打开它——本包与 server 包的用例大量使用 127.0.0.1 上的
+// httptest 假接收端，不打开就全部被守卫拦下。
+const AllowLocalTargetsEnv = "ARTEX_NOTIFY_ALLOW_LOCAL"
+
 // allowLocalTargets 决定是否允许把消息投递到环回 / 链路本地地址。
 //
 // 默认拒绝。这几段地址不是 IM 机器人或公网邮件服务器会出现的地方，而它们能
@@ -34,11 +40,6 @@ import (
 // 但「本机 SMTP 中继」（127.0.0.1:25 上的 postfix）是自建邮件的常见配置，
 // 一刀切会把人卡住。所以留一个显式逃生口而不是硬编码放行：
 // 设置 ARTEX_NOTIFY_ALLOW_LOCAL=1 即允许。
-//
-// 导出为 AllowLocalTargetsEnv 是为了让测试能明确地打开它——本包与 server 包的
-// 用例大量使用 127.0.0.1 上的 httptest 假接收端，不打开就全部被守卫拦下。
-const AllowLocalTargetsEnv = "ARTEX_NOTIFY_ALLOW_LOCAL"
-
 func allowLocalTargets() bool {
 	v := strings.TrimSpace(os.Getenv(AllowLocalTargetsEnv))
 	return v == "1" || strings.EqualFold(v, "true")

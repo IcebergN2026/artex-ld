@@ -4,6 +4,7 @@
 //   - EstimateInputTokens / outputBudget / inputBudget：估算输入规模并分配输出/输入预算。
 //   - assemble / exchangeMessages：把快照、摘要与历史问答拼成请求消息。
 //   - BuildRequest：基于不可变快照与历史构建旁路 CompletionRequest（超限则报错）。
+
 package sidequestion
 
 import (

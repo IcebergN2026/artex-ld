@@ -4,16 +4,17 @@
 //   - pgSendConversationMessage / runConversationTurn：发送消息并驱动一轮会话执行。
 //   - StartTriggeredRun / pumpLocked / nextTriggerRun：触发入队与按并发、合并策略调度执行。
 //   - mergeTriggeredRuns / mergeAllRuns：同任务 / 全队列多条触发合并为一次运行。
+
 package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,8 @@ import (
 	"artex/db"
 	"artex/intercept"
 	"artex/sidequestion"
+	"artex/xlog"
+	"norma/harness"
 )
 
 const (
@@ -30,20 +33,6 @@ const (
 	maxConversationAgentKeyRunes = 120
 	maxConversationTitleRunes    = 200
 )
-
-func decodeConversationRequest(w http.ResponseWriter, r *http.Request, value any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxConversationRequestBytes)
-	if err := decode(r, value); err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			writeErr(w, http.StatusRequestEntityTooLarge, "请求正文过大")
-		} else {
-			writeErr(w, http.StatusBadRequest, err.Error())
-		}
-		return false
-	}
-	return true
-}
 
 // ---------- conversations (chat page) ----------
 //
@@ -86,7 +75,7 @@ func (s *Server) pgCreateConversation(w http.ResponseWriter, r *http.Request) {
 		Title        string `json:"title"`
 		LLMProfileID *int64 `json:"llm_profile_id"`
 	}
-	if !decodeConversationRequest(w, r, &req) {
+	if !decodeJSON(w, r, &req, maxConversationRequestBytes) {
 		return
 	}
 	req.AgentKey = strings.TrimSpace(req.AgentKey)
@@ -137,7 +126,7 @@ func (s *Server) pgUpdateConversation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		LLMProfileID *int64 `json:"llm_profile_id"` // null clears the override
 	}
-	if !decodeConversationRequest(w, r, &req) {
+	if !decodeJSON(w, r, &req, maxConversationRequestBytes) {
 		return
 	}
 	if req.LLMProfileID != nil {
@@ -185,7 +174,7 @@ func (s *Server) pgRenameConversation(w http.ResponseWriter, r *http.Request) {
 		Title  *string `json:"title"`
 		Pinned *bool   `json:"pinned"`
 	}
-	if !decodeConversationRequest(w, r, &req) {
+	if !decodeJSON(w, r, &req, maxConversationRequestBytes) {
 		return
 	}
 	if req.Title == nil && req.Pinned == nil {
@@ -259,7 +248,7 @@ func (s *Server) pgDeleteConversationsBatch(w http.ResponseWriter, r *http.Reque
 	var request struct {
 		IDs []int64 `json:"ids"`
 	}
-	if !decodeConversationRequest(w, r, &request) {
+	if !decodeJSON(w, r, &request, maxConversationRequestBytes) {
 		return
 	}
 	ids := make([]int64, 0, len(request.IDs))
@@ -400,8 +389,7 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 		Message     string           `json:"message"`
 		Attachments []chatAttachment `json:"attachments,omitempty"` // 方式1 上传的文件(路径相对会话工作目录)
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, err.Error())
+	if !decodeJSON(w, r, &req, maxConversationRequestBytes) {
 		return
 	}
 	msg := strings.TrimSpace(req.Message)
@@ -469,13 +457,13 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 // conversation_activities. Shared by the chat HTTP handler and the P3 scheduler.
 // busyKey clears when the run ends (best-effort in-flight marker).
 func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMessage ...string) {
-	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
+	ctx, cancel := s.conversationRunContext(s.ctx, c.ID, busyKey)
 	// Only the human-message handler supplies this field, before adding the
 	// attachment manifest. Scheduler/retest prompts must not be labelled as users.
 	if len(userMessage) == 1 {
 		ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: userMessage[0]})
 	}
-	go s.runConversationTurn(ctx, cancel, c, msg, busyKey, 0)
+	go s.runConversationTurn(ctx, cancel, c, msg, busyKey, 0, "")
 }
 
 // runConversationSync runs ONE agent turn on a conversation and BLOCKS until the
@@ -484,31 +472,39 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 // for completion before starting the next queued fire for the same agent.
 // taskID>0 marks a trigger run: the turn's tools then resolve against that task's
 // exploration graph (record_fact & friends become usable for custom agents).
-func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, taskID int64) {
-	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
-	s.runConversationTurn(ctx, cancel, c, msg, busyKey, taskID)
+func (s *Server) runConversationSync(parent context.Context, c *db.Conversation, msg, busyKey string, taskID int64, executorKey string) {
+	ctx, cancel := s.conversationRunContext(parent, c.ID, busyKey)
+	s.runConversationTurn(ctx, cancel, c, msg, busyKey, taskID, executorKey)
 }
 
 // Register cancellation before returning 202, so an immediate stop/delete cannot
 // miss a background goroutine which has not started yet.
-func (s *Server) conversationRunContext(id int64, busyKey string) (context.Context, context.CancelCauseFunc) {
+func (s *Server) conversationRunContext(parent context.Context, id int64, busyKey string) (context.Context, context.CancelCauseFunc) {
 	// Per-run cancellable context so a manual stop (pgStopConversation) can abort
 	// just this session. Registered under chatMu so the stop handler can find it.
-	ctx, cancel := context.WithCancelCause(intercept.WithConvID(s.ctx, id))
+	ctx, cancel := context.WithCancelCause(intercept.WithConvID(parent, id))
 	s.chatMu.Lock()
 	s.chatCancel[busyKey] = cancel
 	s.chatMu.Unlock()
 	return ctx, cancel
 }
 
-func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string, taskID int64) {
+func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string, taskID int64, executorKey string) {
 	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[conversation] turn PANIC conv=%d: %v\n%s", c.ID, r, debug.Stack())
+		}
 		cancel(agent.AbortChatTurnFinished)
 		s.chatMu.Lock()
 		delete(s.chatBusy, busyKey)
 		delete(s.chatCancel, busyKey)
 		s.chatMu.Unlock()
 	}()
+	var runReason harness.TerminalReason
+	var runErr error
+	if executorKey != "" {
+		defer func() { s.settlePreAgentConversation(ctx, taskID, executorKey, runReason, runErr) }()
+	}
 	// Trigger runs (taskID>0) carry the task id into tool assembly so injected
 	// domain tools bind to the task's exploration store instead of refusing.
 	if taskID > 0 {
@@ -573,16 +569,67 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	}
 	// On a manual stop ctx is cancelled; Chat already emits a clean "已手动停止"
 	// step, so skip the raw-error entry — only surface genuine failures.
-	if _, err := ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit); err != nil {
-		finishReason = err.Error()
+	_, runReason, runErr = ca.Chat(ctx, c.AgentKey, sessionID, msg, maxTurns, maxDuration, webSearch, emit)
+	if runErr != nil {
+		finishReason = runErr.Error()
 		if ctx.Err() == nil {
 			_, _ = pg.AppendConvActivity(c.ID, db.Activity{Worker: c.AgentKey, Kind: "text", IsError: true,
-				Summary: "（出错：" + err.Error() + "）", Detail: err.Error()})
+				Summary: "（出错：" + runErr.Error() + "）", Detail: runErr.Error()})
 		}
 	} else {
 		finishStatus, finishReason = "completed", ""
 	}
 	_ = pg.TouchConversation(c.ID)
+}
+
+// settlePreAgentConversation 只结算本对话已领取的 pre_agent 种子。
+// proposed/open 未领取是合法无匹配退出；running 才按真实 TerminalReason 落终态。
+func (s *Server) settlePreAgentConversation(ctx context.Context, taskID int64, executorKey string, reason harness.TerminalReason, runErr error) {
+	t, ok := s.m.Task(strconv.FormatInt(taskID, 10))
+	if !ok || t == nil || t.Store == nil {
+		return
+	}
+	target := terminalStateForIntent(true, reason, runErr)
+	if taskExecutionPaused(context.Cause(ctx)) || s.engine.IsPaused(t.ID) {
+		target = "proposed"
+	} else if ctx.Err() != nil && s.engine.isSettling(t.ID) {
+		target = "exhausted"
+	} else if ctx.Err() != nil {
+		target = "stopped"
+	}
+	owner := "exec:" + executorKey
+	for {
+		seed, err := t.Store.CustomSeedIntent(executorKey)
+		if err != nil {
+			xlog.Oncef("pre-agent-settle-read-"+t.ID, 5*time.Minute, xlog.LevelError,
+				"[executor] task %s 读取已领取种子失败: %v", t.ID, err)
+			if sleepCtx(ctx, 800*time.Millisecond) {
+				return
+			}
+			continue
+		}
+		if seed == nil || seed.State != "running" || seed.Owner != owner {
+			return
+		}
+		changed, err := t.Store.CompareAndSetIntentState(seed.ID, "running", target)
+		if err != nil {
+			xlog.Oncef("pre-agent-settle-write-"+t.ID, 5*time.Minute, xlog.LevelError,
+				"[executor] task %s 种子 #%d 结算为 %s 失败: %v", t.ID, seed.ID, target, err)
+			if sleepCtx(ctx, 800*time.Millisecond) {
+				return
+			}
+			continue
+		}
+		if !changed {
+			return
+		}
+		log.Printf("[executor] task %s 对话型 Agent 结算首个意图 #%d：%s", t.ID, seed.ID, target)
+		s.engine.touch(t.ID)
+		if target == "done" || !s.engine.isUncontrolledByPlanner(seed) {
+			t.NotifyDone(seed.ID)
+		}
+		return
+	}
 }
 
 // triggerBehavior is an agent's cached P3 trigger post-processing策略 (see the
@@ -667,7 +714,7 @@ func (s *Server) pumpLocked(agentKey string) {
 // runAndPump runs one fire to completion, then decrements the active counter and
 // re-pumps to fill the freed slot (cleaning up the agent's maps when fully idle).
 func (s *Server) runAndPump(agentKey string, item triggeredRun) {
-	s.runTriggeredRun(item)
+	_ = s.runTriggeredRun(s.ctx, item)
 	s.queueMu.Lock()
 	s.triggerActive[agentKey]--
 	if s.triggerActive[agentKey] <= 0 && len(s.triggerQ[agentKey]) == 0 {
@@ -819,13 +866,13 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 	}
 }
 
-// runTriggeredRun creates the conversation for one queued fire, records the human
-// turn, and runs it synchronously (blocks until the run ends). recover keeps a
-// panic from killing the drain loop and wedging the agent's queue.
-func (s *Server) runTriggeredRun(item triggeredRun) {
+// runTriggeredRun creates the conversation for one fire, records the human
+// turn, and runs it synchronously. The parent context also controls pre_agent task cancellation.
+func (s *Server) runTriggeredRun(ctx context.Context, item triggeredRun) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[trigger] run for %s panicked: %v", item.agentKey, r)
+			err = fmt.Errorf("trigger conversation panic: %v", r)
 		}
 	}()
 	// 【二开·P-LOG·O3】INFO 记会话启动（排障：触发器起来了没有）。
@@ -834,7 +881,7 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 	c, err := pg.CreateConversation(item.agentKey, firstLine(item.title, 60), nil)
 	if err != nil {
 		log.Printf("[trigger] create conversation for %s failed: %v", item.agentKey, err)
-		return
+		return err
 	}
 	for _, in := range item.invocations {
 		if err := pg.SetFindingInvocationConversation(in.agentKey, in.findingID, c.ID); err != nil {
@@ -849,7 +896,84 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 	s.chatMu.Lock()
 	s.chatBusy[busyKey] = true
 	s.chatMu.Unlock()
-	s.runConversationSync(c, msg, busyKey, item.taskID)
+	s.runConversationSync(ctx, c, msg, busyKey, item.taskID, item.executorKey)
+	return nil
+}
+
+// preAgentTaskCreateMessages 读取新任务首个意图要合并的 on_task_create 消息。
+// 恢复任务不重放创建事件；查询错误退避重试，避免错误被当成未配置而双跑。
+func (s *Server) preAgentTaskCreateMessages(ctx context.Context, t *Task, agentKey string) ([]string, error) {
+	if t.PreAgentRestored {
+		return nil, nil
+	}
+	for {
+		enabled, err := s.engine.hasOnTaskCreateTrigger(t.PreAgent)
+		if err == nil && !enabled {
+			return nil, nil
+		}
+		if err == nil {
+			var triggers []*db.AgentTrigger
+			triggers, err = s.m.pg.ListTriggersFor(agentKey)
+			if err == nil {
+				messages := make([]string, 0, len(triggers))
+				for _, tr := range triggers {
+					if tr.Enabled && tr.OnTaskCreate {
+						messages = append(messages, tr.TaskCreateMessage+"\n\n【本次由任务创建触发】")
+					}
+				}
+				return messages, nil
+			}
+		}
+		xlog.Oncef("pre-agent-trigger-"+t.ID, 5*time.Minute, xlog.LevelError,
+			"[executor] task %s 查询 on_task_create 失败: %v", t.ID, err)
+		if sleepCtx(ctx, 800*time.Millisecond) {
+			return nil, context.Cause(ctx)
+		}
+	}
+}
+
+// runPreAgentConversation 通过真实 Conversation/ChatAgent 执行首个种子。
+// Agent.Key 选择会话、提示词和 LLM；executor_key 仅作为 canonical 领取身份。
+func (s *Server) runPreAgentConversation(ctx context.Context, t *Task) (bool, error) {
+	if t == nil || t.Store == nil || t.PreAgent == "" {
+		return false, fmt.Errorf("pre_agent task is not configured")
+	}
+	a, err := s.engine.resolveExecutor(t.PreAgent)
+	if err != nil {
+		return false, err
+	}
+	seed, err := t.Store.CustomSeedIntent(t.PreAgent)
+	if err != nil {
+		return false, err
+	}
+	if seed == nil || (seed.State != "proposed" && seed.State != "open") {
+		return false, nil
+	}
+	messages, err := s.preAgentTaskCreateMessages(ctx, t, a.Key)
+	if err != nil {
+		return false, err
+	}
+	var message strings.Builder
+	for _, msg := range messages {
+		message.WriteString(msg)
+		message.WriteString("\n\n")
+	}
+	fmt.Fprintf(&message, "【首个意图执行协议】调用 list_intents(states=[\"proposed\",\"open\"])，核对意图 id=%d 且 payload.executor=%q；随后调用 claim_executor_intent(%d) 领取，确认 owner=exec:%s。只执行这一条意图并写回事实/发现，真正完成后给出结论。无匹配时直接结束，不修改状态，不启动或请求默认 Worker。", seed.ID, t.PreAgent, seed.ID, t.PreAgent)
+	taskID, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	item := triggeredRun{
+		agentKey: a.Key, title: fmt.Sprintf("首个意图 · task#%d", taskID), message: message.String(),
+		taskID: taskID, taskDesc: t.Description, taskGoal: t.Goal, executorKey: t.PreAgent,
+	}
+	runErr := s.runTriggeredRun(ctx, item)
+	seed, readErr := t.Store.CustomSeedIntent(t.PreAgent)
+	if readErr != nil {
+		return false, readErr
+	}
+	claimed := seed != nil && seed.Owner == "exec:"+t.PreAgent
+	return claimed, runErr
 }
 
 // firstLine returns a single-line, length-capped preview (shared with summaries).
