@@ -33,7 +33,7 @@
 - `pre_agent` 新任务将匹配 Agent 的启用 `on_task_create` 消息合并进首个 Conversation，Scheduler 不再重复启动同一 Agent；blocked/exhausted/stopped 保留现场并等待人工重跑，批量接口扩大为 `/intents/rerun-recoverable`。
 - Agent 编辑器开关更名为“不受 Planner 控制”，点击立即通过配置 API 保存，保存中防重入、失败回滚，不再要求额外点击“保存配置”；刷新后状态与服务端一致。普通“保存配置”不再提交该字段，避免页面加载时的旧值把刚选择的 false 覆盖为 true。
 
-## [0.1.5] - 2026-11-07
+## [0.1.5] - 2026-11-08
 
 ### 首个意图与 Agent 编排
 
