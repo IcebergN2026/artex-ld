@@ -635,14 +635,21 @@ function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean
   );
 }
 
-// AnswerBlock renders the agent's FINAL answer (kind="result") in full — never
-// collapsed. The summary is a truncated first line, so the full text is pulled
-// from the detail and shown inline.
+// AnswerBlock renders the agent's FINAL answer (kind="result"). In the chat view it
+// IS the assistant's reply — always shown in full. In replay views (trajectory tab /
+// non-main session lanes) `collapsible` folds it into a one-line summary row, default
+// collapsed like thinking/tool blocks, so a long planner result doesn't push the rest
+// of the timeline off screen; expanding lazy-loads the full text.
 function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: number) => Promise<string> }) {
+  collapsible = false,
+  /** true=回放视图:默认折叠为一行摘要,点击展开全文;对话视图保持全文常开。 */
+  collapsible?: boolean;
+  const [open, setOpen] = React.useState(!collapsible);
   const [ref, inView] = useInView();
   const [full, setFull] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (!inView) return; // fetch the full answer only when it nears view
+    if (!open) return; // folded row: defer the fetch until actually expanded
     let live = true;
     getDetail(step.seq)
       .then((d) => {
@@ -668,8 +675,40 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
         ) : (
           <Markdown text={full ?? step.summary} />
         )}
+        {content}
+        <ActivityTime ts={step.ts} />
       </div>
-      <ActivityTime ts={step.ts} />
+    );
+  }
+  return (
+    <div ref={ref} className="mb-2 mt-1 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40"
+        title={open ? "收起结果全文" : "展开结果全文"}
+      >
+        <span className="mt-0.5 text-muted-foreground">
+          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        </span>
+        <Flag
+          className={
+            "mt-0.5 size-3.5 shrink-0 " + (step.is_error ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400")
+          }
+        />
+        {showWorker && <span className={chip(step.worker)}>{step.worker}</span>}
+        {showWorker && intentTag(step.intent_id)}
+        <span className={"min-w-0 flex-1 truncate " + (step.is_error ? "text-red-600 dark:text-red-400" : "")}>
+          {step.summary}
+        </span>
+        <span className="shrink-0 text-[10px] text-muted-foreground">{kindLabel("result")}</span>
+      </button>
+      {open && (
+        <div className="mt-0.5 mb-1 flex min-w-0 flex-col gap-1">
+          {content}
+          <ActivityTime ts={step.ts} />
+        </div>
+      )}
     </div>
   );
 }
