@@ -77,6 +77,10 @@ function WorkerChip({ worker }: { worker: string }) {
   );
 }
 
+    </span>
+  );
+}
+
 // useInView latches true when the ref'd element first comes within `rootMargin` of
 // the enclosing scroll viewport. Blocks that always show their full body (user
 // bubbles, answers) use it to defer fetching that body until they're about to be
