@@ -52,6 +52,31 @@ function workerColor(name: string): string {
 const chip = (worker: string) =>
   "mt-0.5 shrink-0 rounded px-1 text-[9px] font-medium text-white " + workerColor(worker);
 
+// workerLabel maps the raw worker key to a short display name (same mapping as the
+// trajectory tab's filter chips); unknown keys pass through, empty → 未知.
+export function workerLabel(name: string): string {
+  if (name === "mainagent") return "主 Agent";
+  if (name === "planner") return "规划";
+  if (name === "review") return "审核";
+  if (name === "system") return "系统";
+  if (name === "user") return "用户";
+  const m = /^work#(\d+)$/.exec(name);
+  if (m) return `Worker ${m[1]}`;
+  return name || "未知";
+}
+
+// WorkerChip is the per-agent lane chip: lane color + short Chinese label,
+// title = raw worker key (planner / work#3 …) so the exact executor stays
+// inspectable on hover. Rendered when a view mixes agents, or always in the
+// merged trajectory view (showWorkers).
+function WorkerChip({ worker }: { worker: string }) {
+  return (
+    <span className={chip(worker)} title={worker}>
+      {workerLabel(worker)}
+    </span>
+  );
+}
+
 // useInView latches true when the ref'd element first comes within `rootMargin` of
 // the enclosing scroll viewport. Blocks that always show their full body (user
 // bubbles, answers) use it to defer fetching that body until they're about to be
@@ -474,7 +499,7 @@ function ToolBlock({
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
         <ToolIcon className={"mt-0.5 size-3.5 shrink-0 " + (running ? "text-sky-600 dark:text-sky-400" : statusTone)} />
-        {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
+        {showWorker && <WorkerChip worker={group.worker} />}
         <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">{toolName}</span>
         {cmd && <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{cmd}</span>}
         <span className={"ml-auto shrink-0 font-medium " + statusTone}>{statusText}</span>
@@ -542,7 +567,7 @@ function MessageBlock({
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
         <Icon className={"mt-0.5 size-3.5 shrink-0 " + tone} />
-        {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
+        {showWorker && <WorkerChip worker={group.worker} />}
         <span className={"min-w-0 flex-1 truncate " + tone}>
           {body}
           {hasThinking && <span className="ml-1 text-[10px] text-muted-foreground">· 含推理</span>}
@@ -696,7 +721,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
             "mt-0.5 size-3.5 shrink-0 " + (step.is_error ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400")
           }
         />
-        {showWorker && <span className={chip(step.worker)}>{step.worker}</span>}
+        {showWorker && <WorkerChip worker={step.worker} />}
         {showWorker && intentTag(step.intent_id)}
         <span className={"min-w-0 flex-1 truncate " + (step.is_error ? "text-red-600 dark:text-red-400" : "")}>
           {step.summary}
@@ -716,21 +741,24 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
 // ExecView renders an agent execution replay (planner / worker / main agent) in
 // the compact, grouped, expand-to-detail format — thinking, tool calls/results,
 // and (for the main agent) the human turns. Worker lane chips show only when the
-// view actually mixes agents.
+// view actually mixes agents, unless `showWorkers` forces them (merged trajectory
+// view: per-row attribution is its whole point, even when only one agent ran yet).
 function ExecView({
   activity,
   taskId,
   chat,
   fetchDetail,
   focusedSeq,
+  showWorkers,
 }: {
   activity: Activity[];
   taskId?: string;
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
   focusedSeq?: number;
+  showWorkers?: boolean;
 }) {
-  const showWorker = new Set(activity.map((a) => a.worker)).size > 1;
+  const showWorker = !!showWorkers || new Set(activity.map((a) => a.worker)).size > 1;
   // default detail fetcher: the task-scoped activity endpoint. The chat page passes
   // its own (conversation-scoped) fetcher instead.
   const getDetail = React.useCallback(
@@ -778,6 +806,7 @@ export function Transcript({
   chat,
   fetchDetail,
   focusedSeq,
+  showWorkers,
 }: {
   activity: Activity[];
   live?: boolean;
@@ -785,6 +814,8 @@ export function Transcript({
   chat?: boolean;
   fetchDetail?: (seq: number) => Promise<string>;
   focusedSeq?: number;
+  /** true=每行强制显示执行者 chip(合并轨迹视图);缺省=仅混排多 agent 时显示。 */
+  showWorkers?: boolean;
 }) {
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const [focusPadding, setFocusPadding] = React.useState(0);
@@ -800,7 +831,14 @@ export function Transcript({
   }, [focusedSeq]);
   return (
     <div ref={transcriptRef} className="flex flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
-      <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} />
+      <ExecView
+        activity={activity}
+        taskId={taskId}
+        chat={chat}
+        fetchDetail={fetchDetail}
+        focusedSeq={focusedSeq}
+        showWorkers={showWorkers}
+      />
       {live && (
         <div className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
           <span className="flex gap-1">
