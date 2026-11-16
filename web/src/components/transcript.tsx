@@ -81,6 +81,10 @@ function WorkerChip({ worker }: { worker: string }) {
   );
 }
 
+    </span>
+  );
+}
+
 // useInView latches true when the ref'd element first comes within `rootMargin` of
 // the enclosing scroll viewport. Blocks that always show their full body (user
 // bubbles, answers) use it to defer fetching that body until they're about to be
@@ -610,7 +614,17 @@ function parseUserBody(body: string): { text: string; attachments: MsgAttachment
   return { text: body, attachments: [] };
 }
 
-function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean; getDetail: (seq: number) => Promise<string> }) {
+function UserRow({
+  step,
+  intent,
+  getDetail,
+  showWorker,
+}: {
+  step: Activity;
+  intent?: boolean;
+  getDetail: (seq: number) => Promise<string>;
+  showWorker?: boolean;
+}) {
   const Icon = intent ? CrosshairIcon : UserIcon;
   const [ref, inView] = useInView();
   // Optimistic echoes carry their detail inline; persisted rows lazy-load it on scroll.
@@ -673,6 +687,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   collapsible = false,
   /** true=回放视图:默认折叠为一行摘要,点击展开全文;对话视图保持全文常开。 */
   collapsible?: boolean;
+}) {
   const [open, setOpen] = React.useState(!collapsible);
   const [ref, inView] = useInView();
   const [full, setFull] = React.useState<string | null>(null);
@@ -693,6 +708,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   }, [inView, step.seq, getDetail, step.summary]);
   return (
     <div ref={ref} className="mb-2 mt-1 flex min-w-0 flex-col gap-1">
+      )}
       <div
         className={
           "min-w-0 flex-1 break-words rounded-lg bg-muted px-3 py-2 " +
