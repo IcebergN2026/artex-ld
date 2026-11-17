@@ -2,7 +2,7 @@
 
 # artex-ld
 
-当前版本：**0.1.5**；Release 名称：**artex-ld 0.1.5**；Git Tag：**v0.1.5**。
+当前版本：**0.1.6**；Release 名称：**artex-ld 0.1.6**；Git Tag：**v0.1.6**。
 
 基于 [ARTEX](https://github.com/autumn27/artex) v0.3.15+ 的二次开发版本：AI 自主渗透测试平台。
 在原有「planner-worker 自主推进」基础上，新增四个可控点：**场景可配**（任务分类/模板/种子意图）、**意图可审**（AI 预审 + 人工批准/驳回）、**执行者可指定**（自定义 agent 执行意图）、**finding 可编排**（触发器自动派生子任务/写报告/复测）。所有增强默认关闭，不使用则行为与原版一致。
@@ -16,12 +16,12 @@
 ```bash
 # 1. 新建目录并下载 Release 部署包
 mkdir artex && cd artex
-wget https://github.com/IcebergN2026/artex-ld/releases/download/0.1.5/artex-0.1.5-linux-amd64.deploy.tar.gz
+wget https://github.com/IcebergN2026/artex-ld/releases/download/0.1.6/artex-0.1.6-linux-amd64.deploy.tar.gz
 
-# 2. 解压并一键安装（自动注册 systemd 服务、初始化数据库）
-tar xzf artex-0.1.5-linux-amd64.deploy.tar.gz
+# 2. 解压并一键安装（初始化数据库；不注册/代建任何系统服务）
+tar xzf artex-0.1.6-linux-amd64.deploy.tar.gz
 chmod +x install.sh
-sudo bash install.sh --server artex-0.1.5-linux-amd64.deploy.tar.gz
+sudo bash install.sh --server artex-0.1.6-linux-amd64.deploy.tar.gz
 ```
 
 ### 方式二：Docker Compose（从源码构建）
@@ -70,6 +70,22 @@ export ARTEX_PG_DSN='postgres://artex:密码@127.0.0.1:5432/artex?sslmode=disabl
 | **GodzillaSuper** | webshell 管理 + 立足点实连验证（`shell_list` / `shell_test`），trace_cleaner 依赖 | [Xaaaa-bip/GodzillaSuper](https://github.com/Xaaaa-bip/GodzillaSuper) | 需 Java 17+，从其 Releases 下载 `gsl5.jar`：`java -jar gsl5.jar mcp 9123 127.0.0.1`，SSE 地址 `http://127.0.0.1:9123/sse` |
 | **Playwright MCP** | 浏览器操作（资产探测、截图取证） | [microsoft/playwright-mcp](https://github.com/microsoft/playwright-mcp) | `npx @playwright/mcp --headless` |
 | **ScopeSentry** | 资产测绘同步 | [DoubleShark/ScopeSentry](https://github.com/DoubleShark/ScopeSentry) | 见其 README（Docker 部署），HTTP 方式接入，API Key 在 ScopeSentry 侧生成 |
+
+## 外网侦察 Agent（external-pentest-recon）
+
+仓库内新增外网侦察 Skill 与配套会话型 agent（`recon_scout`），用于授权范围内的外网前期侦察（OSINT / footprinting）。
+
+- **六阶段流程**：S0 准备与初始化 → S1 业务调研（OSINT）→ S2 被动侦察 → S3 主动侦察 → S4 敏感发现 → S5 报告与验收；S0/S1/S5 各执行一次，S2–S4 由待处理队列驱动多轮批次循环，新资产按 A/B/C 分级收敛后扩张攻击面。
+- **授权门禁**：被动侦察可随任务启动进入；主动探活、端口/目录扫描、爬取必须显式全流程授权；新增 CIDR、裸 IP、新根域各自独立授权门，未授权不执行。
+- **只生成事实**：`recon_scout` 经 Skill 工具执行，资产用 `insert_assets` 逐批回写并登记真实回执，结论用 `record_fact` 写入；不创建 intent/hint，触发后输出建议的首个侦察意图配置供 planner/main agent 采纳。
+- **产物**：业务画像、资产 CSV、敏感发现清单（critical 立即披露与可恢复检查点）、摘要报告。
+- **依赖与 key**：首次使用执行 `krun --check` 自检，失败按 `install_toolchain.sh` 确定性修复；`config/api_keys.yaml` 仅模板，按需填写 FOFA / Shodan / Serper / GitHub / Hunter / Quake / ZoomEye 等 key（不要提交真实 key）。
+
+安装方式：
+
+1. 将 `agents/外网侦察/external-pentest-recon/` 作为 Skill 导入（或放入 `skill_dir`，例如 `skills/`）。
+2. 在「系统 → Agent」用 `agents/外网侦察/recon-agent-prompt（外网侦察agent提示词）.md` 创建自定义 agent，收尾提示词为其配套。
+3. 细节见 [`SKILL.md`](agents/外网侦察/external-pentest-recon/SKILL.md) 与 [`README`](agents/外网侦察/README.md)。
 
 ## 文档
 
