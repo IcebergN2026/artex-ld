@@ -19,7 +19,9 @@ import (
 	"strings"
 )
 
+// =====================================================================
 // 统一资产表
+// =====================================================================
 
 // Asset is a row in the assets table.
 type Asset struct {
@@ -54,6 +56,9 @@ type Asset struct {
 	ContentLength *int64           `json:"content_length,omitempty"`
 	PageTitle     string           `json:"page_title,omitempty"`
 	Technologies  []string         `json:"technologies,omitempty"`
+	// Auth 是脱敏凭据投影（由 populateAuth 从 asset_credentials/links 回填），每项含
+	// id/type/username/domain/relation/target/description/created_at/last_seen；
+	// relation ∈ discovered|verified。读取路径永不包含 secret。
 	Auth          []map[string]any `json:"auth,omitempty"`
 	// endpoint fields
 	Method string           `json:"method,omitempty"`
@@ -64,15 +69,6 @@ type Asset struct {
 	TaskSource        string         `json:"task_source,omitempty"`
 	TaskSourceSummary string         `json:"task_source_summary,omitempty"`
 	TaskSourceNodeID  *int64         `json:"task_source_node_id,omitempty"`
-}
-
-// AuthItem is one entry in the auth array.
-type AuthItem struct {
-	Type        string `json:"type,omitempty"`
-	Username    string `json:"username,omitempty"`
-	Password    string `json:"password,omitempty"`
-	Token       string `json:"token,omitempty"`
-	Description string `json:"description,omitempty"`
 }
 
 // ParamItem is one entry in the params array.
@@ -103,6 +99,11 @@ func (d *DB) Assets() *AssetStore {
 
 // Companies returns the company store associated with this asset store.
 func (s *AssetStore) Companies() *CompanyStore { return s.company }
+
+// populateAuth 批量回填资产的脱敏凭据（discovered/verified 关系），失败时返回错误。
+func (s *AssetStore) populateAuth(assets []*Asset) error {
+	return s.Credentials().PopulateAuth(assets)
+}
 
 // withCompanyScopeMutation serializes scope resolution and every asset write
 // that consumes its result in one transaction. Nested asset side effects reuse
@@ -137,7 +138,9 @@ func (s *AssetStore) resolveCompanyWithICP(rootDomain, ipStr, icp string) (*int6
 	return s.company.ResolveCompanyWithICP(rootDomain, ipStr, icp)
 }
 
+// =====================================================================
 // Helpers
+// =====================================================================
 
 // calcCSegment computes the /24 (IPv4) or /48 (IPv6) network for an IP string.
 func calcCSegment(ipStr string) string {
@@ -244,7 +247,9 @@ func nullableInt(v int) interface{} {
 	return v
 }
 
+// =====================================================================
 // UpsertRootDomain
+// =====================================================================
 
 // UpsertRootDomainReq is the input for UpsertRootDomain.
 type UpsertRootDomainReq struct {
@@ -324,7 +329,9 @@ func ValidateAssetIP(value string) error {
 		ErrAssetIPInvalid, value)
 }
 
+// =====================================================================
 // UpsertIP
+// =====================================================================
 
 // UpsertIPReq is the input for UpsertIP.
 type UpsertIPReq struct {
@@ -435,7 +442,9 @@ WHERE type = 'ip' AND ip = $2`, domain, ipStr)
 	return err
 }
 
+// =====================================================================
 // UpsertSubdomain
+// =====================================================================
 
 // UpsertSubdomainReq is the input for UpsertSubdomain.
 type UpsertSubdomainReq struct {
@@ -547,7 +556,9 @@ RETURNING id`, domain, rootDomain, recordType, recordValueArr, ipVal, csegVal, i
 	return id, err
 }
 
+// =====================================================================
 // UpsertApp
+// =====================================================================
 
 // UpsertAppReq is the input for UpsertApp.
 type UpsertAppReq struct {
@@ -657,7 +668,9 @@ RETURNING id`, req.Name, catVal, descVal, icpVal, companyIDVal, companySource, t
 	return id, err
 }
 
+// =====================================================================
 // UpsertHTTPService
+// =====================================================================
 
 // UpsertHTTPServiceReq is the input for UpsertHTTPService.
 type UpsertHTTPServiceReq struct {
@@ -707,10 +720,6 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 	}
 
 	techsArr := marshalStringArray(req.Technologies)
-	authJSON, err := marshalJSONBArray(req.Auth)
-	if err != nil {
-		return 0, err
-	}
 
 	var domainVal, ipVal, csegVal, titleVal, faviconVal any
 	if domain != "" {
@@ -734,12 +743,12 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 INSERT INTO assets(
     type, url, service_type, service_name, domain, ip, port, root_domain,
     c_segment, favicon_mmh3, technologies, status_code, content_length, page_title,
-    auth, company_id, company_source, task_ids
+    company_id, company_source, task_ids
 )
 VALUES (
     'service', $1, 'http', $2, $3, $4, $5, $6,
     $7::cidr, $8, $9::text[], $10, $11, $12,
-    $13::jsonb[], $14, 'scope', $15::bigint[]
+    $13, 'scope', $14::bigint[]
 )
 ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
     status_code    = COALESCE(EXCLUDED.status_code,    assets.status_code),
@@ -749,12 +758,6 @@ ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
     ip             = COALESCE(EXCLUDED.ip,             assets.ip),
     c_segment      = COALESCE(EXCLUDED.c_segment,      assets.c_segment),
     technologies   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.technologies || EXCLUDED.technologies))),
-    auth           = (
-        SELECT ARRAY(
-            SELECT DISTINCT ON (elem::text) elem
-            FROM unnest(assets.auth || EXCLUDED.auth) AS elem
-        )
-    ),
     task_ids       = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
     company_id     = CASE
         WHEN assets.company_source = 'explicit' AND assets.company_id IS NOT NULL THEN assets.company_id
@@ -769,9 +772,14 @@ ON CONFLICT (url) WHERE type = 'service' AND service_type = 'http' DO UPDATE SET
 RETURNING id`,
 		normURL, serviceName, domainVal, ipVal, nullableInt(port), rootDomain,
 		csegVal, faviconVal, techsArr, req.StatusCode, req.ContentLength, titleVal,
-		authJSON, companyID, taskIDs,
+		companyID, taskIDs,
 	).Scan(&id)
 	if err != nil {
+		return 0, err
+	}
+
+	// 兼容入口：auth 入参登记为当前资产的 discovered 凭据关系（同一事务内）。
+	if err := s.recordDiscoveredAuth(id, serviceName, req.Auth); err != nil {
 		return 0, err
 	}
 
@@ -796,7 +804,9 @@ RETURNING id`,
 	return id, nil
 }
 
+// =====================================================================
 // UpsertOtherService
+// =====================================================================
 
 // UpsertOtherServiceReq is the input for UpsertOtherService.
 type UpsertOtherServiceReq struct {
@@ -853,11 +863,6 @@ func (s *AssetStore) UpsertOtherService(req UpsertOtherServiceReq) (int64, error
 		taskIDs = "{}"
 	}
 
-	authJSON, err := marshalJSONBArray(req.Auth)
-	if err != nil {
-		return 0, err
-	}
-
 	var domainVal, rootDomainVal, ipVal, csegVal any
 	if domain != "" {
 		domainVal = domain
@@ -876,19 +881,13 @@ func (s *AssetStore) UpsertOtherService(req UpsertOtherServiceReq) (int64, error
 	err = s.tx.QueryRow(`
 INSERT INTO assets(
     type, service_type, service_name, domain, ip, port, root_domain,
-    c_segment, auth, company_id, company_source, task_ids
+    c_segment, company_id, company_source, task_ids
 )
-VALUES ('service', 'other', $1, $2, $3, $4, $5, $6::cidr, $7::jsonb[], $8, 'scope', $9::bigint[])
+VALUES ('service', 'other', $1, $2, $3, $4, $5, $6::cidr, $7, 'scope', $8::bigint[])
 ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE type = 'service' AND service_type = 'other' DO UPDATE SET
     domain     = COALESCE(EXCLUDED.domain,     assets.domain),
     ip         = COALESCE(EXCLUDED.ip,         assets.ip),
     c_segment  = COALESCE(EXCLUDED.c_segment,  assets.c_segment),
-    auth       = (
-        SELECT ARRAY(
-            SELECT DISTINCT ON (elem::text) elem
-            FROM unnest(assets.auth || EXCLUDED.auth) AS elem
-        )
-    ),
     task_ids   = (SELECT ARRAY(SELECT DISTINCT unnest(assets.task_ids || EXCLUDED.task_ids))),
     company_id = CASE
         WHEN assets.company_source = 'explicit' AND assets.company_id IS NOT NULL THEN assets.company_id
@@ -902,9 +901,14 @@ ON CONFLICT (COALESCE(domain,''), COALESCE(ip,''), port, service_name) WHERE typ
     last_seen  = now()
 RETURNING id`,
 		serviceName, domainVal, ipVal, req.Port, rootDomainVal,
-		csegVal, authJSON, companyID, taskIDs,
+		csegVal, companyID, taskIDs,
 	).Scan(&id)
 	if err != nil {
+		return 0, err
+	}
+
+	// 兼容入口：auth 入参登记为当前资产的 discovered 凭据关系（同一事务内）。
+	if err := s.recordDiscoveredAuth(id, serviceName, req.Auth); err != nil {
 		return 0, err
 	}
 
@@ -937,7 +941,9 @@ func (s *AssetStore) linkHostAssets(domain, rootDomain string, taskID int64) {
 	}
 }
 
+// =====================================================================
 // UpsertEndpoint
+// =====================================================================
 
 // UpsertEndpointReq is the input for UpsertEndpoint.
 type UpsertEndpointReq struct {
@@ -1049,7 +1055,9 @@ RETURNING id`,
 	return id, nil
 }
 
+// =====================================================================
 // Query helpers
+// =====================================================================
 
 // QueryByType returns assets rows of a given type, newest first.
 func (s *AssetStore) QueryByType(typ string, limit, offset int) ([]*Asset, error) {
@@ -1068,7 +1076,7 @@ SELECT id, type, company_id, array_to_json(task_ids)::text,
        COALESCE(category,''), COALESCE(app_description,''), COALESCE(app_icp,''),
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
-       COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
+       COALESCE(page_title,''), array_to_json(technologies)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
 FROM assets
 WHERE type = $1
@@ -1078,7 +1086,14 @@ LIMIT $2 OFFSET $3`, typ, limit, offset)
 		return nil, err
 	}
 	defer rows.Close()
-	return scanAssets(rows)
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.populateAuth(assets); err != nil {
+		return nil, err
+	}
+	return assets, nil
 }
 
 // CountByType returns the total number of assets of a type (for server-side pagination).
@@ -1099,7 +1114,7 @@ func (s *AssetStore) QueryByCompany(companyID int64, typ string, limit, offset i
        COALESCE(category,''), COALESCE(app_description,''), COALESCE(app_icp,''),
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
-       COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
+       COALESCE(page_title,''), array_to_json(technologies)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
 FROM assets WHERE company_id = $1`
 	args := []any{companyID}
@@ -1113,7 +1128,14 @@ FROM assets WHERE company_id = $1`
 		return nil, err
 	}
 	defer rows.Close()
-	return scanAssets(rows)
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.populateAuth(assets); err != nil {
+		return nil, err
+	}
+	return assets, nil
 }
 
 func (s *AssetStore) CountByCompany(companyID int64, typ string) (int, error) {
@@ -1151,7 +1173,7 @@ func (s *AssetStore) QueryByTask(taskID int64, typ string, limit, offset int) ([
        COALESCE(category,''), COALESCE(app_description,''), COALESCE(app_icp,''),
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
-       COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
+       COALESCE(page_title,''), array_to_json(technologies)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
 FROM assets WHERE $1 = ANY(task_ids)`
 	args := []any{taskID}
@@ -1170,6 +1192,9 @@ FROM assets WHERE $1 = ANY(task_ids)`
 		return nil, err
 	}
 	if err := s.hydrateTaskAssetSources(taskID, assets); err != nil {
+		return nil, err
+	}
+	if err := s.populateAuth(assets); err != nil {
 		return nil, err
 	}
 	return assets, nil
@@ -1209,6 +1234,8 @@ func (s *AssetStore) DeleteByTaskID(taskID int64) (int64, error) {
 	if _, err := s.db.Exec(`UPDATE assets SET task_ids = array_remove(task_ids, $1) WHERE $1 = ANY(task_ids)`, taskID); err != nil {
 		return deleted, err
 	}
+	// 级联删除关系后清理孤儿凭据（best-effort，不影响已完成的删除结果）。
+	_, _ = s.Credentials().PruneOrphaned()
 	return deleted, nil
 }
 
@@ -1349,7 +1376,7 @@ const assetSelectCols = `SELECT id, type, company_id, array_to_json(task_ids)::t
        COALESCE(category,''), COALESCE(app_description,''), COALESCE(app_icp,''),
        COALESCE(url,''), COALESCE(service_type,''), COALESCE(service_name,''),
        COALESCE(favicon_mmh3,''), status_code, content_length,
-       COALESCE(page_title,''), array_to_json(technologies)::text, array_to_json(auth)::text,
+       COALESCE(page_title,''), array_to_json(technologies)::text,
        COALESCE(method,''), array_to_json(params)::text, extra, last_seen::text
 FROM assets`
 
@@ -1370,7 +1397,14 @@ func (s *AssetStore) GetByIDs(ids []int64) ([]*Asset, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanAssets(rows)
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.populateAuth(assets); err != nil {
+		return nil, err
+	}
+	return assets, nil
 }
 
 // DeleteByCompanyID hard-deletes all assets belonging to a company. Returns rows deleted.
@@ -1379,7 +1413,13 @@ func (s *AssetStore) DeleteByCompanyID(companyID int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		return deleted, err
+	}
+	// 级联删除关系后清理孤儿凭据（best-effort）。
+	_, _ = s.Credentials().PruneOrphaned()
+	return deleted, nil
 }
 
 // DeleteByHost hard-deletes every asset whose host exactly matches the given value:
@@ -1411,7 +1451,12 @@ RETURNING type`, h)
 		}
 		counts[t]++
 	}
-	return counts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 级联删除关系后清理孤儿凭据（best-effort）。
+	_, _ = s.Credentials().PruneOrphaned()
+	return counts, nil
 }
 
 // DeleteByIDs hard-deletes assets by their IDs. Returns the number of rows deleted.
@@ -1429,7 +1474,13 @@ func (s *AssetStore) DeleteByIDs(ids []int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	deleted, err := res.RowsAffected()
+	if err != nil {
+		return deleted, err
+	}
+	// 级联删除关系后清理孤儿凭据（best-effort）。
+	_, _ = s.Credentials().PruneOrphaned()
+	return deleted, nil
 }
 
 // CountsByType returns asset counts per type.
@@ -1456,11 +1507,12 @@ func scanTypeCounts(rows *sql.Rows) (map[string]int, error) {
 }
 
 // scanAssets scans the wide SELECT that covers all type columns.
+// Asset.Auth 不再来自 assets.auth 列：调用方在返回前必须经 populateAuth 从新表回填。
 func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 	var out []*Asset
 	for rows.Next() {
 		a := &Asset{}
-		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, authRaw, paramsRaw, extraRaw []byte
+		var taskIDsRaw, boundDomainsRaw, openPortsRaw, recordValueRaw, techsRaw, paramsRaw, extraRaw []byte
 		var port, statusCode sql.NullInt64
 		var contentLength sql.NullInt64
 		var companyID sql.NullInt64
@@ -1472,7 +1524,7 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 			&a.Category, &a.AppDescription, &a.AppICP,
 			&a.URL, &a.ServiceType, &a.ServiceName,
 			&a.FaviconMMH3, &statusCode, &contentLength,
-			&a.PageTitle, &techsRaw, &authRaw,
+			&a.PageTitle, &techsRaw,
 			&a.Method, &paramsRaw, &extraRaw, &a.LastSeen,
 		); err != nil {
 			return nil, err
@@ -1508,9 +1560,6 @@ func scanAssets(rows *sql.Rows) ([]*Asset, error) {
 		}
 		if len(techsRaw) > 0 {
 			_ = json.Unmarshal(techsRaw, &a.Technologies)
-		}
-		if len(authRaw) > 0 {
-			_ = json.Unmarshal(authRaw, &a.Auth)
 		}
 		if len(paramsRaw) > 0 {
 			_ = json.Unmarshal(paramsRaw, &a.Params)

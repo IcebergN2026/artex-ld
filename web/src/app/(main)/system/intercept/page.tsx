@@ -127,6 +127,7 @@ const SDK_EXEC: Tool[] = [
   sdkTool("shell_read",  "读取交互会话输出"),
   sdkTool("shell_close", "关闭交互会话"),
   sdkTool("shell_list",  "列出所有交互会话"),
+  sdkTool("ExecuteExtraTool", "执行延迟加载的 MCP / 自定义工具（tool_name + 参数）"),
 ];
 
 const SDK_WRITE: Tool[] = [

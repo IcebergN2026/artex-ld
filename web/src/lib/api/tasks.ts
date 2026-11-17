@@ -47,6 +47,7 @@ import type {
   FindingTraffic,
   FindingTrafficDetail,
   IntentAsset,
+  IntranetCredential,
   PlannerTemplate,
   ReviewMessage,
   ReviewProposedIntent,
@@ -84,7 +85,7 @@ import type {
 } from "@/lib/types";
 
 export const tasksApi = {
-  // 后端应用版本号（release 时由 ldflags 注入，默认当前版本号）。
+  // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
 
   // ---- auth ----
@@ -288,11 +289,11 @@ export const tasksApi = {
       request_id: string;
     }>(`/tasks/${taskId}/intents/${intentId}/messages`, { message, request_id: requestId }),
   taskLLMResolution: (id: string) => get<TaskLLMResolutions>(`/tasks/${id}/llm/resolution`),
-  // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：由服务端按执行器置回 open/proposed，等待重新认领。
+  // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
   rerunIntent: (taskId: string, intentId: string) =>
     post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/${intentId}/rerun`),
-  // 批量重跑本任务全部可恢复意图(blocked/exhausted/stopped)。
-  rerunRecoverable: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-recoverable`),
+  // 批量重跑本任务全部 blocked 意图（一次网络/LLM 断连导致多条 blocked 时一键全部重试）。
+  rerunBlocked: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-blocked`),
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
@@ -443,6 +444,14 @@ export const tasksApi = {
     get<{ count: number; total: number; assets: Asset[] }>(
       `/assets?dsl=${encodeURIComponent(dsl)}${type ? `&type=${encodeURIComponent(type)}` : ""}&limit=${limit}&offset=${offset}`,
     ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
+  // 内网（RFC1918）资产上的脱敏凭据关系；companyID 为空表示全部企业。
+  intranetCredentials: (companyID = "", limit = 50, offset = 0) => {
+    const p = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (companyID) p.set("company_id", companyID);
+    return get<{ count: number; total: number; credentials: IntranetCredential[] }>(
+      `/credentials/intranet?${p.toString()}`,
+    ).then((r) => ({ credentials: r?.credentials ?? [], total: r?.total ?? r?.count ?? 0 }));
+  },
   assetCounts: (taskId = "") =>
     get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
   deleteAssets: (ids: number[]) =>

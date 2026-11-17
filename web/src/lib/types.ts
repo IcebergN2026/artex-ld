@@ -1,12 +1,10 @@
-/**
- * types.ts：ARTEX 领域模型，UI 共用类型。
- * 派生自功能规格第 7 节（关键数据形状）。
- * 主要函数/类型（按域节选）：
- *   - Task / TaskStatus / EngineMode：任务领域模型与状态枚举
- *   - Asset / AssetNode / AssetRel / NewAssetType：资产图节点、关系与新建类型
- *   - TaskArchive / TaskArchivePage / ArchiveBatchItem：归档结构与分页
- *   - CoverageGraph*：覆盖率图数据形状
- */
+// ARTEX domain model — types used across the UI.
+// Derived from the functional spec (section 7: 关键数据形状).
+// 主要函数/类型（按域节选）：
+//   - Task / TaskStatus / EngineMode：任务领域模型与状态枚举
+//   - Asset / AssetNode / AssetRel / NewAssetType：资产图节点、关系与新建类型
+//   - TaskArchive / TaskArchivePage / ArchiveBatchItem：归档结构与分页
+//   - CoverageGraph*：覆盖率图数据形状
 
 export type TaskStatus = "created" | "queued" | "running" | "paused" | "done" | "failed" | "timeout";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
@@ -259,6 +257,48 @@ export interface AssetHostRow {
   high: number;
   medium: number;
   low: number;
+  // intranet：IP 落在 RFC1918 私网段（后端拓扑同一口径）。
+  intranet?: boolean;
+  // ports：宿主 IP 资产 open_ports 的去重合并。
+  ports?: { port: number; service?: string }[];
+  // 凭据关系计数：credential_count = discovered + verified，verified_count 为其子集。
+  credential_count?: number;
+  verified_count?: number;
+}
+
+// IntranetCredential 是内网（RFC1918）资产凭据表的一行：脱敏凭据关系 + 所在
+// 资产/企业投影。secret 永不下发（与 AssetAuthItem 同一约束）。
+export interface IntranetCredential {
+  id: number;
+  type: string;
+  username: string;
+  domain: string;
+  relation: "discovered" | "verified" | string;
+  target: string;
+  source: string;
+  evidence: string;
+  asset_id: number;
+  asset_ip: string;
+  asset_domain?: string;
+  company_id?: number;
+  company_name?: string;
+  created_at: string;
+  last_seen: string;
+}
+
+// AssetAuthItem 是资产凭据的脱敏投影（relation 区分发现/认证两种关系；secret 永不下发）。
+//   - discovered：凭据在该资产上被发现（description = 发现来源）。
+//   - verified：凭据在该资产认证成功（description = 认证证据）。
+export interface AssetAuthItem {
+  id?: number;
+  type?: string;
+  username?: string;
+  domain?: string;
+  relation?: "discovered" | "verified" | string;
+  target?: string;
+  description?: string;
+  created_at?: string;
+  last_seen?: string;
 }
 
 export interface Asset {
@@ -289,7 +329,7 @@ export interface Asset {
   content_length?: number;
   page_title?: string;
   technologies?: string[];
-  auth?: Record<string, unknown>[];
+  auth?: AssetAuthItem[];
   method?: string;
   params?: Record<string, unknown>[];
   extra?: Record<string, unknown>;
@@ -1643,7 +1683,7 @@ export interface FindingTrafficDetail {
 
 /** GET /api/update/check —— 当前版本与 GitHub 最新正式版的比较结果。 */
 export interface UpdateCheck {
-  /** 当前运行的版本；无 git 的本地构建为默认版本号，git describe 为带后缀形式。 */
+  /** 当前运行的版本；开发构建为 "dev" 或 git describe 的带后缀形式。 */
   current: string;
   /** 运行形态。docker 下换装只作用于容器可写层，重建容器会退回镜像版本。 */
   mode: "docker" | "binary";

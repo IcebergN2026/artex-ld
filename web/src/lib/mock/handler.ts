@@ -16,6 +16,7 @@ import type {
   Activity,
   ArchiveBatchItem,
   Asset,
+  AssetHostRow,
   BatchControlItem,
   Company,
   CompanyScopeRule,
@@ -25,6 +26,7 @@ import type {
   FindingTraffic,
   FindingTrafficBinding,
   IntentAsset,
+  IntranetCredential,
   ScopeRow,
   Task,
   TaskArchive,
@@ -52,8 +54,24 @@ const mockLLMRecords = structuredClone(D.llmRecords);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 // 【二开·P-TPL·U6】起 —— planner 模板 mock 样例（内置默认 + 一条自定义）
 const mockPlannerTemplates = [
-  { id: 1, name: "内置默认", body: "你是 planner……{{.Goal}}", is_default: true, builtin: true, created_at: "2026-10-21T00:00:00Z", updated_at: "2026-10-21T00:00:00Z" },
-  { id: 2, name: "CTF 速攻", body: "CTF 模式：直奔 flag。目标：{{.Goal}}", is_default: false, builtin: false, created_at: "2026-10-21T01:00:00Z", updated_at: "2026-10-21T01:00:00Z" },
+  {
+    id: 1,
+    name: "内置默认",
+    body: "你是 planner……{{.Goal}}",
+    is_default: true,
+    builtin: true,
+    created_at: "2026-10-21T00:00:00Z",
+    updated_at: "2026-10-21T00:00:00Z",
+  },
+  {
+    id: 2,
+    name: "CTF 速攻",
+    body: "CTF 模式：直奔 flag。目标：{{.Goal}}",
+    is_default: false,
+    builtin: false,
+    created_at: "2026-10-21T01:00:00Z",
+    updated_at: "2026-10-21T01:00:00Z",
+  },
 ];
 // 【二开·P-TPL·U6】止
 const mockTaskCategories = structuredClone(D.taskCategories);
@@ -448,6 +466,134 @@ function mockTaskAssetID(taskID: string): number | undefined {
   const numeric = Number(taskID);
   if (Number.isInteger(numeric) && numeric > 0) return numeric;
   return mockTaskAssetIDs.get(taskID);
+}
+
+// mockIntranetCredentials 是内网凭据表的静态示例，asset_ip 对应 mockAssets 中
+// 的 ip 资产（10.0.20.15 / 10.10.10.10），宿主投影按 asset_ip 汇总其计数。
+const mockIntranetCredentials: IntranetCredential[] = [
+  {
+    id: 1,
+    type: "password",
+    username: "Administrator",
+    domain: "ACME",
+    relation: "verified",
+    target: "smb://10.0.20.15",
+    source: "lsass 转储",
+    evidence: "psexec 上线成功",
+    asset_id: 19,
+    asset_ip: "10.0.20.15",
+    company_id: 1,
+    company_name: "Acme 集团",
+    created_at: "2026-11-10T08:12:00Z",
+    last_seen: "2026-11-13T21:40:00Z",
+  },
+  {
+    id: 2,
+    type: "ntlm_hash",
+    username: "svc_backup",
+    domain: "ACME",
+    relation: "verified",
+    target: "smb://10.0.20.15",
+    source: "SAM 数据库",
+    evidence: "crackmapexec Pwn3d!",
+    asset_id: 19,
+    asset_ip: "10.0.20.15",
+    company_id: 1,
+    company_name: "Acme 集团",
+    created_at: "2026-11-10T08:14:00Z",
+    last_seen: "2026-11-13T20:02:00Z",
+  },
+  {
+    id: 3,
+    type: "ssh_key",
+    username: "jenkins",
+    domain: "",
+    relation: "verified",
+    target: "ssh://10.10.10.10:22",
+    source: "~/.ssh/id_rsa",
+    evidence: "ssh 登录成功",
+    asset_id: 20,
+    asset_ip: "10.10.10.10",
+    company_id: 1,
+    company_name: "Acme 集团",
+    created_at: "2026-11-11T03:30:00Z",
+    last_seen: "2026-11-12T15:45:00Z",
+  },
+  {
+    id: 4,
+    type: "password",
+    username: "ops",
+    domain: "",
+    relation: "discovered",
+    target: "",
+    source: "jenkins 构建日志",
+    evidence: "",
+    asset_id: 20,
+    asset_ip: "10.10.10.10",
+    company_id: 1,
+    company_name: "Acme 集团",
+    created_at: "2026-11-12T09:20:00Z",
+    last_seen: "2026-11-12T09:20:00Z",
+  },
+];
+
+// mockHostRows 是 db/host_assets.go 主机投影的简化 mock：每个 ip 资产一行，
+// 聚合子域名（record_value 命中该 IP）、同 IP 的服务/接口、open_ports 与凭据计数。
+function mockHostRows(): AssetHostRow[] {
+  const intranetIP = (ip: string) => {
+    const parts = ip.split(".").map(Number);
+    return (
+      parts.length === 4 &&
+      (parts[0] === 10 ||
+        (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+        (parts[0] === 192 && parts[1] === 168))
+    );
+  };
+  const companyName = (id?: number) => D.companies.find((c) => c.id === id)?.name ?? "";
+  return mockAssets
+    .filter((asset) => asset.type === "ip" && asset.ip)
+    .map((asset) => {
+      const ip = asset.ip ?? "";
+      const subdomainAssets = mockAssets.filter(
+        (candidate) =>
+          candidate.type === "subdomain" &&
+          Array.isArray(candidate.record_value) &&
+          candidate.record_value.includes(ip),
+      );
+      const serviceAssets = mockAssets.filter(
+        (candidate) => (candidate.type === "service" || candidate.type === "endpoint") && candidate.ip === ip,
+      );
+      const creds = mockIntranetCredentials.filter((cred) => cred.asset_ip === ip);
+      return {
+        key: `host:${ip}`,
+        company_id: asset.company_id,
+        company_name: companyName(asset.company_id),
+        root_domain: subdomainAssets[0]?.root_domain ?? "",
+        subdomains: subdomainAssets.map((candidate) => candidate.domain ?? "").sort(),
+        ip,
+        services: serviceAssets.map((candidate) => ({
+          asset_id: candidate.id,
+          type: candidate.type as "service" | "endpoint",
+          label: candidate.url || `${candidate.service_name || candidate.service_type || "?"}:${candidate.port ?? "?"}`,
+          url: candidate.url,
+          method: candidate.method,
+        })),
+        asset_ids: [
+          asset.id,
+          ...subdomainAssets.map((candidate) => candidate.id),
+          ...serviceAssets.map((candidate) => candidate.id),
+        ],
+        finding_count: 0,
+        critical: 0,
+        high: 0,
+        medium: 0,
+        low: 0,
+        intranet: intranetIP(ip),
+        ports: asset.open_ports ?? [],
+        credential_count: creds.length,
+        verified_count: creds.filter((cred) => cred.relation === "verified").length,
+      };
+    });
 }
 
 function mockAssetCounts(taskID?: string | null): Record<string, number> {
@@ -1263,7 +1409,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (b.name !== undefined) {
       const name = normalizedTemplateName(b.name);
       if (!name) throw new Error("分类名称不能为空");
-      if (mockTaskCategories.some((item) => item.id !== category.id && item.name.toLowerCase() === name.toLowerCase())) {
+      if (
+        mockTaskCategories.some((item) => item.id !== category.id && item.name.toLowerCase() === name.toLowerCase())
+      ) {
         throw new Error("分类名称已存在");
       }
       category.name = name;
@@ -1272,7 +1420,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       }
     }
     if (b.default_review_enabled !== undefined) category.default_review_enabled = b.default_review_enabled === true;
-    if (typeof b.default_planner_template_id === "number") category.default_planner_template_id = b.default_planner_template_id;
+    if (typeof b.default_planner_template_id === "number")
+      category.default_planner_template_id = b.default_planner_template_id;
     if (typeof b.asset_mode === "string" && b.asset_mode) category.asset_mode = b.asset_mode;
     if (typeof b.default_description === "string") category.default_description = b.default_description;
     category.updated_at = new Date().toISOString();
@@ -1391,7 +1540,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const id = Number(seg[1]);
     const tpl = mockPlannerTemplates.find((t) => t.id === id);
     if (!tpl) throw new Error("planner template not found");
-    mockPlannerTemplates.forEach((t) => { t.is_default = t.id === id; });
+    mockPlannerTemplates.forEach((t) => {
+      t.is_default = t.id === id;
+    });
     return tpl;
   }
   if (seg[0] === "planner-templates" && seg.length === 2 && m === "PATCH") {
@@ -1416,10 +1567,30 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // 【二开·P-TPL·U6】止
   // 【二开·P-INTENT·U6】起 —— 审核五端点 mock（00 册 U6；样例数据带预审摘要/预选执行器/替代血缘）
   if (seg[0] === "tasks" && seg[2] === "review" && seg[3] === "proposed" && m === "GET") {
-    return { intents: [
-      { id: 501, summary: "对 10.0.0.0/8 做内网渗透：拿域控", priority: 8, origin: "review", pending_executor: "intranet_agent", review_note: "与任务目标相关；横向移动高风险，建议限定边界", replaces: null, created_at: Math.floor(Date.now()/1000)-300 },
-      { id: 502, summary: "对已发现的 3 台 webshell 主机批量验证权限", priority: 6, origin: "review", pending_executor: null, review_note: "与 finding #12 呼应；先验证再决定是否深入", replaces: 499, created_at: Math.floor(Date.now()/1000)-180 },
-    ] };
+    return {
+      intents: [
+        {
+          id: 501,
+          summary: "对 10.0.0.0/8 做内网渗透：拿域控",
+          priority: 8,
+          origin: "review",
+          pending_executor: "intranet_agent",
+          review_note: "与任务目标相关；横向移动高风险，建议限定边界",
+          replaces: null,
+          created_at: Math.floor(Date.now() / 1000) - 300,
+        },
+        {
+          id: 502,
+          summary: "对已发现的 3 台 webshell 主机批量验证权限",
+          priority: 6,
+          origin: "review",
+          pending_executor: null,
+          review_note: "与 finding #12 呼应；先验证再决定是否深入",
+          replaces: 499,
+          created_at: Math.floor(Date.now() / 1000) - 180,
+        },
+      ],
+    };
   }
   if (seg[0] === "tasks" && seg[2] === "review" && seg[4] === "approve" && m === "POST") {
     return { ok: true };
@@ -1432,10 +1603,22 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return { accepted: true };
   }
   if (seg[0] === "tasks" && seg[2] === "review" && seg[3] === "messages" && m === "GET") {
-    return { messages: [
-      { id: 1, kind: "text", summary: "【预审完成】2 条待审意图已出预审意见", created_at: Math.floor(Date.now()/1000)-240 },
-      { id: 2, kind: "text", summary: "【人工】#501 的内网渗透先别动，等我确认范围", created_at: Math.floor(Date.now()/1000)-120 },
-    ] };
+    return {
+      messages: [
+        {
+          id: 1,
+          kind: "text",
+          summary: "【预审完成】2 条待审意图已出预审意见",
+          created_at: Math.floor(Date.now() / 1000) - 240,
+        },
+        {
+          id: 2,
+          kind: "text",
+          summary: "【人工】#501 的内网渗透先别动，等我确认范围",
+          created_at: Math.floor(Date.now() / 1000) - 120,
+        },
+      ],
+    };
   }
   // 【二开·P-INTENT·U6】止
   if (seg[0] === "tasks" && seg.length === 2 && m === "GET") {
@@ -1711,6 +1894,19 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── assets ──
   if (path === "/assets/counts") return mockAssetCounts(q.get("task_id"));
+  if (path === "/credentials/intranet" && m === "GET") {
+    const limit = Number(q.get("limit") ?? 50);
+    const offset = Number(q.get("offset") ?? 0);
+    const page = mockIntranetCredentials.slice(offset, offset + limit);
+    return { count: page.length, total: mockIntranetCredentials.length, credentials: page };
+  }
+  if (path === "/assets" && m === "GET" && q.get("type") === "host") {
+    const hosts = mockHostRows();
+    const limit = Number(q.get("limit") ?? 50);
+    const offset = Number(q.get("offset") ?? 0);
+    const page = hosts.slice(offset, offset + limit);
+    return { count: page.length, total: hosts.length, hosts: page };
+  }
   if (path === "/assets" && m === "GET") {
     const type = q.get("type") ?? "";
     const taskID = q.get("task_id");
@@ -2293,6 +2489,20 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const limit = Math.max(1, Number(q.get("limit") ?? 300));
     const items = mockActivity.filter((item) => item.seq > since).slice(0, limit);
     return { items, cursor: items.length ? items[items.length - 1].seq : since };
+  }
+  if (path === "/exploration/activity/history") {
+    // 轨迹页用的倒序分页:before=0 → 最新一页;before=<seq> → 更旧一页。
+    const before = Number(q.get("before") ?? 0);
+    const limit = Math.max(1, Number(q.get("limit") ?? 200));
+    const sorted = [...mockActivity].sort((a, b) => a.seq - b.seq);
+    const upto = before > 0 ? sorted.filter((a) => a.seq < before) : sorted;
+    const page = upto.slice(-limit);
+    return {
+      items: page,
+      snapshot_cursor: sorted.length ? sorted[sorted.length - 1].seq : 0,
+      earliest_cursor: page.length ? page[0].seq : 0,
+      has_more: upto.length > page.length,
+    };
   }
   if (seg[0] === "exploration" && seg[1] === "activity" && seg.length === 3) {
     const a = mockActivity.find((x) => x.seq === Number(seg[2]));

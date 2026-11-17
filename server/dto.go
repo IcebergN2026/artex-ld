@@ -5,7 +5,6 @@
 //   - ActivityDTO / activityDTOs：活动记录 DTO 转换。
 //   - AgentDTO / agentDTOs、LLMProfileDTO / llmProfileDTOs：Agent 与 LLM 配置 DTO 转换。
 //   - GoalDTO / ConstraintDTO / TrafficExchangeDTO / TaskNodeDTO / EdgeDTO：目标、约束、流量、节点与边的 DTO 及转换。
-
 package server
 
 import (
@@ -330,11 +329,10 @@ type FindingDTO struct {
 	VulnClass string `json:"vulnclass"`
 	Name      string `json:"name,omitempty"` // 漏洞名称;为空时前端回退展示 vulnclass
 	Severity  string `json:"severity"`       // critical | high | medium | low
-	// pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
-	Status   string `json:"status"`
-	Summary  string `json:"summary"`
-	Evidence string `json:"evidence"`
-	Report   string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
+	Status    string `json:"status"`         // pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
+	Summary   string `json:"summary"`
+	Evidence  string `json:"evidence"`
+	Report    string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`

@@ -554,6 +554,9 @@ func (s *AssetStore) QueryDSL(dsl, typ string, taskID int64, limit, offset int) 
 			return nil, err
 		}
 	}
+	if err := s.populateAuth(assets); err != nil {
+		return nil, err
+	}
 	return assets, nil
 }
 
@@ -605,6 +608,9 @@ func (s *AssetStore) QueryDSLInScope(dsl, typ string, taskID int64, limit, offse
 	if err := s.hydrateTaskAssetSources(taskID, assets); err != nil {
 		return nil, err
 	}
+	if err := s.populateAuth(assets); err != nil {
+		return nil, err
+	}
 	return assets, nil
 }
 
@@ -639,6 +645,9 @@ func (s *AssetStore) GetByIDsInScope(taskID int64, ids []int64) ([]*Asset, error
 		return nil, err
 	}
 	if err := s.hydrateTaskAssetSources(taskID, assets); err != nil {
+		return nil, err
+	}
+	if err := s.populateAuth(assets); err != nil {
 		return nil, err
 	}
 	return assets, nil

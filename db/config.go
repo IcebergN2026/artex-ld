@@ -86,16 +86,14 @@ type RetryOverride struct {
 	Stream  RetryRule `json:"stream"`
 }
 
-const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
+const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
 const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols
 const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
-// api_key_hint (profileCols) or api_key (profileColsKey) column lands in APIKeyHint
-// or APIKey depending on which list the caller used.
+// 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
 func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile) error {
 	return sc.Scan(&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.Proxy, &p.Model, into,
 		&p.RatePerSecond, &p.RatePerMinute, &p.ContextWindowK, &p.ReasoningEffort, &p.IsDefault, &p.Priority, &p.PoolExclude, &p.ThinkingType, &p.Streaming,
@@ -482,8 +480,7 @@ type Agent struct {
 	PlannerControlled bool `json:"planner_controlled"`
 }
 
-// 【二开·P-EXEC·D10】agentCols 尾部加 executor_key；首个 custom seed 门控尾部加 planner_controlled（COALESCE 兜底旧行默认 true）
-const agentCols = `id,key,name,COALESCE(description,''),role,builtin,enabled,COALESCE(max_turns,0),COALESCE(run_seconds,600),COALESCE(web_search,false),COALESCE(interactive_shell,false),COALESCE(wrapup_prompt,''),COALESCE(wrapup_max_turns,0),COALESCE(task_timeout_wrapup_prompt,''),COALESCE(task_timeout_wrapup_max_turns,0),COALESCE(trigger_run_mode,'serial'),COALESCE(trigger_merge_mode,'all'),COALESCE(trigger_max_parallel,5),llm_profile_id,COALESCE(executor_key,''),COALESCE(planner_controlled,true)`
+const agentCols = `id,key,name,COALESCE(description,''),role,builtin,enabled,COALESCE(max_turns,0),COALESCE(run_seconds,600),COALESCE(web_search,false),COALESCE(interactive_shell,false),COALESCE(wrapup_prompt,''),COALESCE(wrapup_max_turns,0),COALESCE(task_timeout_wrapup_prompt,''),COALESCE(task_timeout_wrapup_max_turns,0),COALESCE(trigger_run_mode,'serial'),COALESCE(trigger_merge_mode,'all'),COALESCE(trigger_max_parallel,5),llm_profile_id,COALESCE(executor_key,''),COALESCE(planner_controlled,true)` // 【二开·P-EXEC·D10】尾部加 executor_key；首个 custom seed 门控尾部加 planner_controlled（COALESCE 兜底旧行默认 true）
 
 func scanAgent(sc interface{ Scan(...any) error }) (*Agent, error) {
 	var a Agent
@@ -525,9 +522,9 @@ func (d *DB) GetAgentByKey(key string) (*Agent, error) {
 	return a, nil
 }
 
-// 【二开·P-EXEC·D10 executor_key 查询】起 —— GetAgentByExecutorKey/CheckExecutorKey/SetAgentExecutorKey 与格式校验
-
+// ═══ ARTEX 二开 · [P-EXEC·D10 executor_key 查询] ═══
 // 功能介绍：GetAgentByExecutorKey——S2 resolveExecutor 的 DB 查询；executor_key 经 agentCols COALESCE('') 空串兼容
+// 二开日期：2026-10-21
 
 // GetAgentByExecutorKey 按 executor_key 找 agent（不存在/空返回 nil,nil）。
 func (d *DB) GetAgentByExecutorKey(key string) (*Agent, error) {
@@ -563,11 +560,11 @@ func (d *DB) CheckExecutorKey(key string) error {
 	return nil
 }
 
-var executorKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-
 // SetAgentExecutorKey 更新/清除 agent 的执行器标识（server_mgmt pgSaveAgentConfig 透传）。
 // 校验格式（与 CHECK 约束同款正则，提前报错比 PG 约束错误友好）；
 // 内置 agent 禁止设置（K18：executor 只面向自定义 agent）。
+var executorKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
 func (d *DB) SetAgentExecutorKey(agentKey, executorKey string) error {
 	if executorKey != "" && !executorKeyRe.MatchString(executorKey) {
 		return fmt.Errorf("executor_key 格式非法（小写蛇形，字母开头）: %q", executorKey)
@@ -582,10 +579,12 @@ func (d *DB) SetAgentExecutorKey(agentKey, executorKey string) error {
 	return nil
 }
 
-// 【二开·P-EXEC·D10 executor_key 查询】止
+// 【二开·P-EXEC·D10】止
 
+// ═══ ARTEX 二开 · [首个 custom seed 的 Planner 门控 · Agent 侧开关] ═══
 // 功能介绍：SetAgentPlannerControlled——自定义 agent 的全局 Planner 门控开关
 //          （server_mgmt pgSaveAgentConfig 透传；内置 agent 禁止修改，与 executor_key 同口径）
+// 二开日期：2026-11-07
 
 // SetAgentPlannerControlled 更新 agent 的全局 Planner 门控开关。
 // 修改后立即影响该 Agent 的所有现有和后续 custom intent。
@@ -1181,11 +1180,12 @@ ON CONFLICT (agent_id,resource_kind,resource_id,mcp_tool_name) DO UPDATE SET ena
 	return err
 }
 
-// 【二开·P-TPL·D11 planner_templates 数据层】
+// ═══ ARTEX 二开 · [P-TPL·D11 planner_templates 数据层] ═══
 // 功能介绍：planner 提示词模板库 CRUD（List/Get/Create/Update/Delete/SetDefault/DefaultPlannerTemplateBody 七方法）
 //           + 内置/默认删除保护 + seed 首插入；仿制 db/task_templates.go 的 nkey 归一/原子合并/哨兵错风格
+// 二开日期：2026-10-21
 
-// 【二开·P-TPL·D11-1 planner_templates 类型与声明】起 —— 常量、哨兵错、行类型与归一化辅助
+// 【二开·P-TPL·D11】起
 const (
 	MaxPlannerTemplateNameRunes = 120
 	MaxPlannerTemplateBodyBytes = 32 << 10 // 32KB 上限（按字节计，含中文）；S11 试渲染同口径
@@ -1253,9 +1253,6 @@ func normalizePlannerTemplatePatch(patch PlannerTemplatePatch) (PlannerTemplateP
 	return patch, nkey, nil
 }
 
-// 【二开·P-TPL·D11-1 planner_templates 类型与声明】止
-
-// 【二开·P-TPL·D11-2 planner_templates 读方法】起 —— List/Get/GetByNKey
 // 【方法 1/7】ListPlannerTemplates 最近维护在前（与 ListTaskTemplates 同序）。
 func (d *DB) ListPlannerTemplates() ([]*PlannerTemplate, error) {
 	rows, err := listTemplateRows(d, "planner_templates")
@@ -1290,9 +1287,6 @@ func (d *DB) GetPlannerTemplateByNKey(nkey string) (*PlannerTemplate, error) {
 	return &converted, nil
 }
 
-// 【二开·P-TPL·D11-2 planner_templates 读方法】止
-
-// 【二开·P-TPL·D11-3 planner_templates 写方法】起 —— Create/Update/Patch/Delete/SetDefault/DefaultBody
 // 【方法 3/7】CreatePlannerTemplate 插入一套预设；nkey 冲突（视觉等价重名）→ ErrPlannerTemplateNameConflict。
 func (d *DB) CreatePlannerTemplate(in PlannerTemplateInput) (*PlannerTemplate, error) {
 	in, nkey, err := normalizePlannerTemplateInput(in)
@@ -1355,9 +1349,6 @@ func (d *DB) DefaultPlannerTemplateBody() (string, error) {
 	return defaultTemplateBodyRow(d, "planner_templates")
 }
 
-// 【二开·P-TPL·D11-3 planner_templates 写方法】止
-
-// 【二开·P-TPL·D11-4 planner_templates 首插 seed】起 —— SeedPlannerTemplateIfEmpty
 // SeedPlannerTemplateIfEmpty 首插入 only：nkey 已存在即 no-op，用户后续操作（换默认/新建/删除自定义）
 // 重启不被重置。调用方见 server/assembly.go seedPrompts（D11-d）；正文单源=agent/planner.go
 // plannerDefaultTmpl 与 agent/planner_domain_templates.go 五领域模板（经 agent 包透出）——db 不 import agent，否则成环。
@@ -1368,4 +1359,4 @@ func (d *DB) SeedPlannerTemplateIfEmpty(name, nkey, body string, isDefault bool)
 	return seedTemplateIfEmptyRow(d, "planner_templates", name, nkey, body, isDefault)
 }
 
-// 【二开·P-TPL·D11-4 planner_templates 首插 seed】止
+// 【二开·P-TPL·D11】止

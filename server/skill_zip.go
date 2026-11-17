@@ -4,7 +4,6 @@
 //   - skillZipEntries / zipEntryName：枚举 zip 条目并生成导入用名称。
 //   - checkSkillZipMethods：校验 zip 条目的压缩方式是否在允许集合内。
 //   - zipMethodName：压缩方式数值到名称的映射。
-
 package server
 
 import (

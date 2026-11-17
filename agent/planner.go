@@ -6,7 +6,6 @@
 //   - TriggerEvent / renderTriggers：本轮触发事件结构及提示词渲染。
 //   - renderGraphOverview / intentSummary / workerOutput：图态势概览与意图/产物摘要。
 //   - renderPlannerTodos / todoFor：待办渲染与会话待办存储。
-
 package agent
 
 import (
@@ -55,7 +54,7 @@ type Planner struct {
 	maxTokensFn    func() int  // resolver: per-reply output cap (nil/0 = send no cap)
 	compactor      *Compactor  // cold-node compaction (§7); nil = disabled
 	// 【二开·审核流 PR1】planner 侧审核流回调：每轮 Plan 注入 ToolSet。
-	notifyReview    func(taskID int64)      // §2.6：送审成功唤醒 ReviewRunner（nil = 只靠 15s ticker 兜底）
+	notifyReview    func(taskID int64)      // §2.6：送审成功唤醒 ReviewRunner（nil = 只靠 60s ticker 兜底）
 	reviewEnabledFn func(taskID int64) bool // §2.4：任务级审核总开关即时解析（nil = 不校验）
 	checkExecutor   func(key string) error  // §2.9.3：target_executor 合法性校验（nil = 不校验）
 
@@ -119,10 +118,12 @@ func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
 // settings toggle takes effect without rebuilding the agent. nil = inject (default).
 func (p *Planner) SetConstraintInject(fn func() bool) { p.injectConstraints = fn }
 
-// 【二开·P-TPL·A4 planner 提示词四级链】
+// ═══ ARTEX 二开 · [P-TPL·A4 planner 提示词四级链] ═══
 // 功能介绍：SetTaskPromptOverride 接线任务级提示词快照读取器（四级链第①级来源），
 //
 //	仿 :101 SetConstraintInject 风格；nil = 无任务级覆盖（落②③④）。
+//
+// 二开日期：2026-10-21
 func (p *Planner) SetTaskPromptOverride(fn func() string) { p.taskPromptFn = fn }
 
 // taskPromptOverride 每轮现读任务级快照（空串=未设置）。
@@ -353,6 +354,8 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 任务目标：{{.Goal}}
 
+**操作纪律**：禁止破坏性操作（删改业务数据、DoS、关闭审计、持久化后门）；发现的新资产和方向可继续规划探索。
+
 **本轮该产出几个意图（先想清楚这条）**：
 - **硬底线（最高优先）**：只要【目标未达成】且【当前没有任何 open、running 或 assigned 意图】（frontier_open=0、running_intents 和 assigned_intents 均为空），本轮就【必须】产出至少一个向目标推进的意图——没有在跑的 work 可等、也没有在排队的方向时，产出 0 意图=任务停摆；哪怕已知方向都只在 recent_done 里，也要据下面 done/exhausted/blocked 的判断另开一条或续派一条。
 - 硬底线之外，**产出 0 个意图是正常结果，但要有正当理由**（不是"少派更稳"的默认）：①**已覆盖**——你想到的方向都已被仍在 open/running/assigned 的意图处理（换措辞重复生成已存在的意图是严重错误）；②**等待依赖**——下一步依赖当前在跑 work 的产出、而它还没出来（此时硬派会让下游拿不到前置而空转，应等下次唤醒图更新后再派）。
@@ -469,7 +472,7 @@ dispatch_finding_to_agent(
    - 完全无任何意图覆盖的全新方向 → 生成。
    - 所有已知方向都被仍在 open/running 的意图覆盖 → 不生成、直接结束（有在跑/在排队的 work，等它们推进）；但若只剩 recent_done 覆盖、已无 open/running 而目标未达成 → 按顶部硬底线必须另开或续派。
    - **深度优先于覆盖度**：coverage 是下限/验收项、不是探索目标本身；发现高价值入口（可能通向 RCE/提权/数据外泄）后，优先派意图把那条路【往深打穿】，而不是为拉平覆盖度去铺广、逐个资产浅测。
-   - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。**但多样性永远服从顶部【操作约束】**：被约束排除的入口面/端口/主机/操作，即使本质不同也绝不生成意图。
+   - **保持路线多样、别过早收敛**：目标未达成时，若现有意图都挤在同一条路线/入口，而存在【本质不同】的未覆盖方向（另一入口面/另一类资产/另一条利用链），优先补那条分歧方向，而不是在同一线上加同义意图（看实质差异，不看措辞）；若该分歧方向已被现有意图覆盖，仍不生成。理想是 2–3 条机理不同的路线并存（如"从上传链打"与"从认证绕过打"），某条交出【目标逼近】的证据后才把资源集中过去。
 
    **串行利用链：分步派，别拆成并行。** 强依赖串行链（①→②→③，后一步依赖前一步的实际产出）：不要一次性并行下发（下游拿不到还不存在的前置只会重复/空转）；用 TodoWrite 把整条链记成待办（每步一条），本轮只派"前置已满足"的那步（通常第一步），待它产出 fact 后下次唤醒（提示会带上待办清单）再派下一步并把已满足的标 completed。"同一件事"别拆两条（"确认触发点"和"触发触发点"是同一步）；只有【平行、互不依赖】的维度（如枚举多个不相关端点）才用多意图并行。
 
@@ -480,7 +483,7 @@ dispatch_finding_to_agent(
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
-// 【二开·P-TPL·A4 planner 提示词四级链】
+// ═══ ARTEX 二开 · [P-TPL·A4 planner 提示词四级链] ═══
 // 功能介绍：plannerSystem 四级优先级链（m00521 拍板）——
 //
 //	① 任务级覆盖（tasks.planner_prompt_override 快照：手改 planner_prompt / 模板正文快照）
@@ -488,6 +491,8 @@ dispatch_finding_to_agent(
 //	③ planner_templates 默认模板（只兜直写库建任务的边角路径——正常路径 S13 已快照进①）
 //	④ 内置默认（plannerDefaultTmpl）
 //	渲染失败逐级回退；代码占有的尾部规约（artifactSpec）渲染后追加，任何一级不可覆盖。
+//
+// 二开日期：2026-10-21
 func plannerSystem(goal, dataDir, workDir, taskOverride string) string {
 	vars := PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()}
 	// ① 任务级覆盖快照
@@ -593,7 +598,6 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		sysBody += "\n\n【意图审核已开启（最高优先级约束）】：本任务开启了人工审核流——创建新意图必须改用 add_review_intent 送审（参数同 add_intent，另可带 target_executor 预选执行器、replaces 标注替代的旧意图）；不要用 add_intent 直投 open。被驳回的意图（概览 rejected_intents 块，附驳回理由）用 update_intent 修订原稿后自动重送审；确认无价值的用 cancel_intent 取消（reason 必填）。"
 	}
 	if p.wantConstraints() {
-		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
 	system, boundary := deferredSystem(sysBody, def)
 	// planner 无自身墙钟预算;有 deadline 时把 MaxDuration 夹逼到剩余,让在跑的规划轮在

@@ -61,7 +61,7 @@ func ipToHostCIDR(ip string) string {
 	return ip + "/128"
 }
 
-// upsertTaskScopeResult inserts one scope row idempotently (uq_task_scope). A duplicate is
+// upsertTaskScope inserts one scope row idempotently (uq_task_scope). A duplicate is
 // silently ignored. taskID<=0 or empty kind → no-op.
 func (s *AssetStore) upsertTaskScopeResult(ts TaskScope) (bool, error) {
 	if ts.TaskID <= 0 || ts.Kind == "" {
@@ -307,32 +307,22 @@ func (s *AssetStore) CoverageEnabled(taskID int64) bool {
 	return enabled
 }
 
-// taskScopeAssetMatchSQL is the single task_scope→asset membership predicate.
-// It assumes the asset table is aliased a and the scope table ts. Every
-// consumer (coverage counts, untested backlog, host candidates, list_assets)
-// splices this in, so the company / root_domain / subdomain / ip-cidr / icp
-// rules cannot drift apart again. ip/cidr matches the asset's ip column OR an
-// IP-literal domain: endpoint / service rows often carry the address in domain
-// while ip stays empty. It emits no placeholders of its own.
-const taskScopeAssetMatchSQL = `(
-       (ts.kind='company'     AND a.company_id = ts.company_id)
-    OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
-    OR (ts.kind='subdomain'   AND a.domain = ts.domain)
-    OR (ts.kind IN ('ip','cidr') AND (ts.net >>= try_inet(a.ip) OR ts.net >>= try_inet(a.domain)))
-    OR (ts.kind='icp' AND (
-         lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
-         OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
-       ))
-  )`
-
-// covTargetCTE is the coverage denominator (task_scope membership via
-// taskScopeAssetMatchSQL) plus the tested set for one task. $1=taskID, $2=expID.
+// task_scope→assets match predicate, reused by the count / by-type / untested queries. $1=taskID.
 const covTargetCTE = `
 target AS (
   SELECT DISTINCT a.id, a.type,
          COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
   FROM assets a
-  JOIN task_scope ts ON ts.task_id = $1 AND ` + taskScopeAssetMatchSQL + `
+  JOIN task_scope ts ON ts.task_id = $1 AND (
+       (ts.kind='company'     AND a.company_id = ts.company_id)
+    OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
+    OR (ts.kind='subdomain'   AND a.domain = ts.domain)
+    OR (ts.kind IN ('ip','cidr') AND ts.net >>= try_inet(a.ip))
+    OR (ts.kind='icp' AND (
+         lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
+         OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
+       ))
+  )
 ),
 tested AS (
   SELECT DISTINCT ea.asset_id
@@ -373,7 +363,9 @@ FROM target t GROUP BY t.type ORDER BY t.type`, taskID, expID)
 	return cov, nil
 }
 
+// ---------------------------------------------------------------------------
 // Coverage graph — a force-directed view of a task's in-scope assets.
+// ---------------------------------------------------------------------------
 
 // CoverageGraphNode is one node of the asset coverage graph. Node identity is a
 // string key: an asset row is "a:<id>", a company is "c:<id>", and a root domain

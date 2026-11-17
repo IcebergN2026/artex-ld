@@ -3,6 +3,7 @@ package db
 // ═══ ARTEX 二开 · [审核流 PR2-PR5 PG 集成测试] ═══
 // 覆盖审核流改造的 db 层新语义：review_status 子状态机、版本 CAS、rejected 退回修订闭环、
 // update/cancel（软删）、产出锁。需要 ARTEX_PG_DSN（无则 skip）。
+// 二开日期：2026-10-25
 
 import (
 	"errors"

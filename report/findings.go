@@ -4,7 +4,6 @@
 //   - SingleFindingMarkdown：生成单个漏洞发现的 Markdown 详情报告。
 //   - FindingsCSV：将全部发现导出为 CSV 字节流。
 //   - FindingFilename / findingTrafficIDs / findingTrafficMarkdown：生成导出文件名并整理关联流量证据。
-
 package report
 
 import (
@@ -26,9 +25,9 @@ import (
 // sortFindingsForExport 按严重等级降序、再按时间倒序排,与汇总报告的分组一致。
 func sortFindingsForExport(fs []*db.DBFinding) {
 	sort.SliceStable(fs, func(i, j int) bool {
-		ri, rj := severityRank(fs[i].Severity), severityRank(fs[j].Severity)
+		ri, rj := sevRank[fs[i].Severity], sevRank[fs[j].Severity]
 		if ri != rj {
-			return ri < rj // severityRank 越小越严重
+			return ri < rj // sevRank 越小越严重
 		}
 		return fs[i].CreatedAt.After(fs[j].CreatedAt)
 	})
@@ -53,7 +52,7 @@ func FindingsMarkdown(fs []*db.DBFinding, generatedAt time.Time) string {
 	// 摘要:各严重等级计数。
 	counts := map[string]int{}
 	for _, f := range items {
-		counts[severityKey(f.Severity)]++
+		counts[f.Severity]++
 	}
 	b.WriteString("## 摘要\n\n")
 	b.WriteString("| 严重等级 | 数量 |\n| --- | --- |\n")

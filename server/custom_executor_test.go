@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -45,8 +43,8 @@ func testCustomExecutorSetupWithPlannerControl(t *testing.T, plannerControlled b
 		t.Fatal(err)
 	}
 
-	// Agent.Key 与 ExecutorKey 故意不同：会话/提示词使用前者，领取身份使用后者。
-	a, err := m.pg.CreateAgent("recon_scout_agent", "侦察执行器", "测试自定义执行器")
+	// 创建自定义执行器 agent。
+	a, err := m.pg.CreateAgent("recon_scout", "侦察执行器", "测试自定义执行器")
 	if err != nil {
 		m.Close()
 		t.Fatal(err)
@@ -55,7 +53,6 @@ func testCustomExecutorSetupWithPlannerControl(t *testing.T, plannerControlled b
 		m.Close()
 		t.Fatal(err)
 	}
-	a.ExecutorKey = "recon_scout"
 	if err := m.pg.SetAgentPlannerControlled(a.Key, plannerControlled); err != nil {
 		m.Close()
 		t.Fatal(err)
@@ -126,127 +123,6 @@ func waitForNodeState(t *testing.T, store *db.ExplorationStore, id int64, state 
 	return nil
 }
 
-// installProfileChatAgentForTest 让自定义 Agent 的绑定 profile 走真实 ChatAgent，
-// 仅将 LLM 传输层替换为脚本 provider；Conversation、工具装配与结算均走生产实现。
-func installProfileChatAgentForTest(s *Server, profileID int64, provider llm.Provider) {
-	ca := agent.NewChatAgent(provider, "test-model", s.m.dir, nil, 100000)
-	s.profMu.Lock()
-	s.profChatAgents[profileID] = ca
-	s.profMu.Unlock()
-}
-
-func wireConversationToolsForTest(t *testing.T, m *Manager) {
-	t.Helper()
-	wireTools(m.pg, buildDomainReg(m.Assets()))
-	t.Cleanup(func() { agent.ToolResolve = nil })
-}
-
-// waitForPreAgentConversation 等到真实 Conversation 的终态活动落库，不用固定睡眠猜测执行完成。
-func waitForPreAgentConversation(t *testing.T, s *Server, task *Task, agentKey string) (*db.Conversation, []db.Activity) {
-	t.Helper()
-	title := fmt.Sprintf("首个意图 · task#%s", task.ID)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		conversations, err := s.m.pg.ListConversations()
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, c := range conversations {
-			if c.AgentKey != agentKey || c.Title != title {
-				continue
-			}
-			activities, _, err := s.m.pg.ConvActivityList(c.ID, 0, 500)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, activity := range activities {
-				if activity.Kind == "result" {
-					return c, activities
-				}
-			}
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("pre_agent conversation %q for agent %s did not finish", title, agentKey)
-	return nil, nil
-}
-
-func preAgentConversationUserMessage(t *testing.T, s *Server, conversationID int64) string {
-	t.Helper()
-	activities, _, err := s.m.pg.ConvActivityList(conversationID, 0, 500)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, activity := range activities {
-		if activity.Kind != "user" {
-			continue
-		}
-		detail, err := s.m.pg.ConvActivityDetail(conversationID, activity.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return detail
-	}
-	t.Fatalf("conversation %d has no user activity", conversationID)
-	return ""
-}
-
-func assertNoTaskActivityForIntent(t *testing.T, task *Task, intentID int64) {
-	t.Helper()
-	activities, _, err := task.Store.ActivityList(nil, 0, 500)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, activity := range activities {
-		if activity.NodeID != nil && *activity.NodeID == intentID {
-			t.Fatalf("conversation-only seed emitted task activity: %+v", activity)
-		}
-	}
-}
-
-func stopTaskWithin(t *testing.T, s *Server, taskID string) {
-	t.Helper()
-	stopped := make(chan struct{})
-	go func() {
-		s.engine.StopTask(taskID)
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("StopTask did not return within 2s")
-	}
-}
-
-func addNonSeedCustomIntent(t *testing.T, task *Task, state string) *db.Node {
-	t.Helper()
-	id, err := task.Store.AddNode(db.KindIntent, map[string]any{
-		"summary": "synthetic-non-seed-custom", "executor": "recon_scout",
-	}, 5, state, "planner", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	intent, err := task.Store.GetNode(id)
-	if err != nil || intent == nil {
-		t.Fatalf("load non-seed custom intent: %+v err=%v", intent, err)
-	}
-	return intent
-}
-
-func claimNonSeedCustomIntent(t *testing.T, task *Task) *db.Node {
-	t.Helper()
-	intent := addNonSeedCustomIntent(t, task, "open")
-	claimed, err := task.Store.ClaimExecutorIntent(intent.ID, "open", "recon_scout", "exec:recon_scout")
-	if err != nil || !claimed {
-		t.Fatalf("preclaim non-seed custom intent: claimed=%v err=%v", claimed, err)
-	}
-	intent, err = task.Store.GetNode(intent.ID)
-	if err != nil || intent == nil {
-		t.Fatalf("reload preclaimed intent: %+v err=%v", intent, err)
-	}
-	return intent
-}
-
 // TestCustomExecutorProviderResolution 验证 providerFn 的回退逻辑：
 // id=0 或失效绑定回退全局 Provider，有效绑定保持 model，未配置全局返回 ok=false。
 func TestCustomExecutorProviderResolution(t *testing.T) {
@@ -298,7 +174,7 @@ func TestCustomExecutorProviderResolution(t *testing.T) {
 // state=proposed、payload.executor=recon_scout、无 review_status、
 // Frontier 不领取、HasActiveIntent=true、HasProposedIntent=false、graphOverviewData 含 assigned_intents。
 func TestSeedFirstIntentUsesCustomProposed(t *testing.T) {
-	_, _, task, _, _ := testCustomExecutorSetup(t)
+	_, s, task, _, _ := testCustomExecutorSetup(t)
 
 	// 重新触发种子（CreateTaskWithOptions 已自动 seed，这里验证已有种子）。
 	intents, err := task.Store.ListByKind(db.KindIntent, 10)
@@ -353,68 +229,121 @@ func TestSeedFirstIntentUsesCustomProposed(t *testing.T) {
 		t.Fatal("AssignedIntents must contain custom proposed seed")
 	}
 	// graphOverviewData 含 assigned_intents（通过 AssignedIntents 非空间接验证）。
+
+	// restoreTaskRuntimes 日志语义（仅验证不 panic）。
+	s.restoreTaskRuntimes()
 }
 
-// TestPreAgentConversationClaimsAndCompletesSeed 验证首个种子只经真实
-// Conversation/ChatAgent 执行，并严格区分 Agent.Key 与 ExecutorKey。
-func TestPreAgentConversationClaimsAndCompletesSeed(t *testing.T) {
-	_, s, task, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
-	if a.Key == a.ExecutorKey {
-		t.Fatal("test requires distinct Agent.Key and ExecutorKey")
-	}
+// TestCustomExecutorProposedDispatchesWithoutDefaultWorker 验证真实 Engine.Run
+// 在默认 worker 不可用时仍能分派 custom proposed 并完成。
+func TestCustomExecutorProposedDispatchesWithoutDefaultWorker(t *testing.T) {
+	m, s, task, _, _ := testCustomExecutorSetup(t)
 	sid := seedIntentID(t, task)
+
+	// 固定 authoritative resolver 返回 nil,nil（默认 worker 不可用）。
+	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+		return nil, nil
+	})
+
+	// 注入 scripted provider 到自定义执行器的 providerFn。
 	provider := &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{
 		{Type: llm.SEMessageStart},
 		{Type: llm.SETextDelta, Text: "侦察完成"},
 	}}
-	installProfileChatAgentForTest(s, profileID, provider)
-	wireConversationToolsForTest(t, s.m)
-	workerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "default worker must stay idle"},
-	}}
-	setPlannerWorkerForTest(t, s, &scriptedLLMProvider{}, workerProvider)
+	s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
+		return provider, agent.Config{Model: "test-model"}, true
+	}
 
+	// 启动真实 Engine.Run。
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.engine.Run(ctx, task)
 
-	seed := waitForNodeState(t, task.Store, sid, "done", 5*time.Second)
-	if seed.Owner != "exec:"+a.ExecutorKey {
-		t.Fatalf("seed owner=%q, want exec:%s", seed.Owner, a.ExecutorKey)
-	}
-	conversation, activities := waitForPreAgentConversation(t, s, task, a.Key)
-	if conversation.AgentKey != a.Key {
-		t.Fatalf("conversation agent=%q, want Agent.Key %q", conversation.AgentKey, a.Key)
-	}
-	seenClaim := false
-	for _, activity := range activities {
-		if activity.Kind == "tool_use" && activity.Tool == "claim_executor_intent" {
-			seenClaim = true
+	// 等待 custom proposed 被领取并完成。
+	deadline := time.Now().Add(10 * time.Second)
+	var finalState string
+	for time.Now().Before(deadline) {
+		n, err := task.Store.GetNode(sid)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if activity.Worker != "" && activity.Worker != a.Key {
-			t.Fatalf("conversation activity worker=%q, want %q", activity.Worker, a.Key)
+		if n == nil {
+			t.Fatal("seed intent not found")
 		}
+		finalState = n.State
+		if finalState == "done" || finalState == "blocked" || finalState == "exhausted" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	if !seenClaim {
-		t.Fatal("real Conversation did not execute claim_executor_intent")
+	if finalState != "done" {
+		t.Fatalf("custom proposed should complete as done, got %s", finalState)
 	}
+
+	// Provider 被调用两次：先领取，再执行。
 	if provider.calls != 2 {
-		t.Fatalf("ChatAgent provider calls=%d, want 2 (claim + final answer)", provider.calls)
+		t.Fatalf("provider calls=%d, want 2 (claim + execute)", provider.calls)
 	}
-	if workerProvider.calls != 0 {
-		t.Fatalf("default Worker executed the conversation-only seed: calls=%d", workerProvider.calls)
+
+	// 默认 worker Provider 零调用（通过 resolver 保证）。
+	// 活动 Worker 全为 exec:recon_scout。
+	acts, _, err := task.Store.ActivityList(nil, 0, 100)
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertNoTaskActivityForIntent(t, task, sid)
-	stopTaskWithin(t, s, task.ID)
+	for _, a := range acts {
+		if a.Worker != "" && !strings.HasPrefix(a.Worker, "exec:recon_scout") && a.Worker != "system" && a.Worker != "planner" {
+			t.Fatalf("unexpected worker in activity: %s", a.Worker)
+		}
+	}
+
+	// 普通 open 在同一场景轮询超时仍保持 open 且 owner 为空。
+	openID, err := task.Store.AddIntent(map[string]any{"summary": "普通 open 意图"}, 1, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Second)
+	on, _ := task.Store.GetNode(openID)
+	if on.State != "open" || on.Owner != "" {
+		t.Fatalf("default open should remain open with empty owner: state=%s owner=%s", on.State, on.Owner)
+	}
+
+	// 另用 nil Provider 证明真实 loop 快速 blocked。
+	task2, err := m.CreateTaskWithOptions("nil provider 测试", "目标", db.TaskCreateOptions{PreAgent: "recon_scout"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.seedFirstIntent(task2)
+	defer func() { _, _ = m.pg.Exec(`DELETE FROM tasks WHERE id=$1`, task2.ID) }()
+	sid2 := seedIntentID(t, task2)
+	s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
+		return nil, agent.Config{}, false
+	}
+	s.engine.Run(ctx, task2)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		n, _ := task2.Store.GetNode(sid2)
+		if n != nil && n.State == "blocked" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	n2, _ := task2.Store.GetNode(sid2)
+	if n2.State != "blocked" {
+		t.Fatalf("nil provider should quickly block, got %s", n2.State)
+	}
 }
 
-// TestCustomExecutorFailureSettlesWorker 验证非种子 custom intent 在 nil Provider / panic 时
-// 仍由 runIntent 安全边界清理 work、LLM 计数和 inflight。
+// TestCustomExecutorFailureSettlesWorker 验证 nil Provider / panic 时
+// 安全边界错误正确清理 work、LLM 计数和 inflight。
 func TestCustomExecutorFailureSettlesWorker(t *testing.T) {
 	for _, mode := range []string{"nil_provider", "panic_provider"} {
 		t.Run(mode, func(t *testing.T) {
 			_, s, task, _, _ := testCustomExecutorSetup(t)
-			intent := claimNonSeedCustomIntent(t, task)
+			sid := seedIntentID(t, task)
+			s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+				return nil, nil
+			})
 
 			if mode == "nil_provider" {
 				s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
@@ -426,13 +355,20 @@ func TestCustomExecutorFailureSettlesWorker(t *testing.T) {
 				}
 			}
 
-			if settled := s.engine.runIntent(context.Background(), task, "exec:recon_scout", nil, intent, "", "", true); !settled {
-				t.Fatal("preclaimed custom intent must be settled by runIntent")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			s.engine.Run(ctx, task)
+
+			// 等待 blocked。
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				n, _ := task.Store.GetNode(sid)
+				if n != nil && n.State == "blocked" {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
-			n, err := task.Store.GetNode(intent.ID)
-			if err != nil || n == nil {
-				t.Fatalf("reload intent: %+v err=%v", n, err)
-			}
+			n, _ := task.Store.GetNode(sid)
 			if n.State != "blocked" {
 				t.Fatalf("%s should block, got %s", mode, n.State)
 			}
@@ -448,6 +384,8 @@ func TestCustomExecutorFailureSettlesWorker(t *testing.T) {
 			if errorResults != 1 {
 				t.Fatalf("%s error results=%d, want 1", mode, errorResults)
 			}
+
+			// e.work 删除、ActiveLLMCalls/inflight=0。
 			if calls := s.engine.ActiveLLMCalls(task.ID); calls != 0 {
 				t.Fatalf("%s ActiveLLMCalls=%d, want 0", mode, calls)
 			}
@@ -473,30 +411,34 @@ func (p *panicLLMProvider) Complete(ctx context.Context, req llm.CompletionReque
 	return accumulateStreamForTest(ctx, p.Stream, req)
 }
 
-// TestCustomExecutorModelErrorRetriesSameExecutor 验证非种子 custom intent 的
-// model_error 重试始终使用同一自定义执行器，不转默认 Worker。
+// TestCustomExecutorModelErrorRetriesSameExecutor 验证 model_error 重试
+// 始终使用同一自定义执行器，不转默认 Worker。
 func TestCustomExecutorModelErrorRetriesSameExecutor(t *testing.T) {
-	m, s, task, _, _ := testCustomExecutorSetup(t)
-	originalPolicy := m.pg.LLMRetryPolicy()
-	policy := originalPolicy
-	policy.Intent = db.RetryRule{Attempts: 2, IntervalMS: 1}
-	if err := m.pg.SetLLMRetryPolicy(policy); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = m.pg.SetLLMRetryPolicy(originalPolicy) })
-	intent := claimNonSeedCustomIntent(t, task)
+	_, s, task, _, _ := testCustomExecutorSetup(t)
+	sid := seedIntentID(t, task)
+	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+		return nil, nil
+	})
+
 	provider := &scriptedLLMProvider{err: errors.New("transient model error")}
 	s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
 		return provider, agent.Config{Model: "test-model"}, true
 	}
 
-	if settled := s.engine.runIntent(context.Background(), task, "exec:recon_scout", nil, intent, "", "", true); !settled {
-		t.Fatal("preclaimed custom intent must settle after retries")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.engine.Run(ctx, task)
+
+	// 默认重试 2 次（共 3 次调用）。
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		n, _ := task.Store.GetNode(sid)
+		if n != nil && n.State == "blocked" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	n, err := task.Store.GetNode(intent.ID)
-	if err != nil || n == nil {
-		t.Fatalf("reload intent: %+v err=%v", n, err)
-	}
+	n, _ := task.Store.GetNode(sid)
 	if n.State != "blocked" {
 		t.Fatalf("model error should end blocked, got %s", n.State)
 	}
@@ -516,42 +458,39 @@ func TestCustomExecutorModelErrorRetriesSameExecutor(t *testing.T) {
 // TestCustomExecutorPauseResumeAndDelete 验证暂停/恢复/删除生命周期。
 func TestCustomExecutorPauseResumeAndDelete(t *testing.T) {
 	m, s, task, _, _ := testCustomExecutorSetup(t)
-	intent := claimNonSeedCustomIntent(t, task)
+	sid := seedIntentID(t, task)
+	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+		return nil, nil
+	})
 
-	// 非种子 intent 已由 Engine 预领取；blocking provider 只负责保持 runIntent 在执行中。
-	blocking := &blockingLLMProvider{started: make(chan struct{})}
+	// blocking provider：收到 ctx 后返回。
+	blocking := &blockingLLMProvider{started: make(chan struct{}), intentID: sid}
 	s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
 		return blocking, agent.Config{Model: "blocking"}, true
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	runDone := make(chan bool, 1)
-	go func() {
-		runDone <- s.engine.runIntent(ctx, task, "exec:recon_scout", nil, intent, "", "", true)
-	}()
-	<-blocking.started
+	s.engine.Run(ctx, task)
 
-	// ControlWork(pause) 完成后落 paused。
-	if err := s.engine.ControlWork(ctx, intent.ID, "pause"); err != nil {
+	// 等待 Agent 工具真正完成 proposed → running，而不是仅等待 Provider 发出领取事件。
+	<-blocking.started
+	n := waitForNodeState(t, task.Store, sid, "running", 3*time.Second)
+
+	// ControlWork(pause) 1 秒内完成并落 paused。
+	if err := s.engine.ControlWork(ctx, sid, "pause"); err != nil {
 		t.Fatal(err)
 	}
-	if settled := <-runDone; !settled {
-		t.Fatal("paused custom intent must remain a settled runIntent call")
-	}
-	n, err := task.Store.GetNode(intent.ID)
-	if err != nil || n == nil {
-		t.Fatalf("reload paused intent: %+v err=%v", n, err)
-	}
+	n, _ = task.Store.GetNode(sid)
 	if n.State != "paused" {
 		t.Fatalf("expected paused, got %s", n.State)
 	}
 
 	// resume 后 custom 为 proposed。
-	if _, err := s.applyIntentControl(ctx, task, intent.ID, "resume", "", ""); err != nil {
+	if _, err := s.applyIntentControl(ctx, task, sid, "resume", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	n, _ = task.Store.GetNode(intent.ID)
+	n, _ = task.Store.GetNode(sid)
 	if n.State != "proposed" {
 		t.Fatalf("resume should return proposed for custom, got %s", n.State)
 	}
@@ -614,13 +553,20 @@ func TestCustomExecutorPauseResumeAndDelete(t *testing.T) {
 	}
 }
 
-// blockingLLMProvider 保持 preclaimed custom 执行中，直到 ctx 取消。
+// blockingLLMProvider 在第一次调用时阻塞直到 ctx 取消。
 type blockingLLMProvider struct {
-	started chan struct{}
+	started  chan struct{}
+	intentID int64
 }
 
 func (p *blockingLLMProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
+		if p.intentID > 0 {
+			yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil)
+			yield(llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: "claim-block", ToolName: "claim_executor_intent"}, nil)
+			yield(llm.StreamEvent{Type: llm.SEToolInputJSON, Text: fmt.Sprintf(`{"intent_id":%d}`, p.intentID)}, nil)
+			yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "tool_use"}, nil)
+		}
 		close(p.started)
 		<-ctx.Done()
 		yield(llm.StreamEvent{}, ctx.Err())
@@ -641,59 +587,54 @@ func goneTaskNode(t *testing.T, store *db.ExplorationStore, id int64) bool {
 	return n == nil
 }
 
-// TestCustomExecutorTaskPauseReturnsProposed 验证任务级暂停时非种子 custom running 回 proposed。
+// TestCustomExecutorTaskPauseReturnsProposed 验证任务级暂停时 custom running 回 proposed。
 func TestCustomExecutorTaskPauseReturnsProposed(t *testing.T) {
 	_, s, task, _, _ := testCustomExecutorSetup(t)
-	intent := claimNonSeedCustomIntent(t, task)
-	blocking := &blockingLLMProvider{started: make(chan struct{})}
+	sid := seedIntentID(t, task)
+	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+		return nil, nil
+	})
+	blocking := &blockingLLMProvider{started: make(chan struct{}), intentID: sid}
 	s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
 		return blocking, agent.Config{Model: "blocking"}, true
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	runDone := make(chan bool, 1)
-	go func() {
-		runDone <- s.engine.runIntent(ctx, task, "exec:recon_scout", nil, intent, "", "", true)
-	}()
+	s.engine.Run(ctx, task)
 	<-blocking.started
+	waitForNodeState(t, task.Store, sid, "running", 3*time.Second)
 
+	// 任务级暂停（使用任务级 cause，触发 runIntent 的 taskExecutionPaused 回退分支）。
 	s.engine.Pause(task.ID, agent.AbortPausedByUser)
-	n := waitForNodeState(t, task.Store, intent.ID, "proposed", 3*time.Second)
+	n := waitForNodeState(t, task.Store, sid, "proposed", 3*time.Second)
 	if n.Owner != "" {
 		t.Fatalf("task pause should clear owner, got %s", n.Owner)
 	}
-	if settled := <-runDone; !settled {
-		t.Fatal("task-paused custom intent must remain a settled runIntent call")
-	}
 }
 
-// TestCustomProposedPlannerGates 验证 planner 门控：真实 pre_agent 对话无匹配退出后，
-// 只有 custom proposed 时仍不 kick 首轮、不重复派单。
+// TestCustomProposedPlannerGates 验证 planner 门控：
+// 只有 custom proposed 时 Run 不 kick 首轮、goalless 不落 done、停摆强提示不触发。
 func TestCustomProposedPlannerGates(t *testing.T) {
-	_, s, task, a, profileID := testCustomExecutorSetup(t)
-	provider := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "no matching intent"},
-	}}
-	installProfileChatAgentForTest(s, profileID, provider)
-	wireConversationToolsForTest(t, s.m)
-	plannerProvider := &scriptedLLMProvider{}
-	setPlannerWorkerForTest(t, s, plannerProvider, &scriptedLLMProvider{})
+	_, s, task, _, _ := testCustomExecutorSetup(t)
+	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+		return nil, nil
+	})
+	sid := seedIntentID(t, task)
+	s.engine.providerFn = func(profileID int64) (llm.Provider, agent.Config, bool) {
+		return &scriptedLLMProvider{claimIntentID: sid}, agent.Config{Model: "test"}, true
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.engine.Run(ctx, task)
-	waitForPreAgentConversation(t, s, task, a.Key)
 
-	intents, err := task.Store.ListByKind(db.KindIntent, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// 给 planner 几轮心跳机会，不应 kick 首轮或重复派单。
+	time.Sleep(2 * time.Second)
+
+	intents, _ := task.Store.ListByKind(db.KindIntent, 20)
 	if len(intents) != 1 {
 		t.Fatalf("planner should not dispatch duplicate intents, got %d", len(intents))
-	}
-	if plannerProvider.calls != 0 {
-		t.Fatalf("planner calls=%d, want 0 while custom seed remains proposed", plannerProvider.calls)
 	}
 
 	// review proposed 不被 DispatchFrontier 捞取。
@@ -706,10 +647,6 @@ func TestCustomProposedPlannerGates(t *testing.T) {
 		if n.ID == reviewID {
 			t.Fatal("review proposed must not appear in DispatchFrontier")
 		}
-	}
-	stopTaskWithin(t, s, task.ID)
-	if plannerProvider.calls != 0 {
-		t.Fatalf("planner ran during shutdown gate check: calls=%d", plannerProvider.calls)
 	}
 }
 
@@ -736,9 +673,6 @@ func TestCustomExecutorAdmissionWithoutDefaultLLM(t *testing.T) {
 	if queued {
 		t.Fatal("custom proposed task should not be queued for LLM unavailable")
 	}
-	// admitTask starts the runtime asynchronously. Stop it and wait for its
-	// conversation/routines to settle before t.TempDir cleanup runs.
-	stopTaskWithin(t, s, task.ID)
 
 	// llm_configured=false 语义不变。
 	if s.engine.ReadyFor(task) {
@@ -936,25 +870,68 @@ func TestCustomSeedPlannerGateDoneAndControlled(t *testing.T) {
 	}
 }
 
+func TestCustomSeedBlockedDoesNotNotifyPlanner(t *testing.T) {
+	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
+	if _, err := task.Store.AddGoal(map[string]any{"text": "synthetic-open-goal"}, "test"); err != nil {
+		t.Fatal(err)
+	}
+	plannerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-noop"}}}
+	workerProvider := &scriptedLLMProvider{}
+	setPlannerWorkerForTest(t, s, plannerProvider, workerProvider)
+	s.engine.providerFn = func(int64) (llm.Provider, agent.Config, bool) {
+		return nil, agent.Config{}, false
+	}
+	s.engine.debounce = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.engine.Run(ctx, task)
+
+	sid := seedIntentID(t, task)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := task.Store.GetNode(sid)
+		if err != nil || n == nil {
+			t.Fatalf("load seed: %v", err)
+		}
+		if n.State == "blocked" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	n, _ := task.Store.GetNode(sid)
+	if n.State != "blocked" {
+		t.Fatalf("seed state=%s, want blocked", n.State)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if plannerProvider.calls != 0 {
+		t.Fatalf("blocked custom seed woke planner %d times", plannerProvider.calls)
+	}
+	if workerProvider.calls != 0 {
+		t.Fatalf("blocked custom seed fell back to default worker %d times", workerProvider.calls)
+	}
+	for _, event := range task.drainTriggers() {
+		if event.Kind == "done" && event.IntentID == sid {
+			t.Fatal("blocked custom seed produced a done trigger")
+		}
+	}
+}
+
 func TestCustomSeedDoneAllowsPlanner(t *testing.T) {
-	_, s, task, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
+	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
 	if _, err := task.Store.AddGoal(map[string]any{"text": "synthetic-open-goal"}, "test"); err != nil {
 		t.Fatal(err)
 	}
 	plannerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-noop"}}}
 	setPlannerWorkerForTest(t, s, plannerProvider, &scriptedLLMProvider{})
 	sid := seedIntentID(t, task)
-	provider := &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-custom-done"},
-	}}
-	installProfileChatAgentForTest(s, profileID, provider)
-	wireConversationToolsForTest(t, s.m)
+	s.engine.providerFn = func(int64) (llm.Provider, agent.Config, bool) {
+		return &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-custom-done"}}}, agent.Config{Model: "synthetic-custom"}, true
+	}
 	s.engine.debounce = time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.engine.Run(ctx, task)
 
-	waitForNodeState(t, task.Store, sid, "done", 5*time.Second)
 	deadline := time.Now().Add(4 * time.Second)
 	for plannerProvider.calls == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -962,8 +939,13 @@ func TestCustomSeedDoneAllowsPlanner(t *testing.T) {
 	if plannerProvider.calls == 0 {
 		t.Fatal("completed custom seed should wake planner")
 	}
-	waitForPreAgentConversation(t, s, task, a.Key)
-	stopTaskWithin(t, s, task.ID)
+	n, err := task.Store.GetNode(seedIntentID(t, task))
+	if err != nil || n == nil {
+		t.Fatalf("load completed seed: %v", err)
+	}
+	if n.State != "done" {
+		t.Fatalf("seed state=%s, want done", n.State)
+	}
 }
 
 func TestCustomSeedGatePreventsGoallessCompletion(t *testing.T) {
@@ -1012,23 +994,21 @@ func TestCustomSeedGateSkipsTimeoutFinalPlanner(t *testing.T) {
 	}
 }
 
-// releaseLLMProvider 第一轮真实领取种子，第二轮在 release 前保持 Conversation 执行中。
+// releaseLLMProvider 在 release 前保持 custom 执行中，用于验证默认 Worker 不会提前启动。
 type releaseLLMProvider struct {
 	started  chan struct{}
 	release  chan struct{}
 	intentID int64
-	calls    int
 }
 
 func (p *releaseLLMProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
-		p.calls++
-		if p.calls == 1 {
+		if p.intentID > 0 {
 			yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil)
 			yield(llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: "claim-release", ToolName: "claim_executor_intent"}, nil)
 			yield(llm.StreamEvent{Type: llm.SEToolInputJSON, Text: fmt.Sprintf(`{"intent_id":%d}`, p.intentID)}, nil)
 			yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "tool_use"}, nil)
-			return
+			p.intentID = 0
 		}
 		select {
 		case <-p.started:
@@ -1050,23 +1030,29 @@ func (p *releaseLLMProvider) Complete(ctx context.Context, req llm.CompletionReq
 }
 
 func TestPreAgentCustomStageIsMutuallyExclusive(t *testing.T) {
-	_, s, task, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
+	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
+	if _, err := s.m.pg.Exec(`DELETE FROM agent_triggers WHERE agent_key=$1`, "recon_scout"); err != nil {
+		t.Fatal(err)
+	}
 	sid := seedIntentID(t, task)
 	customProvider := &releaseLLMProvider{started: make(chan struct{}), release: make(chan struct{}), intentID: sid}
-	installProfileChatAgentForTest(s, profileID, customProvider)
-	wireConversationToolsForTest(t, s.m)
-	workerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-default-done"},
-	}}
+	workerProvider := &scriptedLLMProvider{}
 	plannerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-noop"}}}
 	setPlannerWorkerForTest(t, s, plannerProvider, workerProvider)
+	s.engine.providerFn = func(int64) (llm.Provider, agent.Config, bool) {
+		return customProvider, agent.Config{Model: "synthetic-custom"}, true
+	}
 	s.engine.debounce = time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.engine.Run(ctx, task)
+	<-customProvider.started
 
-	n := waitForNodeState(t, task.Store, sid, "running", 3*time.Second)
-	<-customProvider.started // 第二轮已到来：claim 工具已真实执行，Conversation 仍在运行。
+	waitForNodeState(t, task.Store, sid, "running", 3*time.Second)
+	n, err := task.Store.GetNode(sid)
+	if err != nil || n == nil {
+		t.Fatalf("load custom seed: %v", err)
+	}
 	if n.Owner != "exec:recon_scout" {
 		t.Fatalf("custom seed owner=%s, want exec:recon_scout", n.Owner)
 	}
@@ -1074,271 +1060,126 @@ func TestPreAgentCustomStageIsMutuallyExclusive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(100 * time.Millisecond)
 	defaultNode, err := task.Store.GetNode(defaultID)
 	if err != nil || defaultNode == nil {
 		t.Fatalf("load default intent: %v", err)
 	}
 	if defaultNode.State != "open" || defaultNode.Owner != "" {
-		t.Fatalf("default intent was claimed during conversation: state=%s owner=%s", defaultNode.State, defaultNode.Owner)
+		t.Fatalf("default intent was claimed during custom stage: state=%s owner=%s", defaultNode.State, defaultNode.Owner)
+	}
+	if workerProvider.calls != 0 {
+		t.Fatalf("default worker started during custom stage: calls=%d", workerProvider.calls)
+	}
+
+	close(customProvider.release)
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		defaultNode, _ = task.Store.GetNode(defaultID)
+		if defaultNode != nil && defaultNode.State == "done" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if defaultNode == nil || defaultNode.State != "done" {
+		t.Fatalf("default intent was not executed after custom stage: %+v", defaultNode)
+	}
+	if workerProvider.calls == 0 {
+		t.Fatal("default worker did not start after custom stage")
+	}
+
+	// planner + custom wrapper + 延迟 Worker 池必须全部 Done，StopTask 不得永久等待。
+	stopped := make(chan struct{})
+	go func() {
+		s.engine.StopTask(task.ID)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopTask hung: goroutine count mismatch after delayed worker startup")
+	}
+}
+
+func TestPreAgentTaskCreateTriggerUsesConversationOnly(t *testing.T) {
+	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
+	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
+		AgentKey: "recon_scout", Enabled: true, OnTaskCreate: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.m.pg.Exec(`DELETE FROM agent_triggers WHERE agent_key=$1`, "recon_scout")
+	})
+	sid := seedIntentID(t, task)
+	customProvider := &scriptedLLMProvider{}
+	workerProvider := &scriptedLLMProvider{}
+	plannerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-noop"}}}
+	setPlannerWorkerForTest(t, s, plannerProvider, workerProvider)
+	s.engine.providerFn = func(int64) (llm.Provider, agent.Config, bool) {
+		return customProvider, agent.Config{Model: "synthetic-custom"}, true
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.engine.Run(ctx, task)
+	time.Sleep(150 * time.Millisecond)
+
+	seed, err := task.Store.GetNode(sid)
+	if err != nil || seed == nil {
+		t.Fatalf("load seed: %v", err)
+	}
+	if seed.State != "proposed" || seed.Owner != "" {
+		t.Fatalf("triggered conversation duplicated by custom executor: state=%s owner=%s", seed.State, seed.Owner)
+	}
+	if customProvider.calls != 0 {
+		t.Fatalf("customExecutorLoop started despite on_task_create: calls=%d", customProvider.calls)
+	}
+	defaultID, err := task.Store.AddIntent(map[string]any{"summary": "conversation-followup"}, 1, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := task.Store.ClaimExecutorIntent(sid, "proposed", "recon_scout", "exec:recon_scout")
+	if err != nil || !claimed {
+		t.Fatalf("simulate conversation claim: claimed=%v err=%v", claimed, err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	followup, err := task.Store.GetNode(defaultID)
+	if err != nil || followup == nil {
+		t.Fatalf("load followup: %v", err)
+	}
+	if followup.State != "open" || followup.Owner != "" {
+		t.Fatalf("default worker claimed during conversation: state=%s owner=%s", followup.State, followup.Owner)
 	}
 	if workerProvider.calls != 0 {
 		t.Fatalf("default worker started during conversation: calls=%d", workerProvider.calls)
 	}
-
-	close(customProvider.release)
-	waitForNodeState(t, task.Store, sid, "done", 5*time.Second)
-	waitForNodeState(t, task.Store, defaultID, "done", 5*time.Second)
-	if workerProvider.calls == 0 {
-		t.Fatal("default worker did not start after conversation completed")
-	}
-	waitForPreAgentConversation(t, s, task, a.Key)
-	// planner + Conversation wrapper + 延迟 Worker 池必须全部 Done。
-	stopTaskWithin(t, s, task.ID)
-}
-
-func TestPreAgentTaskCreateTriggerUsesConversationOnly(t *testing.T) {
-	_, s, task, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
-	const marker = "synthetic-task-create-marker"
-	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
-		AgentKey: a.Key, Enabled: true, OnTaskCreate: true, TaskCreateMessage: marker,
-	}); err != nil {
+	if err := task.Store.SetNodeState(sid, "done"); err != nil {
 		t.Fatal(err)
 	}
-	sid := seedIntentID(t, task)
-	provider := &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "synthetic-custom-done"},
-	}}
-	installProfileChatAgentForTest(s, profileID, provider)
-	wireConversationToolsForTest(t, s.m)
-	workerProvider := &scriptedLLMProvider{}
-	setPlannerWorkerForTest(t, s, &scriptedLLMProvider{}, workerProvider)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s.engine.Run(ctx, task)
-	waitForNodeState(t, task.Store, sid, "done", 5*time.Second)
-	conversation, _ := waitForPreAgentConversation(t, s, task, a.Key)
-	message := preAgentConversationUserMessage(t, s, conversation.ID)
-	if !strings.Contains(message, marker+"\n\n【本次由任务创建触发】") {
-		t.Fatalf("on_task_create message was not merged into pre_agent Conversation: %q", message)
-	}
-	if !strings.Contains(message, "【首个意图执行协议】") {
-		t.Fatalf("pre_agent protocol missing from Conversation input: %q", message)
-	}
-	if workerProvider.calls != 0 {
-		t.Fatalf("on_task_create fell back to default Worker: calls=%d", workerProvider.calls)
-	}
-	assertNoTaskActivityForIntent(t, task, sid)
-	stopTaskWithin(t, s, task.ID)
-}
-
-func TestPreAgentConversationNoMatchLeavesSeedAndWorkerIdle(t *testing.T) {
-	_, s, task, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
-	sid := seedIntentID(t, task)
-	provider := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "no matching seed"},
-	}}
-	installProfileChatAgentForTest(s, profileID, provider)
-	wireConversationToolsForTest(t, s.m)
-	workerProvider := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "must not run"},
-	}}
-	setPlannerWorkerForTest(t, s, &scriptedLLMProvider{}, workerProvider)
-	defaultID, err := task.Store.AddIntent(map[string]any{"summary": "must-not-fall-back"}, 1, nil, "planner")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s.engine.Run(ctx, task)
-	conversation, _ := waitForPreAgentConversation(t, s, task, a.Key)
-	if conversation.ID == 0 {
-		t.Fatal("no-match path must still use a real Conversation")
-	}
-	stopTaskWithin(t, s, task.ID)
-
-	seed, err := task.Store.GetNode(sid)
-	if err != nil || seed == nil {
-		t.Fatalf("reload seed: %+v err=%v", seed, err)
-	}
-	if seed.State != "proposed" || seed.Owner != "" {
-		t.Fatalf("no-match seed state=%s owner=%q, want proposed/empty", seed.State, seed.Owner)
-	}
-	facts, err := task.Store.FactsYielded(sid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(facts) != 0 {
-		t.Fatalf("no-match wrote placeholder task facts: %v", facts)
-	}
-	defaultNode, err := task.Store.GetNode(defaultID)
-	if err != nil || defaultNode == nil {
-		t.Fatalf("reload default intent: %+v err=%v", defaultNode, err)
-	}
-	if defaultNode.State != "open" || defaultNode.Owner != "" {
-		t.Fatalf("no-match fell back to default Worker: state=%s owner=%q", defaultNode.State, defaultNode.Owner)
-	}
-	if workerProvider.calls != 0 {
-		t.Fatalf("default Worker calls=%d, want 0", workerProvider.calls)
-	}
-	if provider.calls != 1 {
-		t.Fatalf("no-match ChatAgent provider calls=%d, want 1", provider.calls)
-	}
-	assertNoTaskActivityForIntent(t, task, sid)
-}
-
-func TestPreAgentTransientErrorRetries(t *testing.T) {
-	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
-	calls := 0
-	s.engine.preAgentFn = func(context.Context, *Task) (bool, error) {
-		calls++
-		if calls == 1 {
-			return false, errors.New("transient database error")
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		followup, _ = task.Store.GetNode(defaultID)
+		if followup != nil && followup.State == "done" {
+			break
 		}
-		return false, nil
+		time.Sleep(10 * time.Millisecond)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if s.engine.runPreAgentStage(ctx, task) {
-		t.Fatal("no-match run must not release workers")
+	if followup == nil || followup.State != "done" {
+		t.Fatalf("default worker did not resume after conversation: %+v", followup)
 	}
-	if calls != 2 {
-		t.Fatalf("pre-agent calls=%d, want retry after transient error", calls)
-	}
-}
-
-func TestHasOnTaskCreateTriggerUsesAgentKey(t *testing.T) {
-	_, s, _, a, _ := testCustomExecutorSetup(t)
-	if a.Key == a.ExecutorKey {
-		t.Fatal("test requires distinct Agent.Key and ExecutorKey")
-	}
-	// The package shares one PostgreSQL database across tests; remove triggers left
-	// by earlier cases so this test starts from a known empty trigger set.
-	if err := s.m.pg.DeleteTriggersForAgent(a.Key); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
-		AgentKey: a.Key, Enabled: false, OnTaskCreate: true, TaskCreateMessage: "disabled",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
-		AgentKey: a.Key, Enabled: true, OnFinding: true, FindingMessage: "other event",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	enabled, err := s.engine.hasOnTaskCreateTrigger(a.ExecutorKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enabled {
-		t.Fatal("disabled or non-create trigger must not enable on_task_create")
-	}
-	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
-		AgentKey: a.Key, Enabled: true, OnTaskCreate: true, TaskCreateMessage: "enabled",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	enabled, err = s.engine.hasOnTaskCreateTrigger(a.ExecutorKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !enabled {
-		t.Fatal("enabled on_task_create row keyed by Agent.Key was not found through ExecutorKey")
-	}
-}
-
-func TestRestoredPreAgentConversationDoesNotReplayTaskCreate(t *testing.T) {
-	m, s, original, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
-	const marker = "restored-task-create-must-not-replay"
-	if _, err := m.pg.CreateTrigger(&db.AgentTrigger{
-		AgentKey: a.Key, Enabled: true, OnTaskCreate: true, TaskCreateMessage: marker,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	sid := seedIntentID(t, original)
-	provider := &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "restored conversation done"},
-	}}
-	installProfileChatAgentForTest(s, profileID, provider)
-	wireConversationToolsForTest(t, m)
-
-	// 模拟进程重启后的 LoadExisting：丢弃内存句柄，但保留同一 PG 任务与探索图。
-	m.mu.Lock()
-	delete(m.tasks, original.ID)
-	m.mu.Unlock()
-	s.restoreTaskRuntimes()
-	restored, ok := m.Task(original.ID)
-	if !ok || restored == nil {
-		t.Fatal("persisted pre_agent task was not restored")
-	}
-	if !restored.PreAgentRestored {
-		t.Fatal("LoadExisting must mark restored pre_agent task with PreAgentRestored")
-	}
-	waitForNodeState(t, restored.Store, sid, "done", 5*time.Second)
-	conversation, _ := waitForPreAgentConversation(t, s, restored, a.Key)
-	message := preAgentConversationUserMessage(t, s, conversation.ID)
-	if strings.Contains(message, marker) || strings.Contains(message, "【本次由任务创建触发】") {
-		t.Fatalf("restored pre_agent replayed on_task_create: %q", message)
-	}
-	if !strings.Contains(message, "【首个意图执行协议】") {
-		t.Fatalf("restored task skipped the pre_agent protocol itself: %q", message)
-	}
-	assertNoTaskActivityForIntent(t, restored, sid)
-	stopTaskWithin(t, s, restored.ID)
-}
-
-func TestPreAgentConversationManualRerunRecoverableStates(t *testing.T) {
-	for _, state := range []string{"blocked", "exhausted", "stopped"} {
-		t.Run(state, func(t *testing.T) {
-			_, s, task, a, profileID := testCustomExecutorSetupWithPlannerControl(t, false)
-			sid := seedIntentID(t, task)
-			if err := task.Store.SetIntentState(sid, state); err != nil {
-				t.Fatal(err)
-			}
-			provider := &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{
-				{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "manual rerun done"},
-			}}
-			installProfileChatAgentForTest(s, profileID, provider)
-			wireConversationToolsForTest(t, s.m)
-			workerProvider := &scriptedLLMProvider{}
-			setPlannerWorkerForTest(t, s, &scriptedLLMProvider{}, workerProvider)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			s.engine.Run(ctx, task)
-
-			req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/intents/"+strconv.FormatInt(sid, 10)+"/rerun", nil)
-			req.SetPathValue("id", task.ID)
-			req.SetPathValue("iid", strconv.FormatInt(sid, 10))
-			recorder := httptest.NewRecorder()
-			s.rerunIntent(recorder, req)
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("manual rerun status=%d body=%s", recorder.Code, recorder.Body.String())
-			}
-			seed := waitForNodeState(t, task.Store, sid, "done", 5*time.Second)
-			if seed.Owner != "exec:recon_scout" {
-				t.Fatalf("rerun owner=%q, want exec:recon_scout", seed.Owner)
-			}
-			waitForPreAgentConversation(t, s, task, a.Key)
-			if workerProvider.calls != 0 {
-				t.Fatalf("manual rerun used default Worker: calls=%d", workerProvider.calls)
-			}
-			assertNoTaskActivityForIntent(t, task, sid)
-			stopTaskWithin(t, s, task.ID)
-		})
-	}
+	s.engine.StopTask(task.ID)
 }
 
 func TestConversationExecutorToolInjection(t *testing.T) {
-	m, _, task, a, _ := testCustomExecutorSetupWithPlannerControl(t, false)
-	wireConversationToolsForTest(t, m)
+	m, _, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
+	wireTools(m.pg, buildDomainReg(m.Assets()))
+	t.Cleanup(func() { agent.ToolResolve = nil })
 	taskID, err := strconv.ParseInt(task.ID, 10, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: taskID})
-	resolved := names(agent.ToolResolve(ctx, a.Key, nil))
+	resolved := names(agent.ToolResolve(ctx, "recon_scout", nil))
 	if resolved["list_intents"] == nil || resolved["claim_executor_intent"] == nil {
 		t.Fatalf("conversation tools not injected: list=%v claim=%v", resolved["list_intents"] != nil, resolved["claim_executor_intent"] != nil)
 	}
@@ -1364,45 +1205,16 @@ func TestConversationExecutorToolInjection(t *testing.T) {
 	}
 }
 
-func TestConversationTaskDomainUsesTaskID(t *testing.T) {
-	m, _, task, a, _ := testCustomExecutorSetupWithPlannerControl(t, false)
-	wireConversationToolsForTest(t, m)
-	if err := m.pg.AddAgentToToolBinding(a.Key, []string{"report_finding"}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = m.pg.RemoveAgentFromTool(a.Key, "report_finding") })
-	taskID, err := strconv.ParseInt(task.ID, 10, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := agent.WithRunInfo(context.Background(), agent.RunInfo{TaskID: taskID})
-	tool := names(agent.ToolResolve(ctx, a.Key, nil))["report_finding"]
-	if tool == nil {
-		t.Fatal("report_finding not injected into task conversation")
-	}
-	name := "conversation-taskid-" + task.ID
-	raw := fmt.Sprintf(`{"vulnclass":"test","name":%q,"severity":"low","summary":"task attribution","evidence":"synthetic evidence"}`, name)
-	res, err := tool.Call(ctx, json.RawMessage(raw), nil)
-	if err != nil || res.IsError {
-		t.Fatalf("report_finding failed: err=%v result=%s", err, res.Flatten())
-	}
-	var gotTaskID int64
-	if err := m.pg.QueryRow(`SELECT COALESCE(task_id,0) FROM findings WHERE name=$1 ORDER BY id DESC LIMIT 1`, name).Scan(&gotTaskID); err != nil {
-		t.Fatal(err)
-	}
-	if gotTaskID != taskID {
-		t.Fatalf("finding task_id=%d, want %d", gotTaskID, taskID)
-	}
-}
-
 func TestCustomExecutorNoMatchExitsWithoutDone(t *testing.T) {
 	_, _, task, a, _ := testCustomExecutorSetupWithPlannerControl(t, false)
-	intent := addNonSeedCustomIntent(t, task, "proposed")
+	intent, err := task.Store.GetNode(seedIntentID(t, task))
+	if err != nil || intent == nil {
+		t.Fatalf("load proposed intent: %v", err)
+	}
 	taskID, _ := strconv.ParseInt(task.ID, 10, 64)
 	reason, _, err := agent.RunCustomExecutor(context.Background(), agent.CustomExecutorConfig{
 		Agent: a, Provider: &scriptedLLMProvider{}, TaskID: taskID,
 		Intent: intent, Store: task.Store, Goal: "synthetic-goal", WorkDir: t.TempDir(),
-		RequireSelfClaim: true,
 	})
 	if !errors.Is(err, agent.ErrNoMatchingIntent) {
 		t.Fatalf("expected ErrNoMatchingIntent, got reason=%s err=%v", reason, err)
@@ -1414,71 +1226,30 @@ func TestCustomExecutorNoMatchExitsWithoutDone(t *testing.T) {
 	if n.State != "proposed" || n.Owner != "" {
 		t.Fatalf("no-match intent changed state=%s owner=%s, want proposed/empty", n.State, n.Owner)
 	}
-	facts, err := task.Store.FactsYielded(intent.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(facts) != 0 {
-		t.Fatalf("no-match direct executor wrote placeholder facts: %v", facts)
-	}
 }
 
 func TestCustomExecutorSelfClaimCompletesDone(t *testing.T) {
 	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
-	intent := addNonSeedCustomIntent(t, task, "proposed")
-	provider := &scriptedLLMProvider{claimIntentID: intent.ID, events: []llm.StreamEvent{
+	sid := seedIntentID(t, task)
+	provider := &scriptedLLMProvider{claimIntentID: sid, events: []llm.StreamEvent{
 		{Type: llm.SEMessageStart},
 		{Type: llm.SETextDelta, Text: "synthetic-self-claim-done"},
 	}}
 	s.engine.providerFn = func(int64) (llm.Provider, agent.Config, bool) {
 		return provider, agent.Config{Model: "synthetic-custom"}, true
 	}
-	if claimed := s.engine.runIntent(context.Background(), task, "exec:recon_scout", nil, intent, "", "", false); !claimed {
-		t.Fatal("direct self-claim runIntent should complete the proposed non-seed intent")
+	intent, err := task.Store.GetNode(sid)
+	if err != nil || intent == nil {
+		t.Fatalf("load proposed intent: %v", err)
 	}
-	n, err := task.Store.GetNode(intent.ID)
+	if claimed := s.engine.runIntent(context.Background(), task, "exec:recon_scout", nil, intent, "", ""); !claimed {
+		t.Fatal("custom executor should claim and complete the proposed intent")
+	}
+	n, err := task.Store.GetNode(sid)
 	if err != nil || n == nil {
 		t.Fatalf("reload completed intent: %v", err)
 	}
 	if n.State != "done" || n.Owner != "exec:recon_scout" {
 		t.Fatalf("self-claimed intent state=%s owner=%s, want done/exec:recon_scout", n.State, n.Owner)
-	}
-}
-
-func TestCustomExecutorEnginePreclaimedRunsWithoutSelfClaim(t *testing.T) {
-	_, s, task, _, _ := testCustomExecutorSetupWithPlannerControl(t, false)
-	if err := task.Store.SetIntentState(seedIntentID(t, task), "done"); err != nil {
-		t.Fatal(err)
-	}
-	addNonSeedCustomIntent(t, task, "open")
-	provider := &scriptedLLMProvider{events: []llm.StreamEvent{
-		{Type: llm.SEMessageStart}, {Type: llm.SETextDelta, Text: "preclaimed execution done"},
-	}}
-	s.engine.providerFn = func(int64) (llm.Provider, agent.Config, bool) {
-		return provider, agent.Config{Model: "synthetic-custom"}, true
-	}
-
-	intent, name, customPreclaimed := s.engine.claimNext(task, "work#1", nil)
-	if intent == nil {
-		t.Fatal("claimNext did not return the non-seed custom intent")
-	}
-	if intent.Origin == "seed" {
-		t.Fatal("claimNext returned the seed instead of the non-seed custom intent")
-	}
-	if name != "exec:recon_scout" || !customPreclaimed {
-		t.Fatalf("claimNext name=%q customPreclaimed=%v, want exec:recon_scout/true", name, customPreclaimed)
-	}
-	if settled := s.engine.runIntent(context.Background(), task, name, nil, intent, "", "", customPreclaimed); !settled {
-		t.Fatal("Engine-preclaimed non-seed intent should execute without self-claim")
-	}
-	n, err := task.Store.GetNode(intent.ID)
-	if err != nil || n == nil {
-		t.Fatalf("reload preclaimed intent: %+v err=%v", n, err)
-	}
-	if n.State != "done" || n.Owner != "exec:recon_scout" {
-		t.Fatalf("preclaimed intent state=%s owner=%q, want done/exec:recon_scout", n.State, n.Owner)
-	}
-	if provider.calls != 1 {
-		t.Fatalf("preclaimed provider calls=%d, want 1 without list/claim round trip", provider.calls)
 	}
 }

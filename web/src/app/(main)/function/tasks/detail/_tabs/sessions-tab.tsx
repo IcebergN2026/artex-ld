@@ -286,8 +286,9 @@ const SYSTEM_SESSION: Session = {
   last_activity: "",
 };
 
-// 【二开·P-INTENT·U3 审核会话常量】
+// ═══ ARTEX 二开 · [P-INTENT·U3 审核会话常量] ═══
 // 功能介绍：REVIEW_SESSION——审核会话常驻会话列表（与 PLANNER_SESSION 同款虚拟会话模式；live 由活动流近 30s 判定）
+// 二开日期：2026-10-21
 const REVIEW_ID = "s-review";
 const REVIEW_SESSION: Session = {
   id: REVIEW_ID,
@@ -1226,17 +1227,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     return grouped;
   }, [intentAssets]);
 
-  // pre_agent custom seed 由会话 Agent 自领；仅隐藏这一类，非 seed custom/default intent 保持原有 Worker 会话。
-  const workerSessions = React.useMemo(
-    () =>
-      allIntents
-        .filter(
-          (n) =>
-            !isReviewProposed(n) && !(n.origin === "seed" && parseExecutorKey(n.payload ?? "") !== ""),
-        )
-        .map(intentToSession),
-    [allIntents],
-  );
+  const workerSessions = React.useMemo(() => allIntents.filter((n) => !isReviewProposed(n)).map(intentToSession), [allIntents]);
   const intentsHasMore = hasLoadedOlderIntentsPage ? olderIntentsHasMore : firstIntentsHasMore;
 
   // For each worker session (intent), derive the display title from the intent
@@ -1338,14 +1329,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
   const sessions = React.useMemo(() => {
     // 【二开·P-INTENT·U3】REVIEW_SESSION 并入（紧随 PLANNER_SESSION）
-    // 【二开·P-REVIEW·常驻】审核 tab 常驻：未开启审核的任务面板内显示空态
-    const items = [...mainSessions, { ...PLANNER_SESSION, live: plannerLive }, { ...REVIEW_SESSION, live: reviewLive }, ...workerSessions, SYSTEM_SESSION];
+    const items = [...mainSessions, { ...PLANNER_SESSION, live: plannerLive }, { ...REVIEW_SESSION, live: reviewLive }, ...workerSessions, SYSTEM_SESSION]; // 【二开·P-REVIEW·常驻】审核 tab 常驻：未开启审核的任务面板内显示空态
     const located = focusSession ?? retainedSession;
     if (located && !items.some((s) => s.id === located.id)) items.push(located);
     return items;
-  // 【二开·P-INTENT·U3】依赖加 reviewLive
-  // 【二开·P-REVIEW·D2c】依赖加 reviewEnabled
-  }, [mainSessions, workerSessions, plannerLive, reviewLive, reviewEnabled, focusSession, retainedSession]);
+  }, [mainSessions, workerSessions, plannerLive, reviewLive, reviewEnabled, focusSession, retainedSession]); // 【二开·P-INTENT·U3】依赖加 reviewLive【二开·P-REVIEW·D2c】加 reviewEnabled
 
   const grouped = {
     mainagent: sessions.filter((s) => s.role === "mainagent"),

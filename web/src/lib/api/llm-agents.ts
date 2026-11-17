@@ -93,9 +93,8 @@ export const llmAgentsApi = {
   },
   notifyRetryDelivery: (id: number) => post<{ ok: boolean }>(`/notify/deliveries/${id}/retry`),
   report: async (task?: string) => {
-    // 必须直接判断环境变量，让 webpack DefinePlugin 能折掉动态 import；
-    // Turbopack 另由 next.config.mjs 的 resolveAlias 替换为空桩。
-    if (process.env.NEXT_PUBLIC_MOCK === "1") return (await import("@/lib/mock/report")).mockReport(task);
+    // 动态 import + 构建期 alias（见 next.config.mjs）：demo 报告只在 MOCK 构建进 bundle。
+    if (MOCK) return (await import("@/lib/mock/report")).mockReport(task);
     const token = getToken();
     const r = await fetch(`/api/report${tq(task)}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},

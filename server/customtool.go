@@ -5,7 +5,6 @@
 //   - runCommandTool / runScriptTool / runHTTPTool：按类型执行命令 / 脚本 / HTTP 工具。
 //   - detectPython / validatePythonInterp / pythonInterpreter：Python 解释器自动探测、合法性校验与解析。
 //   - execPython：把脚本写入临时文件，以 stdin JSON 传参执行并收集输出。
-
 package server
 
 import (
@@ -57,7 +56,8 @@ func (s *Server) pgCreateCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req customToolReq
-	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	req.Key = strings.TrimSpace(req.Key)
@@ -103,7 +103,8 @@ func (s *Server) pgUpdateCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req customToolReq
-	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	if req.Kind != "command" && req.Kind != "script" && req.Kind != "http" && req.Kind != "shell" {
@@ -156,7 +157,8 @@ func (s *Server) pgTestCustomTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req testToolReq
-	if !decodeJSON(w, r, &req, maxLargeJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "无效的请求体")
 		return
 	}
 	params := req.Params

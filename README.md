@@ -75,7 +75,7 @@ export ARTEX_PG_DSN='postgres://artex:密码@127.0.0.1:5432/artex?sslmode=disabl
 
 | 内容                    | 链接                                                     |
 | --------------------- | ------------------------------------------------------ |
-| 功能详解（agent/工具/审核流/案例） | [docs/ARTEX-功能详解.md](docs/ARTEX-功能详解.md)               |
+| 功能详解（agent/工具/审核流/案例） | [docs/ARTEX-二开功能详解.md](docs/ARTEX-二开功能详解.md)               |
 | 部署手册（依赖/离线构建/升级/反代）   | [docs/ARTEX-部署手册.md](docs/ARTEX-部署手册.md)               |
 | 换环境迁移方案               | [docs/ARTEX-换环境迁移方案.md](docs/ARTEX-换环境迁移方案.md)         |
 | 全流程代码链                | [docs/ARTEX-二开-全流程代码链文档.md](docs/ARTEX-二开-全流程代码链文档.md) |

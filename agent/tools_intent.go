@@ -4,11 +4,10 @@
 //   - cancelIntent：软删除 open/proposed 意图（running/paused 拒绝并引导改走 control）。
 //   - intentIDVersionReq / validate：意图 id + expected_version 请求体及校验。
 //   - mainAgentOpenOnly：限制 mainagent 只能改动 open 意图。
-//   - claimExecutorIntent：自定义执行器领取工具（claim_executor_intent，原子领取匹配意图）。
 
 package agent
 
-// 【二开·审核流 PR4 意图修订/取消工具】
+// ═══ ARTEX 二开 · 审核流 PR4 ═══
 // update_intent / cancel_intent 工具（§5/§9）：
 //   - update_intent：修订 open 意图或被驳回（rejected）意图原稿；pending（审核中）一律
 //     拒绝；带 expected_version 乐观锁与产出锁；驳回稿改后自动重送审核（review_status
@@ -189,7 +188,7 @@ func (t *ToolSet) cancelIntent() actool.CoreTool {
 }
 
 // claimExecutorIntent 让当前自定义执行器直接领取一条匹配的 intent。
-// executor_key 只从 ToolSet.executorKey 的服务端身份取得，模型不能指定其他执行器。
+// executor_key 只从 ToolSet.worker 的服务端身份派生，模型不能指定其他执行器。
 // 同一个 CAS 同时完成 proposed/open → running 和 owner=exec:<key>，确保不会重复领取。
 func (t *ToolSet) claimExecutorIntent() actool.CoreTool {
 	return t.writeExpTool("claim_executor_intent",
@@ -198,17 +197,17 @@ func (t *ToolSet) claimExecutorIntent() actool.CoreTool {
 			"intent_id": idp("要领取的探索意图 id（先用 list_intents 查询）"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			executorKey := t.executorKey
-			if executorKey == "" {
-				return actool.Errorf("当前身份未配置 executor_key，不能领取自定义执行器意图"), nil
-			}
-			if !strings.HasPrefix(t.worker, "exec:") {
+			executorKey := ""
+			if strings.HasPrefix(t.worker, "exec:") {
+				executorKey = strings.TrimPrefix(t.worker, "exec:")
+			} else {
 				if t.worker == "" || t.checkExecutor == nil {
 					return actool.Errorf("仅自定义执行器可以调用 claim_executor_intent"), nil
 				}
-				if err := t.checkExecutor(executorKey); err != nil {
+				if err := t.checkExecutor(t.worker); err != nil {
 					return actool.Errorf(fmt.Sprintf("当前 Agent 不是有效的自定义执行器：%v", err)), nil
 				}
+				executorKey = t.worker
 			}
 			var req struct {
 				IntentID int64 `json:"intent_id"`

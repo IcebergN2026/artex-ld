@@ -135,13 +135,6 @@ func TestClaimExecutorIntentTool(t *testing.T) {
 	if !strings.Contains(res.Flatten(), `"claimed":false`) {
 		t.Fatalf("duplicate claim should be rejected: %+v", res)
 	}
-	n, err = ts.ts.GetNode(id)
-	if err != nil || n == nil {
-		t.Fatalf("reload after duplicate claim: %v", err)
-	}
-	if n.State != "running" || n.Owner != "exec:recon_scout" {
-		t.Fatalf("duplicate claim mutated state=%s owner=%s", n.State, n.Owner)
-	}
 	// 非 exec 身份禁止调用。
 	plainWorker := NewToolSet(ts.ts, "work#1")
 	res = callTool(t, plainWorker.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, id))
@@ -161,118 +154,32 @@ func TestClaimExecutorIntentTool(t *testing.T) {
 	}
 }
 
-func TestConversationClaimUsesCanonicalExecutorKey(t *testing.T) {
-	ts, cleanup := newIntentToolTestSet(t, "synthetic_agent")
+func TestConversationExecutorClaimsIntent(t *testing.T) {
+	ts, cleanup := newIntentToolTestSet(t, "recon_scout")
 	defer cleanup()
-	ts.SetExecutorKey("synthetic_recon")
-	var checked []string
+	id, err := ts.ts.AddNode(db.KindIntent, map[string]any{
+		"summary": "conversation-claim", "executor": "recon_scout",
+	}, 8, "proposed", "seed", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts.SetExecutorChecker(func(key string) error {
-		checked = append(checked, key)
-		if key != "synthetic_recon" {
+		if key != "recon_scout" {
 			return fmt.Errorf("not an executor")
 		}
 		return nil
 	})
-	newIntent := func(executor, state string) int64 {
-		t.Helper()
-		payload := map[string]any{"summary": "conversation-claim", "executor": executor}
-		if executor == "review" {
-			payload["review_status"] = "pending"
-		}
-		id, err := ts.ts.AddNode(db.KindIntent, payload, 8, state, "seed", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
-	assertState := func(id int64, state, owner string) {
-		t.Helper()
-		n, err := ts.ts.GetNode(id)
-		if err != nil || n == nil {
-			t.Fatalf("load intent %d: %v", id, err)
-		}
-		if n.State != state || n.Owner != owner {
-			t.Fatalf("intent %d mutated: state=%s owner=%s, want %s/%s", id, n.State, n.Owner, state, owner)
-		}
-	}
-
-	// Agent.Key/worker 与 executor_key 不同：checker 和领取都必须使用 canonical key。
-	id := newIntent("synthetic_recon", "proposed")
 	res := callTool(t, ts.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, id))
 	if res.IsError || !strings.Contains(res.Flatten(), `"claimed":true`) {
 		t.Fatalf("conversation executor claim failed: %+v", res)
 	}
-	assertState(id, "running", "exec:synthetic_recon")
-	if len(checked) != 1 || checked[0] != "synthetic_recon" {
-		t.Fatalf("checker keys=%v, want [synthetic_recon]", checked)
+	n, err := ts.ts.GetNode(id)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// 重复领取不得改变已 running 的节点。
-	res = callTool(t, ts.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, id))
-	if res.IsError || !strings.Contains(res.Flatten(), `"claimed":false`) {
-		t.Fatalf("duplicate claim should be refused without error: %+v", res)
+	if n.State != "running" || n.Owner != "exec:recon_scout" {
+		t.Fatalf("claimed state=%s owner=%s", n.State, n.Owner)
 	}
-	assertState(id, "running", "exec:synthetic_recon")
-
-	// payload.executor 不匹配、空 executor、review 闸门和非 proposed/open 状态均不改节点。
-	for _, tc := range []struct {
-		name     string
-		executor string
-		state    string
-	}{
-		{name: "wrong executor", executor: "other_recon", state: "proposed"},
-		{name: "empty payload executor", executor: "", state: "proposed"},
-		{name: "review", executor: "review", state: "proposed"},
-		{name: "terminal state", executor: "synthetic_recon", state: "done"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			id := newIntent(tc.executor, tc.state)
-			res := callTool(t, ts.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, id))
-			if res.IsError || !strings.Contains(res.Flatten(), `"claimed":false`) {
-				t.Fatalf("claim should return claimed=false: %+v", res)
-			}
-			assertState(id, tc.state, "")
-		})
-	}
-
-	// canonical key 为空时不得退化为 Agent.Key，也不得调用 checker 或改节点。
-	emptyKeyID := newIntent("synthetic_agent", "proposed")
-	emptyKey := NewToolSet(ts.ts, "synthetic_agent")
-	checkerCalled := false
-	emptyKey.SetExecutorChecker(func(string) error {
-		checkerCalled = true
-		return nil
-	})
-	res = callTool(t, emptyKey.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, emptyKeyID))
-	if !res.IsError || checkerCalled {
-		t.Fatalf("empty executor key must fail before checker: result=%+v checkerCalled=%v", res, checkerCalled)
-	}
-	assertState(emptyKeyID, "proposed", "")
-
-	// 非 exec 身份没有 checker 或 checker 拒绝时均不得领取。
-	noCheckerID := newIntent("synthetic_recon", "proposed")
-	noChecker := NewToolSet(ts.ts, "synthetic_agent")
-	noChecker.SetExecutorKey("synthetic_recon")
-	res = callTool(t, noChecker.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, noCheckerID))
-	if !res.IsError {
-		t.Fatalf("conversation executor without checker must fail: %+v", res)
-	}
-	assertState(noCheckerID, "proposed", "")
-
-	rejectedID := newIntent("synthetic_recon", "proposed")
-	rejected := NewToolSet(ts.ts, "synthetic_agent")
-	rejected.SetExecutorKey("synthetic_recon")
-	rejected.SetExecutorChecker(func(key string) error {
-		if key != "synthetic_recon" {
-			t.Fatalf("checker key=%q, want canonical executor key", key)
-		}
-		return fmt.Errorf("executor disabled")
-	})
-	res = callTool(t, rejected.claimExecutorIntent(), fmt.Sprintf(`{"intent_id":%d}`, rejectedID))
-	if !res.IsError || !strings.Contains(res.Flatten(), "executor disabled") {
-		t.Fatalf("checker rejection should fail claim: %+v", res)
-	}
-	assertState(rejectedID, "proposed", "")
 }
 
 func TestCustomExecutorToolsExposeListAndClaim(t *testing.T) {

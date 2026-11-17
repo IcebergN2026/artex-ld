@@ -13,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.bench
-    image: artex-bench:latest
+    image: artex-bench:0.1.6
     container_name: artex-bench
     env_file:
       - bench/.env

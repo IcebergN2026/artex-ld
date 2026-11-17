@@ -4,7 +4,6 @@
 //   - applyIntentControl：意图的暂停、恢复与 soft/hard 删除（取消）。
 //   - controlTasksBatch：批量对 1-100 个任务执行暂停/继续。
 //   - resumeAdmissionMode / normalizeBatchTaskIDs：恢复入队判定与批量 id 归一。
-
 package server
 
 import (
@@ -256,11 +255,13 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 }
 
 func (s *Server) controlTasksBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
 	var req struct {
 		TaskIDs []string `json:"task_ids"`
 		Action  string   `json:"action"`
 	}
-	if !decodeJSON(w, r, &req, maxBatchJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
 	if req.Action != "pause" && req.Action != "resume" {

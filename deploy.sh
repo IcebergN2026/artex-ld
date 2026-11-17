@@ -83,8 +83,8 @@ if [ ! -f .env ]; then
 POSTGRES_PASSWORD=${pg_pass}
 POSTGRES_USER=artex
 POSTGRES_DB=artex
-# 留空即使用最新正式版；指定版本可复现升级/回滚。
-ARTEX_TAG=
+# 留空即使用最新正式版；指定版本可复现升级/回滚（当前发布统一 0.1.6）。
+ARTEX_TAG=0.1.6
 EOF
   chmod 600 .env
   ok "已生成 .env（权限 600）"
@@ -95,7 +95,7 @@ else
 fi
 
 tag="$(unquote "$(dotenv_value ARTEX_TAG)")"
-tag="${tag:-local}"
+tag="${tag:-0.1.6}"
 info "镜像标签：${tag}"
 
 # 启动前先展开并校验 Compose 配置，避免容器启动后才暴露 DSN/变量错误。

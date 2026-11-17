@@ -4,6 +4,7 @@
  *   - AssetsPage：页面主体，按标签页拉取 api.hostAssets / api.assets / api.searchAssets
  *   - CompanyDialog / EditScopeDialog / AppendScopeDialog：企业新增与范围覆盖/追加弹窗
  *   - AssetCard / Chips / CompanyAvatar / MethodBadge：资产卡片、标签、企业头像、HTTP 方法徽标
+ *   - AssetAuthSummary / AuthGroup：服务「认证」列汇总入口与「本机发现/本机认证通过」分组 Sheet
  */
 "use client";
 
@@ -67,8 +68,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { parseCompanyScopeText } from "@/lib/company-scope";
-import type { Asset, AssetHostRow, Company, CompanyScopeRule } from "@/lib/types";
-import { cn, statusTone } from "@/lib/utils";
+import { INTRANET_CREDENTIALS_UI } from "@/lib/feature-flags";
+import type { Asset, AssetAuthItem, AssetHostRow, Company, CompanyScopeRule, IntranetCredential } from "@/lib/types";
+import { cn, fmtTime, statusTone } from "@/lib/utils";
 
 import { HostAssets } from "./_components/host-assets";
 
@@ -100,6 +102,9 @@ const PAGE_SIZES = [25, 50, 100, 200];
 
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   { key: "host", label: "宿主", icon: NetworkIcon },
+  ...(INTRANET_CREDENTIALS_UI
+    ? [{ key: "intranet", label: "内网凭据", icon: KeyRoundIcon }]
+    : []),
   { key: "company", label: "企业", icon: BuildingIcon },
   { key: "root_domain", label: "根域名", icon: GlobeIcon },
   { key: "ip", label: "IP", icon: NetworkIcon },
@@ -125,6 +130,7 @@ export default function AssetsPage() {
   const assetsRequestRef = React.useRef(0);
   const [rowsTab, setRowsTab] = React.useState("");
   const [hostRows, setHostRows] = React.useState<AssetHostRow[]>([]);
+  const [credRows, setCredRows] = React.useState<IntranetCredential[]>([]);
   const [selectedHostKey, setSelectedHostKey] = React.useState<string | null>(null);
 
   // asset selection & delete
@@ -261,11 +267,21 @@ export default function AssetsPage() {
     const run = async () => {
       try {
         if (assetsRequestRef.current !== request) return;
-        if (tab === "host") {
+        if (tab === "intranet") {
+          // 内网凭据不走资产 DSL：query 变化触发重拉但参数相同，行为等价于刷新。
+          const r = await api.intranetCredentials("", size, offset);
+          if (assetsRequestRef.current !== request) return;
+          setCredRows(r.credentials);
+          setRows([]);
+          setHostRows([]);
+          setCounts((current) => ({ ...current, intranet: r.total }));
+          setTotal(r.total);
+        } else if (tab === "host") {
           const r = await api.hostAssets(dsl, "", size, offset);
           if (assetsRequestRef.current !== request) return;
           setHostRows(r.hosts);
           setRows([]);
+          setCredRows([]);
           setSelectedHostKey((current) => (r.hosts.some((row) => row.key === current) ? current : null));
           setCounts((current) => ({ ...current, host: r.total }));
           setTotal(r.total);
@@ -314,7 +330,8 @@ export default function AssetsPage() {
   const companyName = (id?: number) => (id ? (companyById.get(id) ?? "") : "");
 
   const tabCounts: Record<string, number> = { ...counts, company: companies.length };
-  const totalAssets = Object.values(counts).reduce((a, b) => a + b, 0);
+  // counts.intranet 是凭据数而非资产数，不计入「共 N 项资产」。
+  const totalAssets = Object.entries(counts).reduce((sum, [key, value]) => (key === "intranet" ? sum : sum + value), 0);
 
   // rows are already the current server-side page.
   const tabData = (type: string): Asset[] => (rowsTab === type ? rows : []);
@@ -609,7 +626,18 @@ export default function AssetsPage() {
         <TabsContent value="service" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
           {searchBox}
           <AssetCard
-            cols={["", "服务", "域名", "IP", "端口", "状态码", "标题", "指纹", "认证", ""]}
+            cols={[
+              "",
+              "服务",
+              "域名",
+              "IP",
+              "端口",
+              "状态码",
+              "标题",
+              "指纹",
+              ...(INTRANET_CREDENTIALS_UI ? ["认证"] : []),
+              "",
+            ]}
             loaded={loaded}
             total={total}
             page={page}
@@ -668,22 +696,11 @@ export default function AssetsPage() {
                   <TableCell>
                     <Chips items={a.technologies ?? []} />
                   </TableCell>
-                  <TableCell>
-                    {(a.auth ?? []).length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      (a.auth ?? []).map((authItem, i) => {
-                        const item = authItem as Record<string, string>;
-                        const label = item.type || item.username || "认证";
-                        return (
-                          <span key={i} className="inline-flex items-center gap-1 text-[11px]">
-                            <KeyRoundIcon className="size-3 text-muted-foreground" />
-                            <span className="font-mono">{label}</span>
-                          </span>
-                        );
-                      })
-                    )}
-                  </TableCell>
+                  {INTRANET_CREDENTIALS_UI && (
+                    <TableCell>
+                      <AssetAuthSummary asset={a} />
+                    </TableCell>
+                  )}
                   <TableCell className="w-8 pl-0">
                     <Button
                       variant="ghost"
@@ -715,6 +732,112 @@ export default function AssetsPage() {
               )}
             </div>
             {total > 0 && (
+              <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
+                <Select value={String(size)} onValueChange={(value) => setSize(Number(value))}>
+                  <SelectTrigger size="sm" className="h-7 w-24">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {PAGE_SIZES.map((n) => (
+                        <SelectItem key={n} value={String(n)}>
+                          {n} / 页
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <span className="tabular-nums">
+                  {page * size + 1}–{Math.min((page + 1) * size, total)} / {total}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-7"
+                    disabled={page <= 0}
+                    onClick={() => setPage((value) => Math.max(0, value - 1))}
+                  >
+                    <ChevronLeftIcon />
+                  </Button>
+                  <span className="tabular-nums">
+                    {page + 1} / {Math.max(1, Math.ceil(total / size))}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-7"
+                    disabled={page + 1 >= Math.ceil(total / size)}
+                    onClick={() => setPage((value) => value + 1)}
+                  >
+                    <ChevronRightIcon />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
+        </TabsContent>
+
+        {/* 内网凭据：RFC1918 资产上的 discovered/verified 关系（secret 不下发） */}
+        <TabsContent value="intranet" className="mt-0 flex min-h-0 flex-1 flex-col gap-2">
+          <Card className="flex min-h-0 flex-1 flex-col overflow-auto py-0">
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              {rowsTab !== "intranet" ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">加载中…</div>
+              ) : credRows.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">暂无内网凭据。</div>
+              ) : (
+                <div className="overflow-x-auto rounded-md border">
+                  <table className="w-full min-w-[1080px] text-sm">
+                    <thead className="bg-muted/40">
+                      <tr className="border-b text-left">
+                        <th className="px-4 py-3 font-medium">状态</th>
+                        <th className="px-4 py-3 font-medium">类型</th>
+                        <th className="px-4 py-3 font-medium">账号</th>
+                        <th className="px-4 py-3 font-medium">域</th>
+                        <th className="px-4 py-3 font-medium">目标</th>
+                        <th className="px-4 py-3 font-medium">来源 / 证据</th>
+                        <th className="px-4 py-3 font-medium">所在资产</th>
+                        <th className="px-4 py-3 font-medium">企业</th>
+                        <th className="px-4 py-3 font-medium">最近所见</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {credRows.map((cred) => (
+                        <tr
+                          key={`${cred.id}-${cred.relation}-${cred.asset_id}`}
+                          className="border-b last:border-0 hover:bg-muted/40"
+                        >
+                          <td className="px-4 py-3">
+                            {cred.relation === "verified" ? (
+                              <Badge className="bg-green-600 text-white">已认证</Badge>
+                            ) : (
+                              <Badge variant="outline">已发现</Badge>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <Badge variant="secondary">{cred.type || "unknown"}</Badge>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs font-medium">{cred.username}</td>
+                          <td className="px-4 py-3 font-mono text-xs">{cred.domain || "—"}</td>
+                          <td className="px-4 py-3 font-mono text-xs">{cred.target || "—"}</td>
+                          <td
+                            className="max-w-[220px] truncate px-4 py-3 text-xs text-muted-foreground"
+                            title={cred.relation === "verified" ? cred.evidence : cred.source}
+                          >
+                            {cred.relation === "verified" ? cred.evidence : cred.source}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs">{cred.asset_ip}</td>
+                          <td className="px-4 py-3">{cred.company_name || "未归属"}</td>
+                          <td className="px-4 py-3 text-xs text-muted-foreground">{fmtTime(cred.last_seen)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+            {rowsTab === "intranet" && total > 0 && (
               <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
                 <Select value={String(size)} onValueChange={(value) => setSize(Number(value))}>
                   <SelectTrigger size="sm" className="h-7 w-24">
@@ -1017,6 +1140,120 @@ function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
         </Badge>
       ))}
     </div>
+  );
+}
+
+// 资产「认证」列：表格只显示「发现 n / 已认证 m」汇总，点击打开该资产的凭据
+// Sheet（分「本机发现」「本机认证通过」两组）。secret 不经 API 下发，此处也不展示。
+function AssetAuthSummary({ asset }: { asset: Asset }) {
+  const [open, setOpen] = React.useState(false);
+  const items = asset.auth ?? [];
+  // relation 缺失的历史投影按发现处理；同一凭据的两种关系分别进入对应组，不去重。
+  const discovered = items.filter((item) => item.relation !== "verified");
+  const verified = items.filter((item) => item.relation === "verified");
+  if (items.length === 0) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  const label =
+    [asset.domain, asset.url, asset.ip].find((value) => typeof value === "string" && value.length > 0) ??
+    `#${asset.id}`;
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[11px] text-blue-600 hover:bg-muted dark:text-blue-400"
+          aria-label={`查看资产 ${label} 的凭据`}
+        >
+          <KeyRoundIcon className="size-3" />
+          发现 {discovered.length} / 已认证 {verified.length}
+        </button>
+      </SheetTrigger>
+      <SheetContent className="w-full! max-w-none! gap-0 p-0 sm:w-[520px]! sm:max-w-[520px]!">
+        <SheetHeader className="border-b p-6">
+          <SheetTitle>资产凭据 · {label}</SheetTitle>
+          <SheetDescription>
+            凭据按「本机发现」与「本机认证通过」分组展示；同一凭据可同时出现在两组。不包含 secret。
+          </SheetDescription>
+        </SheetHeader>
+        <div className="flex-1 space-y-6 overflow-y-auto p-6">
+          <AuthGroup
+            title="本机发现"
+            empty="本机暂无发现的凭据。"
+            items={discovered}
+            meta={{ sourceLabel: "来源", timeLabel: "最近发现" }}
+          />
+          <AuthGroup
+            title="本机认证通过"
+            empty="本机暂无认证通过的凭据。"
+            items={verified}
+            meta={{ sourceLabel: "证据", timeLabel: "认证时间" }}
+          />
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function AuthGroup({
+  title,
+  empty,
+  items,
+  meta,
+}: {
+  title: string;
+  empty: string;
+  items: AssetAuthItem[];
+  meta: { sourceLabel: string; timeLabel: string };
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <Badge variant="secondary" className="text-[10px] tabular-nums">
+          {items.length}
+        </Badge>
+      </div>
+      {items.length === 0 ? (
+        <p className="rounded-md border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">{empty}</p>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((item, i) => (
+            <li key={item.id ?? i} className="space-y-1.5 rounded-md border p-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  {item.type || "unknown"}
+                </Badge>
+                <span className="font-mono text-xs font-medium">{item.username || "—"}</span>
+                {item.domain ? (
+                  <span className="font-mono text-[11px] text-muted-foreground">@{item.domain}</span>
+                ) : null}
+              </div>
+              <dl className="space-y-1 text-xs">
+                {item.target ? (
+                  <div className="flex gap-2">
+                    <dt className="shrink-0 text-muted-foreground">适用服务</dt>
+                    <dd className="font-mono break-all">{item.target}</dd>
+                  </div>
+                ) : null}
+                {item.description ? (
+                  <div className="flex gap-2">
+                    <dt className="shrink-0 text-muted-foreground">{meta.sourceLabel}</dt>
+                    <dd className="min-w-0 break-words whitespace-pre-wrap">{item.description}</dd>
+                  </div>
+                ) : null}
+                {item.last_seen ? (
+                  <div className="flex gap-2">
+                    <dt className="shrink-0 text-muted-foreground">{meta.timeLabel}</dt>
+                    <dd className="tabular-nums text-muted-foreground">{fmtTime(item.last_seen)}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

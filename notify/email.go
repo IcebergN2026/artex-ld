@@ -4,7 +4,6 @@
 //   - emailDial：按 tls 配置建立 SMTP 连接并完成握手。
 //   - buildEmailMessage：构造含 HTML 正文的 MIME 邮件原文。
 //   - smtpStageError / smtpReplyCode：把 SMTP 阶段错误与回复码解析成可读信息。
-
 package notify
 
 import (

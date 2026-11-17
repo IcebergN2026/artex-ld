@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务轨迹可视化方案 Demo</title>
+<style>
+  :root {
+    --bg: #0a0a0b; --panel: #111113; --border: #27272a; --fg: #e4e4e7;
+    --muted: #a1a1aa; --accent: #6366f1;
+    --c-user: #3b82f6; --c-thinking: #a78bfa; --c-text: #94a3b8;
+    --c-tool: #38bdf8; --c-toolres: #34d399; --c-intent: #f59e0b;
+    --c-result: #22c55e; --c-system: #f87171; --c-round: #64748b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  nav { display: flex; gap: 8px; padding: 12px 24px; border-bottom: 1px solid var(--border); flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); z-index: 10; }
+  nav button { background: var(--panel); color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 12px; }
+  nav button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .scheme { display: none; padding: 20px 24px 40px; }
+  .scheme.show { display: block; }
+  .intro { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; max-width: 1100px; }
+  .intro h2 { font-size: 14px; margin-bottom: 6px; }
+  .intro p { color: var(--muted); font-size: 12px; margin: 3px 0; }
+  .intro b { color: var(--fg); }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 10px 0; font-size: 11px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  svg text { font-family: inherit; }
+  /* waterfall */
+  .wf-row { display: flex; align-items: center; gap: 8px; height: 26px; }
+  .wf-label { width: 260px; flex-shrink: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-track { flex: 1; position: relative; height: 16px; }
+  .wf-bar { position: absolute; height: 14px; top: 1px; border-radius: 3px; min-width: 3px; }
+  .wf-dur { width: 60px; flex-shrink: 0; font-size: 11px; color: var(--muted); text-align: right; }
+  /* minimap */
+  .mm-wrap { display: flex; gap: 0; height: 480px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .mm-list { flex: 1; overflow-y: auto; background: var(--panel); }
+  .mm-row { display: flex; gap: 8px; align-items: center; padding: 4px 12px; border-bottom: 1px solid #1c1c1f; font-size: 12px; }
+  .mm-row .w { width: 64px; flex-shrink: 0; font-size: 10px; color: #fff; border-radius: 3px; padding: 0 4px; text-align: center; }
+  .mm-row .k { width: 52px; flex-shrink: 0; font-size: 10px; }
+  .mm-row .s { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mm-strip { width: 72px; flex-shrink: 0; position: relative; background: #0d0d0f; cursor: pointer; border-left: 1px solid var(--border); }
+  .mm-block { position: absolute; left: 10px; right: 10px; height: 3px; border-radius: 1px; }
+  .mm-view { position: absolute; left: 2px; right: 2px; border: 1px solid var(--accent); border-radius: 3px; background: rgba(99,102,241,.12); pointer-events: none; }
+  /* dashboard */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+  .kpi .v { font-size: 24px; font-weight: 600; }
+  .kpi .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+  .bar-row .n { width: 90px; flex-shrink: 0; color: var(--muted); }
+  .bar-row .t { flex: 1; height: 14px; background: #1c1c1f; border-radius: 3px; overflow: hidden; }
+  .bar-row .f { height: 100%; border-radius: 3px; }
+  .bar-row .c { width: 40px; text-align: right; color: var(--muted); font-size: 11px; }
+  /* flow */
+  .fl-note { font-size: 11px; color: var(--muted); }
+  .tooltip { position: fixed; pointer-events: none; background: #1c1c1f; border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 11px; color: var(--fg); display: none; z-index: 99; max-width: 320px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>任务轨迹可视化方案 Demo</h1>
+  <span class="sub">模拟数据:一次外网渗透任务 · mainagent / planner / review / work#1 / work#2 · 数据结构与 activity 表 kind 对齐</span>
+</header>
+<nav id="nav">
+  <button data-s="gantt" class="active">① 泳道甘特图</button>
+  <button data-s="waterfall">② 工具调用瀑布图</button>
+  <button data-s="flow">③ Agent 协作流图</button>
+  <button data-s="minimap">④ 缩略导航时间线</button>
+  <button data-s="dash">⑤ 统计仪表盘</button>
+</nav>
+
+<!-- ============ 方案一:泳道甘特图 ============ -->
+<section class="scheme show" id="s-gantt">
+  <div class="intro">
+    <h2>① 泳道甘特图(Swimlane Gantt)</h2>
+    <p><b>形态:</b>每个 agent 一条横向泳道,X 轴为时间;瞬时步骤(思考/文本/意图)为圆点,工具调用(tool_use→tool_result)为跨时长条,直观呈现并行与空闲。</p>
+    <p><b>优势:</b>一眼看出谁在和谁并行、哪里在空转、哪个 agent 是瓶颈;运行中右侧持续增长,天然支持"钉最新"。</p>
+    <p><b>代价:</b>不展示正文,需点击/悬停看摘要,详情可跳回现有 Transcript 对应 seq(建议作现有时间线的「概览模式」切换,而非替代)。</p>
+  </div>
+  <div class="legend" id="legend-gantt"></div>
+  <div class="card"><svg id="gantt" width="100%" height="360"></svg></div>
+</section>
+
+<!-- ============ 方案二:瀑布图 ============ -->
+<section class="scheme" id="s-waterfall">
+  <div class="intro">
+    <h2>② 工具调用瀑布图(Waterfall)</h2>
+    <p><b>形态:</b>仿浏览器 DevTools 网络面板,每次工具调用一行,条长=执行耗时,按开始时间排列,标注工具名与耗时。</p>
+    <p><b>优势:</b>专治"任务为什么慢"——nmap 全端口扫、爆破等长耗时调用立刻凸显;适合做性能/成本分析视图。</p>
+    <p><b>代价:</b>只看工具调用,思考与对话被过滤;是轨迹页的「耗时分析」子视图。</p>
+  </div>
+  <div class="card" id="waterfall"></div>
+</section>
+
+<!-- ============ 方案三:协作流图 ============ -->
+<section class="scheme" id="s-flow">
+  <div class="intro">
+    <h2>③ Agent 协作流图(Collaboration Flow)</h2>
+    <p><b>形态:</b>节点=agent(大小∝步数),有向边=驱动关系(用户→主 Agent→规划→审核→Worker;Worker→规划为结果回流),边宽∝事件数。</p>
+    <p><b>优势:</b>10 秒讲清"这个任务里谁驱动谁、审核拦了几次、哪个 Worker 干得最多",适合任务复盘页顶部。</p>
+    <p><b>代价:</b>静态聚合视图,无时间维度;与①④互补。</p>
+  </div>
+  <div class="card"><svg id="flow" width="100%" height="420"></svg></div>
+  <p class="fl-note" id="flow-note"></p>
+</section>
+
+<!-- ============ 方案四:缩略导航 ============ -->
+<section class="scheme" id="s-minimap">
+  <div class="intro">
+    <h2>④ 缩略导航时间线(Minimap)</h2>
+    <p><b>形态:</b>左侧紧凑文字时间线(每步一行),右侧 72px 密度缩略条——每步一个 3px 色块(颜色=步骤类型),蓝框指示当前视口,点击缩略条跳转。</p>
+    <p><b>优势:</b>改动最小(在现有 Transcript 旁加一条)、长任务(数百步)导航能力质变;色块分布本身即"轨迹指纹"(大段紫色=长推理,密集蓝点=工具风暴)。</p>
+    <p><b>代价:</b>导航增强而非新叙事;推荐作为<strong>首期落地</strong>方案。</p>
+  </div>
+  <div class="legend" id="legend-mm"></div>
+  <div class="mm-wrap">
+    <div class="mm-list" id="mm-list"></div>
+    <div class="mm-strip" id="mm-strip"><div class="mm-view" id="mm-view"></div></div>
+  </div>
+</section>
+
+<!-- ============ 方案五:仪表盘 ============ -->
+<section class="scheme" id="s-dash">
+  <div class="intro">
+    <h2>⑤ 统计仪表盘(Summary Dashboard)</h2>
+    <p><b>形态:</b>KPI 卡片(总步数/工具调用/耗时/token)+ 每 agent 步数条 + 步骤类型分布环图 + 高频工具 Top N。</p>
+    <p><b>优势:</b>面向管理者与成本视角:token 花了多少、哪个工具被滥用、agent 负载是否均衡;全部可由现有 activity/usage 行本地聚合,零后端改动。</p>
+    <p><b>代价:</b>无叙事性;适合作为轨迹页顶部可折叠的「概览条」。</p>
+  </div>
+  <div class="kpis" id="kpis"></div>
+  <div class="grid2">
+    <div class="card"><h3 style="font-size:12px;margin-bottom:8px;">各 Agent 步数</h3><div id="wbar"></div></div>
+    <div class="card"><h3 style="font-size:12px;margin-bottom:8px;">步骤类型分布</h3><div style="display:flex;gap:16px;align-items:center;"><svg id="donut" width="150" height="150" viewBox="0 0 42 42"></svg><div id="donut-legend" style="font-size:11px;color:var(--muted);"></div></div></div>
+    <div class="card"><h3 style="font-size:12px;margin-bottom:8px;">高频工具 Top 8</h3><div id="tbar"></div></div>
+    <div class="card"><h3 style="font-size:12px;margin-bottom:8px;">各 Agent 工具耗时(分钟)</h3><div id="dbar"></div></div>
+  </div>
+</section>
+
+<div class="tooltip" id="tip"></div>
+
+<script>
+// ---------- 模拟数据:与 activity 表语义对齐 ----------
+// [偏移分钟, worker, kind, 摘要, (工具耗时分钟)]
+const RAW = [
+  [0.0,'mainagent','user','目标:对 192.168.1.0/24 进行外网渗透,取得立足点'],
+  [0.3,'mainagent','thinking','分析任务范围与授权约束,确认仅允许外部探测…'],
+  [0.6,'mainagent','text','范围已确认,转交规划拆解目标。'],
+  [0.8,'planner','thinking','将目标拆解为:信息收集 → 漏洞探测 → 立足点获取'],
+  [1.1,'planner','intent','意图1:对 192.168.1.10 做全端口扫描与服务识别'],
+  [1.3,'planner','intent','意图2:探测 192.168.1.20 的 Web 服务与目录'],
+  [1.5,'review','intent','预审:两条意图均为常规探测,建议通过'],
+  [1.6,'review','text','通过,无越权风险。'],
+  [2.0,'work#1','thinking','先跑 nmap 全端口扫描,确认攻击面'],
+  [2.1,'work#1','tool_use','nmap -sV -p- 192.168.1.10', 3.4],
+  [5.6,'work#1','thinking','发现 22/80/8080 开放,8080 疑似 Tomcat'],
+  [5.8,'work#1','tool_use','nmap --script=vuln -p8080 192.168.1.10', 2.2],
+  [8.1,'work#1','text','8080 存在 AJP 文件包含(CVE-2020-1938)迹象'],
+  [2.2,'work#2','thinking','对 .20 做 Web 指纹识别'],
+  [2.4,'work#2','tool_use','whatweb http://192.168.1.20', 0.5],
+  [3.0,'work#2','tool_use','gobuster dir -u http://192.168.1.20 -w common.txt', 4.6],
+  [7.7,'work#2','thinking','发现 /admin 与 /backup.zip'],
+  [8.0,'work#2','tool_use','curl -I http://192.168.1.20/backup.zip', 0.2],
+  [8.3,'planner','round','第 2 轮规划:汇总两条 lane 发现'],
+  [8.5,'planner','thinking','Tomcat AJP 与备份包均可利用,优先 AJP 读取 web.xml'],
+  [8.8,'planner','intent','意图3:利用 CVE-2020-1938 读取凭据并尝试 Getshell'],
+  [9.0,'review','intent','预审:漏洞利用在授权范围内,建议通过'],
+  [9.3,'work#1','thinking','用 ajpy 读取 WEB-INF/web.xml'],
+  [9.5,'work#1','tool_use','python ajpy.py tomcat 192.168.1.10 /WEB-INF/web.xml', 1.1],
+  [10.7,'work#1','thinking','拿到 manager 凭据 tomcat/s3cret'],
+  [11.0,'work#1','tool_use','msfconsole -q -x "use tomcat_mgr_upload; run"', 3.8],
+  [14.9,'work#1','tool_use','shell_add http://192.168.1.10:8080/shell.jsp', 0.1],
+  [15.1,'work#1','tool_use','report_finding foothold=true target=192.168.1.10', 0.2],
+  [15.4,'work#1','result','已在 192.168.1.10 取得 WebShell 立足点', 4200],
+  [9.3,'work#2','thinking','下载 backup.zip 分析源码'],
+  [9.5,'work#2','tool_use','wget http://192.168.1.20/backup.zip && unzip -d bak', 0.8],
+  [10.4,'work#2','tool_use','grep -rn "password" bak/', 0.3],
+  [10.8,'work#2','thinking','源码中发现数据库口令,但无公网 DB 端口'],
+  [11.2,'work#2','tool_use','sqlmap -u "http://192.168.1.20/login" --forms --batch', 5.6],
+  [16.9,'work#2','result','login 表单存在布尔盲注,已导出 2 个库表结构', 3800],
+  [17.2,'planner','thinking','立足点已达成,目标完成,汇总终答'],
+  [17.5,'planner','result','规划侧汇总:1 个立足点 + 1 个注入点', 1500],
+  [17.8,'mainagent','result','任务完成:192.168.1.10 WebShell 立足点;192.168.1.20 SQL 注入。', 860],
+];
+const KIND_LABEL = { user:'用户', thinking:'思考', text:'文本', tool_use:'工具调用', tool_result:'工具返回', intent:'意图', round:'轮次', result:'结果' };
+const KIND_COLOR = { user:'var(--c-user)', thinking:'var(--c-thinking)', text:'var(--c-text)', tool_use:'var(--c-tool)', tool_result:'var(--c-toolres)', intent:'var(--c-intent)', round:'var(--c-round)', result:'var(--c-result)' };
+const WORKER_COLOR = { mainagent:'#6366f1', planner:'#f59e0b', review:'#ec4899', 'work#1':'#38bdf8', 'work#2':'#14b8a6' };
+const fmtT = m => { const s = Math.round(m*60); return '10:' + String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); };
+
+// 展开 tool_use 的配对 tool_result
+const STEPS = [];
+RAW.forEach(([t,w,k,s,extra],i) => {
+  STEPS.push({ seq:i*2+1, t, worker:w, kind:k, summary:s, dur:k==='tool_use'?(extra||0):0, tokens:k==='result'?(extra||0):0 });
+  if (k==='tool_use') STEPS.push({ seq:i*2+2, t:t+(extra||0.3), worker:w, kind:'tool_result', summary:'✓ 返回 ' + Math.round(200+Math.random()*3800) + ' 字节', dur:0, tokens:0 });
+});
+STEPS.sort((a,b)=>a.seq-b.seq);
+const T_END = Math.max(...STEPS.map(s=>s.t)) + 0.8;
+const WORKERS = ['mainagent','planner','review','work#1','work#2'];
+
+// tooltip
+const tip = document.getElementById('tip');
+function bindTip(el, html) {
+  el.addEventListener('mousemove', e => { tip.style.display='block'; tip.innerHTML=html; tip.style.left=(e.clientX+12)+'px'; tip.style.top=(e.clientY+12)+'px'; });
+  el.addEventListener('mouseleave', () => tip.style.display='none');
+}
+
+// ---------- 图例 ----------
+function legend(elId, entries) {
+  document.getElementById(elId).innerHTML = entries.map(([c,l])=>`<span><i class="dot" style="background:${c}"></i>${l}</span>`).join('');
+}
+legend('legend-gantt', Object.entries(KIND_LABEL).filter(([k])=>k!=='round').map(([k,l])=>[KIND_COLOR[k],l]));
+legend('legend-mm', [['var(--c-thinking)','思考'],['var(--c-tool)','工具'],['var(--c-intent)','意图'],['var(--c-result)','结果'],['var(--c-text)','文本/其他']]);
+
+// ---------- ① 泳道甘特图 ----------
+(function(){
+  const svg = document.getElementById('gantt');
+  const W = 1100, H = 360, L = 90, R = 20, T = 36, laneH = 58;
+  const X = t => L + (t / T_END) * (W - L - R);
+  let s = '';
+  for (let m = 0; m <= T_END; m += 2) {
+    s += `<line x1="${X(m)}" y1="${T-8}" x2="${X(m)}" y2="${H-20}" stroke="#1c1c1f"/>` +
+         `<text x="${X(m)}" y="${T-14}" fill="#71717a" font-size="10" text-anchor="middle">${fmtT(m)}</text>`;
+  }
+  WORKERS.forEach((w,i) => {
+    const y = T + i*laneH;
+    s += `<text x="${L-10}" y="${y+22}" fill="${WORKER_COLOR[w]}" font-size="12" text-anchor="end" font-weight="600">${w}</text>` +
+         `<line x1="${L}" y1="${y+laneH-8}" x2="${W-R}" y2="${y+laneH-8}" stroke="#1c1c1f"/>`;
+  });
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+  const NS = 'http://www.w3.org/2000/svg';
+  STEPS.forEach(st => {
+    const i = WORKERS.indexOf(st.worker), y = T + i*laneH + 18;
+    const html = `<b>${st.worker}</b> · ${KIND_LABEL[st.kind]}<br>${fmtT(st.t)}${st.dur?` · 耗时 ${st.dur.toFixed(1)} min`:''}<br><span style="color:#a1a1aa">${st.summary}</span>`;
+    if (st.kind === 'tool_use') {
+      const r = document.createElementNS(NS,'rect');
+      r.setAttribute('x',X(st.t)); r.setAttribute('y',y-7);
+      r.setAttribute('width',Math.max(3,X(st.t+st.dur)-X(st.t))); r.setAttribute('height',14);
+      r.setAttribute('rx',3); r.setAttribute('fill','rgba(56,189,248,.25)'); r.setAttribute('stroke','var(--c-tool)');
+      bindTip(r, html); svg.appendChild(r);
+    } else if (st.kind !== 'tool_result') {
+      const c = document.createElementNS(NS,'circle');
+      c.setAttribute('cx',X(st.t)); c.setAttribute('cy',y); c.setAttribute('r', st.kind==='result'?6:4.5);
+      c.setAttribute('fill', KIND_COLOR[st.kind]);
+      if (st.kind==='result') c.setAttribute('stroke','#fff');
+      bindTip(c, html); svg.appendChild(c);
+    }
+  });
+})();
+
+// ---------- ② 瀑布图 ----------
+(function(){
+  const tools = STEPS.filter(s=>s.kind==='tool_use');
+  const host = document.getElementById('waterfall');
+  host.innerHTML = tools.map(st => {
+    const l = (st.t/T_END*100).toFixed(2), w = Math.max(0.4, st.dur/T_END*100).toFixed(2);
+    const short = st.summary.length>42 ? st.summary.slice(0,42)+'…' : st.summary;
+    return `<div class="wf-row"><span class="wf-label" title="${st.summary}">[${st.worker}] ${short}</span>` +
+      `<div class="wf-track"><div class="wf-bar" style="left:${l}%;width:${w}%;background:var(--c-tool);opacity:.85"></div></div>` +
+      `<span class="wf-dur">${st.dur.toFixed(1)} min</span></div>`;
+  }).join('');
+})();
+
+// ---------- ③ 协作流图 ----------
+(function(){
+  const svg = document.getElementById('flow');
+  const W = 1000, H = 420;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const count = w => STEPS.filter(s=>s.worker===w).length;
+  const nodes = [
+    { id:'user',    label:'用户',        x:70,  y:210, c:'var(--c-user)',   n:1 },
+    { id:'mainagent',label:'主 Agent',   x:230, y:210, c:WORKER_COLOR.mainagent, n:count('mainagent') },
+    { id:'planner', label:'规划 Planner',x:430, y:110, c:WORKER_COLOR.planner,   n:count('planner') },
+    { id:'review',  label:'审核 Review', x:430, y:310, c:WORKER_COLOR.review,    n:count('review') },
+    { id:'work#1',  label:'Worker 1',    x:660, y:140, c:WORKER_COLOR['work#1'], n:count('work#1') },
+    { id:'work#2',  label:'Worker 2',    x:660, y:290, c:WORKER_COLOR['work#2'], n:count('work#2') },
+  ];
+  const byId = Object.fromEntries(nodes.map(n=>[n.id,n]));
+  const edges = [
+    ['user','mainagent',1,'任务下发'],
+    ['mainagent','planner',3,'转交规划'],
+    ['planner','review',3,'送审意图 ×3'],
+    ['review','work#1',1,'放行·意图1/3'],
+    ['review','work#2',1,'放行·意图2'],
+    ['work#1','planner',2,'结果回流',true],
+    ['work#2','planner',2,'结果回流',true],
+  ];
+  let s = '<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#71717a"/></marker></defs>';
+  edges.forEach(([a,b,w,label,back]) => {
+    const A=byId[a], B=byId[b];
+    const mx=(A.x+B.x)/2, my=(A.y+B.y)/2 + (back?40:-24);
+    s += `<path d="M${A.x},${A.y} Q${mx},${my} ${B.x},${B.y}" fill="none" stroke="#3f3f46" stroke-width="${1+w*1.5}" ${back?'stroke-dasharray="5 4"':''} marker-end="url(#arr)" opacity=".8"/>` +
+         `<text x="${mx}" y="${my-4}" fill="#71717a" font-size="10" text-anchor="middle">${label}</text>`;
+  });
+  nodes.forEach(n => {
+    const r = 26 + Math.min(20, n.n*1.6);
+    s += `<circle cx="${n.x}" cy="${n.y}" r="${r}" fill="${n.c}" opacity=".18"/>` +
+         `<circle cx="${n.x}" cy="${n.y}" r="${r}" fill="none" stroke="${n.c}" stroke-width="2"/>` +
+         `<text x="${n.x}" y="${n.y-2}" fill="#e4e4e7" font-size="12" text-anchor="middle" font-weight="600">${n.label}</text>` +
+         `<text x="${n.x}" y="${n.y+14}" fill="#a1a1aa" font-size="10" text-anchor="middle">${n.n} 步</text>`;
+  });
+  svg.innerHTML = s;
+  const intents = STEPS.filter(x=>x.kind==='intent').length;
+  document.getElementById('flow-note').textContent = `本任务共 ${intents} 条意图事件(含送审),审核全部放行;Worker 1 承担立足点路径,Worker 2 承担 Web 路径,结果均回流 Planner 汇总。`;
+})();
+
+// ---------- ④ 缩略导航时间线 ----------
+(function(){
+  const list = document.getElementById('mm-list'), strip = document.getElementById('mm-strip'), view = document.getElementById('mm-view');
+  list.innerHTML = STEPS.map(st =>
+    `<div class="mm-row" id="mmr-${st.seq}"><span class="w" style="background:${WORKER_COLOR[st.worker]}">${st.worker}</span>` +
+    `<span class="k" style="color:${KIND_COLOR[st.kind]}">${KIND_LABEL[st.kind]}</span>` +
+    `<span class="s">${fmtT(st.t)} · ${st.summary}</span></div>`).join('');
+  const n = STEPS.length;
+  STEPS.forEach((st,i) => {
+    const b = document.createElement('div');
+    b.className = 'mm-block';
+    b.style.top = (i/n*100) + '%';
+    b.style.background = KIND_COLOR[st.kind] || 'var(--c-text)';
+    b.title = `#${st.seq} ${st.worker} ${KIND_LABEL[st.kind]}`;
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const row = document.getElementById('mmr-'+st.seq);
+      list.scrollTop = row.offsetTop - list.clientHeight/2;
+    });
+    strip.appendChild(b);
+  });
+  function syncView() {
+    const total = list.scrollHeight, h = strip.clientHeight;
+    view.style.top = (list.scrollTop/total*h) + 'px';
+    view.style.height = (list.clientHeight/total*h) + 'px';
+  }
+  list.addEventListener('scroll', syncView);
+  strip.addEventListener('click', e => {
+    const r = strip.getBoundingClientRect();
+    list.scrollTop = (e.clientY - r.top)/r.height * list.scrollHeight - list.clientHeight/2;
+  });
+  requestAnimationFrame(syncView);
+})();
+
+// ---------- ⑤ 统计仪表盘 ----------
+(function(){
+  const tools = STEPS.filter(s=>s.kind==='tool_use');
+  const tokens = STEPS.reduce((a,s)=>a+s.tokens,0);
+  const kpi = (v,l)=>`<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  document.getElementById('kpis').innerHTML =
+    kpi(STEPS.length,'总步数') + kpi(tools.length,'工具调用') +
+    kpi(T_END.toFixed(1)+' min','总耗时') + kpi(tokens.toLocaleString(),'结果 token(示例)') +
+    kpi(WORKERS.length,'参与 Agent') + kpi(STEPS.filter(s=>s.kind==='intent').length,'意图事件');
+
+  const bars = (el, entries, colorFn) => {
+    const max = Math.max(...entries.map(([,v])=>v),1);
+    document.getElementById(el).innerHTML = entries.map(([k,v]) =>
+      `<div class="bar-row"><span class="n">${k}</span><div class="t"><div class="f" style="width:${(v/max*100).toFixed(1)}%;background:${colorFn(k)}"></div></div><span class="c">${v}</span></div>`).join('');
+  };
+  bars('wbar', WORKERS.map(w=>[w, STEPS.filter(s=>s.worker===w).length]), k=>WORKER_COLOR[k]);
+  const toolNames = {};
+  tools.forEach(t => { const n = t.summary.split(' ')[0]; toolNames[n]=(toolNames[n]||0)+1; });
+  bars('tbar', Object.entries(toolNames).sort((a,b)=>b[1]-a[1]).slice(0,8), ()=>'var(--c-tool)');
+  bars('dbar', WORKERS.map(w=>[w, +tools.filter(t=>t.worker===w).reduce((a,t)=>a+t.dur,0).toFixed(1)]).filter(([,v])=>v>0), k=>WORKER_COLOR[k]);
+
+  // donut
+  const kinds = {};
+  STEPS.forEach(s => kinds[s.kind]=(kinds[s.kind]||0)+1);
+  const total = STEPS.length;
+  let acc = 0, arcs = '', leg = '';
+  Object.entries(kinds).sort((a,b)=>b[1]-a[1]).forEach(([k,v]) => {
+    const frac = v/total, a0 = acc*2*Math.PI - Math.PI/2, a1 = (acc+frac)*2*Math.PI - Math.PI/2;
+    const R=15.9, cx=21, cy=21;
+    arcs += `<path d="M${cx+R*Math.cos(a0)},${cy+R*Math.sin(a0)} A${R},${R} 0 ${frac>0.5?1:0} 1 ${cx+R*Math.cos(a1)},${cy+R*Math.sin(a1)}" fill="none" stroke="${KIND_COLOR[k]}" stroke-width="6"/>`;
+    leg += `<div style="margin:3px 0;"><i class="dot" style="background:${KIND_COLOR[k]}"></i> ${KIND_LABEL[k]} · ${v} (${(frac*100).toFixed(0)}%)</div>`;
+    acc += frac;
+  });
+  document.getElementById('donut').innerHTML = arcs;
+  document.getElementById('donut-legend').innerHTML = leg;
+})();
+
+// ---------- 切换 ----------
+document.getElementById('nav').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active', x===b));
+  document.querySelectorAll('.scheme').forEach(x=>x.classList.toggle('show', x.id==='s-'+b.dataset.s));
+});
+</script>
+</body>
+</html>

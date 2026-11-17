@@ -10,7 +10,7 @@ import { createContext, useContext, useEffect, useRef, useState } from "react";
 
 import { type StoreApi, useStore } from "zustand";
 
-import { fontKeys } from "@/lib/fonts/registry";
+import { type FontKey, fontRegistry } from "@/lib/fonts/registry";
 import {
   CONTENT_LAYOUT_VALUES,
   NAVBAR_STYLE_VALUES,
@@ -23,6 +23,8 @@ import { applyThemeMode, subscribeToSystemTheme } from "@/lib/preferences/theme-
 import { createPreferencesStore, type PreferencesState } from "./preferences-store";
 
 const PreferencesStoreContext = createContext<StoreApi<PreferencesState> | null>(null);
+
+const FONT_VALUES = Object.keys(fontRegistry) as FontKey[];
 
 function getSafeValue<T extends string>(raw: string | null, allowed: readonly T[]): T | undefined {
   if (!raw) return undefined;
@@ -39,7 +41,7 @@ function readDomState(): Partial<PreferencesState> {
     themeMode: themeModeAttr ?? resolvedMode,
     resolvedThemeMode: resolvedMode,
     themePreset: getSafeValue(root.getAttribute("data-theme-preset"), THEME_PRESET_VALUES),
-    font: getSafeValue(root.getAttribute("data-font"), fontKeys),
+    font: getSafeValue(root.getAttribute("data-font"), FONT_VALUES),
     contentLayout: getSafeValue(root.getAttribute("data-content-layout"), CONTENT_LAYOUT_VALUES),
     navbarStyle: getSafeValue(root.getAttribute("data-navbar-style"), NAVBAR_STYLE_VALUES),
     sidebarVariant: getSafeValue(root.getAttribute("data-sidebar-variant"), SIDEBAR_VARIANT_VALUES),
@@ -80,14 +82,7 @@ export const PreferencesStoreProvider = ({
 
     store.setState((prev) => ({
       ...prev,
-      themeMode: domState.themeMode ?? prev.themeMode,
-      resolvedThemeMode: domState.resolvedThemeMode ?? prev.resolvedThemeMode,
-      themePreset: domState.themePreset ?? prev.themePreset,
-      font: domState.font ?? prev.font,
-      contentLayout: domState.contentLayout ?? prev.contentLayout,
-      navbarStyle: domState.navbarStyle ?? prev.navbarStyle,
-      sidebarVariant: domState.sidebarVariant ?? prev.sidebarVariant,
-      sidebarCollapsible: domState.sidebarCollapsible ?? prev.sidebarCollapsible,
+      ...domState,
       isSynced: true,
     }));
   }, [store]);

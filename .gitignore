@@ -12,7 +12,6 @@ __pycache__/
 # frontend
 web/node_modules/
 web/.next/
-web/out/
 web/tsconfig.tsbuildinfo
 web/next-env.d.ts
 *.local
@@ -33,12 +32,9 @@ Thumbs.db
 # claude code local state
 .claude/
 
-# 内嵌前端的单二进制产物
+# 内嵌前端的单二进制产物（build.sh 命名：artex-<版本>-<os>-<arch> / artex-<os>-<arch>/）
 /artex
-/artex-linux-amd64
-# 临时 diff 产物与验证截图（本地评审用，不入库）
-*.diff.tmp
-/screenshots/
+/artex-*
 # 一键更新在可执行文件旁留下的中间产物（暂存件 / 备份 / 失败版本 / 升级标记）
 /artex.new
 /artex.new.sha256
@@ -48,17 +44,12 @@ Thumbs.db
 /server/webui/dist/
 /dist/
 
-# 本地工具状态与调试残留（含主机信息，绝不提交）
-/.omp/
-/.obsidian/
-/bak_agent.list
-/cur_agent.list
-
 # JWT 签名密钥（运行时生成，存项目根，绝不提交）
 /jwt.key
 
-# Docker 部署生成的本地环境（含密码/密钥，不提交）
-.env
+# 环境变量文件（.env / .env.production / .envrc 等含密码与密钥，不提交；仅保留模板）
+.env*
+!.env.example
 
 # 调度器运行/模拟产生的事件日志（测试产物，不提交）
 *-events.csv
@@ -82,3 +73,41 @@ Thumbs.db
 
 # 配置导出快照（export-config 产物，含密钥明文；配置种子已在源码内置，无需入库）
 /config-export/
+# 本地工具/编辑器状态（.omp 含内网主机与 SSH 私钥路径，绝不提交）
+/.omp/
+/.obsidian/
+
+# 密钥与证书（与 .dockerignore 对齐；运行时 jwt.key 见上）
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+*.ppk
+
+# 数据库转储（业务数据，不提交；db/schema.sql 仍入库）
+*.sqlite
+*.sqlite3
+*.dump
+*.sql.gz
+
+# 本地部署产物（start.sh 示例 ./start.sh >artex.log；install.sh 在同目录取 artex*.tar.gz）
+*.tar.gz
+*.log
+nohup.out
+
+# 本地临时文件与备份清单
+*.tmp
+/*_agent.list
+*.bak
+
+# 测试/性能产物与补丁残留
+*.test
+*.prof
+coverage.out
+*.orig
+*.rej
+*~

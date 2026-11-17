@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -349,8 +350,9 @@ func TestUpsertHTTPServiceAuthAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Exec(`DELETE FROM assets WHERE url = 'http://authtest.example.org' OR domain IN ('authtest.example.org', 'example.org')`)
+	defer d.Exec(`DELETE FROM asset_credentials WHERE (username='admin' AND secret='pass') OR username='authtest-bearer'`)
 
-	auth2 := []map[string]any{{"type": "bearer", "token": "tok123"}}
+	auth2 := []map[string]any{{"type": "bearer", "username": "authtest-bearer", "token": "tok123"}}
 	id2, err := av2.UpsertHTTPService(UpsertHTTPServiceReq{
 		URL:    "http://authtest.example.org/",
 		Auth:   auth2,
@@ -363,11 +365,33 @@ func TestUpsertHTTPServiceAuthAppend(t *testing.T) {
 		t.Errorf("dedup failed: %d vs %d", id2, id1)
 	}
 
-	// auth should have 2 items now
-	var authCnt int
-	d.QueryRow(`SELECT cardinality(auth) FROM assets WHERE id = $1`, id1).Scan(&authCnt)
-	if authCnt != 2 {
-		t.Errorf("auth append: want 2, got %d", authCnt)
+	// 兼容入口的 auth 写入落新表：两条 discovered 关系，legacy assets.auth 不再增长。
+	var linkCnt int
+	d.QueryRow(`SELECT count(*) FROM asset_credential_links WHERE asset_id=$1 AND relation='discovered'`, id1).Scan(&linkCnt)
+	if linkCnt != 2 {
+		t.Errorf("discovered links: want 2, got %d", linkCnt)
+	}
+	var legacyCnt int
+	d.QueryRow(`SELECT cardinality(auth) FROM assets WHERE id = $1`, id1).Scan(&legacyCnt)
+	if legacyCnt != 0 {
+		t.Errorf("legacy assets.auth must stay empty, got %d", legacyCnt)
+	}
+	// 读取回填脱敏：有 relation/id，无 secret。
+	assets, err := av2.GetByIDs([]int64{id1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 || len(assets[0].Auth) != 2 {
+		t.Fatalf("populated auth=%+v", assets)
+	}
+	for _, item := range assets[0].Auth {
+		if item["relation"] != "discovered" || item["id"] == nil {
+			t.Errorf("auth entry missing relation/id: %v", item)
+		}
+		raw, _ := json.Marshal(item)
+		if strings.Contains(string(raw), `"password"`) || strings.Contains(string(raw), `"token"`) || strings.Contains(string(raw), `"secret"`) || strings.Contains(string(raw), "tok123") {
+			t.Errorf("auth entry leaks secret field: %s", raw)
+		}
 	}
 }
 
@@ -430,6 +454,7 @@ func TestUpsertOtherServiceAuthAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d.Exec(`DELETE FROM assets WHERE (type = 'service' AND ip = '10.5.5.5') OR (type = 'ip' AND ip = '10.5.5.5')`)
+	defer d.Exec(`DELETE FROM asset_credentials WHERE username IN ('admin','root') AND secret IN ('secret','root')`)
 
 	auth2 := []map[string]any{{"username": "root", "password": "root"}}
 	id2, err := av2.UpsertOtherService(UpsertOtherServiceReq{
@@ -442,10 +467,38 @@ func TestUpsertOtherServiceAuthAppend(t *testing.T) {
 		t.Fatalf("dedup or error: %v, ids %d vs %d", err, id2, id1)
 	}
 
-	var authCnt int
-	d.QueryRow(`SELECT cardinality(auth) FROM assets WHERE id = $1`, id1).Scan(&authCnt)
-	if authCnt != 2 {
-		t.Errorf("auth append: want 2, got %d", authCnt)
+	// 兼容入口的 auth 写入落新表：两条 discovered 关系，legacy assets.auth 不再增长。
+	var linkCnt int
+	d.QueryRow(`SELECT count(*) FROM asset_credential_links WHERE asset_id=$1 AND relation='discovered'`, id1).Scan(&linkCnt)
+	if linkCnt != 2 {
+		t.Errorf("discovered links: want 2, got %d", linkCnt)
+	}
+	var legacyCnt int
+	d.QueryRow(`SELECT cardinality(auth) FROM assets WHERE id = $1`, id1).Scan(&legacyCnt)
+	if legacyCnt != 0 {
+		t.Errorf("legacy assets.auth must stay empty, got %d", legacyCnt)
+	}
+	// password 为空但 token 非空时使用 token；两者皆空跳过。
+	if _, err := av2.UpsertOtherService(UpsertOtherServiceReq{
+		IP:          "10.5.5.5",
+		Port:        3306,
+		ServiceName: "mysql",
+		Auth: []map[string]any{
+			{"username": "tok-user", "token": "tok-only"},
+			{"username": "empty-user"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM asset_credentials WHERE username IN ('tok-user','empty-user')`)
+	var tokCnt, emptyCnt int
+	d.QueryRow(`SELECT count(*) FROM asset_credentials WHERE username='tok-user' AND secret='tok-only'`).Scan(&tokCnt)
+	d.QueryRow(`SELECT count(*) FROM asset_credentials WHERE username='empty-user'`).Scan(&emptyCnt)
+	if tokCnt != 1 {
+		t.Errorf("token-only entry must migrate to credential, got %d", tokCnt)
+	}
+	if emptyCnt != 0 {
+		t.Errorf("empty password+token entry must be skipped, got %d", emptyCnt)
 	}
 }
 

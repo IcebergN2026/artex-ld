@@ -4,7 +4,6 @@
 //   - wsList / wsRead / wsWrite / wsMkdir / wsDelete：目录浏览与文件的读/写/建目录/删。
 //   - wsDownload / wsUpload / saveUpload：文件下载与上传保存（单请求上限 512MiB）。
 //   - sanitizeFilename：清洗上传文件名。
-
 package server
 
 import (
@@ -146,7 +145,8 @@ func (s *Server) wsWrite(w http.ResponseWriter, r *http.Request) {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
-	if !decodeJSON(w, r, &req, maxFileWriteJSONBodyBytes) {
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	abs, ok := s.wsResolve(req.Path)
@@ -174,7 +174,8 @@ func (s *Server) wsMkdir(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
 	}
-	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	abs, ok := s.wsResolve(req.Path)

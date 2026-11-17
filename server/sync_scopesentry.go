@@ -5,7 +5,6 @@
 //   - syncSSProjects / syncSSTasks / syncSSRun：按项目/任务维度拉取 ScopeSentry 数据并入库的同步接口。
 //   - ssPageAll / ssProjectMeta：分页拉取 ScopeSentry 条目与项目元信息。
 //   - ssIngest：把单条 ScopeSentry 资产（subdomain/app/service/ip）写入资产库。
-
 package server
 
 import (
@@ -132,9 +131,7 @@ func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 		URL    string `json:"url"`
 		APIKey string `json:"api_key"`
 	}
-	// Empty body = just create the placeholder. Decode errors stay intentionally
-	// ignored; the bounded reader still caps the body and writes nothing.
-	_ = decodeJSONBounded(w, r, &body, maxMediumJSONBodyBytes)
+	_ = decode(r, &body) // empty body = just create the placeholder
 	body.URL = strings.TrimSpace(body.URL)
 	body.APIKey = strings.TrimSpace(body.APIKey)
 
@@ -276,7 +273,8 @@ func (s *Server) syncSSRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req ssSyncReq
-	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "invalid JSON: "+err.Error())
 		return
 	}
 	if req.Dimension != "project" && req.Dimension != "task" {

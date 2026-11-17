@@ -81,3 +81,39 @@ func TestQueryHostsAndExactAssetFindingFilter(t *testing.T) {
 		t.Fatalf("exact host asset finding filter failed: total=%d items=%d err=%v", findingTotal, len(items), err)
 	}
 }
+
+func TestBuildAssetHostRowsPortsAndIntranet(t *testing.T) {
+	assets := []*Asset{
+		{ID: 1, Type: "ip", IP: "10.1.2.3", OpenPorts: []map[string]any{
+			{"port": float64(443), "service": "https"},
+			{"port": float64(22), "service": "ssh"},
+			{"port": float64(443), "service": "https"},
+		}},
+		{ID: 2, Type: "ip", IP: "192.0.2.9"},
+	}
+	rows := buildAssetHostRows(assets, nil, nil)
+	byIP := map[string]AssetHostRow{}
+	for _, row := range rows {
+		byIP[row.IP] = row
+	}
+	private, ok := byIP["10.1.2.3"]
+	if !ok {
+		t.Fatalf("private host missing: %+v", rows)
+	}
+	if !private.Intranet {
+		t.Fatalf("10.1.2.3 must be intranet: %+v", private)
+	}
+	if !reflect.DeepEqual(private.Ports, []PortService{{Port: 22, Service: "ssh"}, {Port: 443, Service: "https"}}) {
+		t.Fatalf("ports not deduped/sorted: %+v", private.Ports)
+	}
+	public, ok := byIP["192.0.2.9"]
+	if !ok {
+		t.Fatalf("public host missing: %+v", rows)
+	}
+	if public.Intranet {
+		t.Fatalf("192.0.2.9 must not be intranet: %+v", public)
+	}
+	if len(public.Ports) != 0 {
+		t.Fatalf("ports must stay empty: %+v", public.Ports)
+	}
+}

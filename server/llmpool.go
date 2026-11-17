@@ -5,7 +5,6 @@
 //   - poolForActive / poolForBinding：分别为全局生效配置与任务绑定配置解析轮询 provider。
 //   - llmPoolStatus / sortPoolStatus / poolLess：汇总各成员状态并按优先级与活跃标记排序。
 //   - LLMPoolMemberStatus：单个池成员对外暴露的状态结构。
-
 package server
 
 import (

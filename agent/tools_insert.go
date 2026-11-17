@@ -71,7 +71,9 @@ func assetInputLabel(item assetInputItem) string {
 	return target
 }
 
+// =====================================================================
 // Unified asset insertion tools
+// =====================================================================
 
 // SetAssetStore wires the asset store and company store onto this ToolSet
 // so the insert_assets, add_company_scope, and list_assets tools are active.
@@ -189,7 +191,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					},
 					"auth": map[string]any{
 						"type":        "array",
-						"description": "发现的认证信息列表，每条含 type/username/password 等字段（可选，追加不覆盖）",
+						"description": "登记在该资产上发现的认证信息列表，每条含 type/username/password 等字段（可选，追加不覆盖；secret 只用于写入，不回显）",
 						"items":       map[string]any{"type": "object"},
 					},
 					// service (other，非 HTTP)
@@ -436,7 +438,7 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 func (t *ToolSet) addTaskScope() actool.CoreTool {
 	return writeTool(
 		"add_task_scope",
-		"把测试范围加入【本任务】——这是本任务的授权边界，也是资产测试覆盖度的分母。\n"+
+		"把资产加入【本任务】——用于资产测试覆盖度统计，不构成网络执行限制。\n"+
 			"kind 支持：company(整个公司名下资产) / root_domain(整个根域，含所有子域) / subdomain(单个精确子域) / ip / cidr / icp / keyword。\n"+
 			"说明：worker 逐个碰到的主机会被系统【自动】加进范围(精确子域)；本工具用于【主动扩大】——把整个根域/整个公司纳入，或补充指定某子域/IP。\n"+
 			"value：company 传公司名或 id(公司须已存在)；root_domain/subdomain 传域名；ip/cidr 传 IP 或网段；icp/keyword 传备案号或企业关键词。\n"+
@@ -654,6 +656,8 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(),
+		// 凭据整理：worker 登记发现的凭据、标记认证成功（可认证到任务内另一台资产）。
+		t.recordCredential(), t.markCredentialVerified(),
 		// 跨 work 回看：worker 也可复用其他 work 的观察，避免重复劳动。
 		// search_all_worker_traces：不必先知道 intent_id，按关键字全局捞命中步骤；
 		// get_worker_trace：锁定某条 work 后列步骤/就地搜/取完整内容。

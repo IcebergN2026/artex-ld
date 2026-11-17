@@ -5,7 +5,6 @@
 //   - registerSideRoutes / sideParent / handleSideQuestions：侧问路由注册、父级解析与提问处理接口。
 //   - sideEvents / cancelSideRequest：侧问 SSE 事件流与取消接口。
 //   - cancelSideWhere / drainTaskSideQuestions / cancelWorkerSide：按任务或 worker 批量取消侧问。
-
 package server
 
 import (
@@ -346,11 +345,13 @@ func (s *Server) handleSideQuestions(w http.ResponseWriter, r *http.Request, p s
 		writeJSON(w, 200, map[string]any{"items": items, "current": current, "next_cursor": next, "snapshot": meta})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 	var in struct {
 		Question string `json:"question"`
 		ClientID string `json:"client_request_id"`
 	}
-	if !decodeJSON(w, r, &in, 32<<10) {
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		writeErr(w, 400, "bad json")
 		return
 	}
 	in.Question = strings.TrimSpace(in.Question)

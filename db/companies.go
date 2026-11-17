@@ -19,7 +19,9 @@ import (
 	"unicode/utf8"
 )
 
+// =====================================================================
 // 公司主体层
+// =====================================================================
 
 // Company is a row in the companies table.
 type Company struct {
@@ -236,6 +238,10 @@ func (s *CompanyStore) DeleteCompanyWithAssets(id int64, deleteAssets bool) (ass
 		}
 		assetsDeleted, err = res.RowsAffected()
 		if err != nil {
+			return 0, err
+		}
+		// 级联删除关系后清理孤儿凭据（同事务，失败则整体回滚）。
+		if err := pruneOrphanedCredentialsTx(tx); err != nil {
 			return 0, err
 		}
 	}

@@ -4,7 +4,6 @@
 //   - wireTools：种子内置领域工具并挂接自定义工具解析。
 //   - buildDomainReg：从资产存储构建领域工具注册表。
 //   - seedPrompts：首次插入内置提示词种子，不覆盖用户修改。
-
 package server
 
 import (
@@ -349,10 +348,6 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				taskRegLoaded = true
 				if t, err := pg.GetTask(runInfo.TaskID); err == nil && t != nil && t.ExplorationID > 0 {
 					tts := agent.NewToolSet(pg.Exploration(t.ExplorationID), agentKey)
-					tts.SetTaskID(runInfo.TaskID)
-					if configuredAgent != nil {
-						tts.SetExecutorKey(configuredAgent.ExecutorKey)
-					}
 					tts.SetExecutorChecker(pg.CheckExecutorKey)
 					if as := pg.Assets(); as != nil {
 						tts.SetAssetStore(as, as.Companies())

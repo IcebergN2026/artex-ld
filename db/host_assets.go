@@ -4,7 +4,6 @@
 //   - QueryHosts：按过滤条件查询资产并折叠为主机行（含命中发现统计）。
 //   - buildAssetHostRows / assetHostBuilder：把资产列表流式折叠为去重、合并后的主机行集合。
 //   - containsAssetID / hostServiceLabel：资产 id 二分查找与服务显示名辅助。
-
 package db
 
 import (
@@ -41,6 +40,13 @@ type AssetHostRow struct {
 	High         int                `json:"high"`
 	Medium       int                `json:"medium"`
 	Low          int                `json:"low"`
+	// Intranet：IP 落在 RFC1918 私网段（与拓扑内网判定同一口径）。
+	Intranet bool `json:"intranet"`
+	// Ports：宿主 IP 资产 open_ports 的去重合并（{port, service}）。
+	Ports []PortService `json:"ports"`
+	// CredentialCount / VerifiedCount：宿主全部资产的凭据关系计数（discovered/verified）。
+	CredentialCount int `json:"credential_count"`
+	VerifiedCount   int `json:"verified_count"`
 }
 
 type AssetHostFilter struct {
@@ -119,7 +125,39 @@ func (s *AssetStore) QueryHosts(f AssetHostFilter) ([]AssetHostRow, int, error) 
 		}
 	}
 
+	credCounts := map[int64][2]int{}
+	credRows, err := s.db.Query(`SELECT asset_id, relation, COUNT(*) FROM asset_credential_links GROUP BY asset_id, relation`)
+	if err != nil {
+		return nil, 0, err
+	}
+	for credRows.Next() {
+		var assetID int64
+		var relation string
+		var count int
+		if err := credRows.Scan(&assetID, &relation, &count); err != nil {
+			credRows.Close()
+			return nil, 0, err
+		}
+		counts := credCounts[assetID]
+		if relation == CredentialRelationVerified {
+			counts[1] += count
+		} else {
+			counts[0] += count
+		}
+		credCounts[assetID] = counts
+	}
+	if err := credRows.Close(); err != nil {
+		return nil, 0, err
+	}
+
 	hosts := buildAssetHostRows(assets, companyNames, hits)
+	for i := range hosts {
+		for _, assetID := range hosts[i].AssetIDs {
+			counts := credCounts[assetID]
+			hosts[i].CredentialCount += counts[0] + counts[1]
+			hosts[i].VerifiedCount += counts[1]
+		}
+	}
 	filtered := hosts[:0]
 	for _, row := range hosts {
 		companyOK, taskOK, dslOK := f.CompanyID == 0, f.TaskID == 0, dslMatches == nil
@@ -168,12 +206,34 @@ type assetHostBuilder struct {
 	rootSet      map[string]bool
 	subdomainSet map[string]bool
 	companyVotes map[int64]int
+	portSet      map[int]bool
 }
 
 func newAssetHostBuilder(ip string) *assetHostBuilder {
 	return &assetHostBuilder{
-		row:      AssetHostRow{Key: "host:" + ip, IP: ip, Subdomains: []string{}, Services: []AssetHostService{}, AssetIDs: []int64{}},
+		row: AssetHostRow{
+			Key: "host:" + ip, IP: ip, Subdomains: []string{}, Services: []AssetHostService{}, AssetIDs: []int64{},
+			Ports: []PortService{}, Intranet: topologyInternalIPv4(ip),
+		},
 		assetSet: map[int64]bool{}, rootSet: map[string]bool{}, subdomainSet: map[string]bool{}, companyVotes: map[int64]int{},
+		portSet: map[int]bool{},
+	}
+}
+
+// addPorts 把 IP 资产 open_ports 的 {port, service} 合并进主机行（按端口号去重）。
+func (b *assetHostBuilder) addPorts(openPorts []map[string]any) {
+	for _, entry := range openPorts {
+		portValue, ok := entry["port"].(float64)
+		if !ok {
+			continue
+		}
+		port := int(portValue)
+		if port <= 0 || b.portSet[port] {
+			continue
+		}
+		b.portSet[port] = true
+		service, _ := entry["service"].(string)
+		b.row.Ports = append(b.row.Ports, PortService{Port: port, Service: service})
 	}
 }
 
@@ -207,6 +267,7 @@ func buildAssetHostRows(assets []*Asset, companyNames map[int64]string, hits []h
 		if a.Type == "ip" {
 			if b := ensure(a.IP); b != nil {
 				b.addBase(a)
+				b.addPorts(a.OpenPorts)
 			}
 		}
 		if a.Type == "subdomain" {
@@ -302,6 +363,7 @@ func buildAssetHostRows(assets []*Asset, companyNames map[int64]string, hits []h
 			}
 			return b.row.Services[i].Label < b.row.Services[j].Label
 		})
+		sort.Slice(b.row.Ports, func(i, j int) bool { return b.row.Ports[i].Port < b.row.Ports[j].Port })
 		var bestCompany, bestVotes int64
 		for id, votes := range b.companyVotes {
 			if votes > int(bestVotes) || (votes == int(bestVotes) && (bestCompany == 0 || id < bestCompany)) {

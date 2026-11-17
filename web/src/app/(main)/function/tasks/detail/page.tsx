@@ -57,9 +57,11 @@ import { ReportTab } from "./_tabs/report-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
 import { TopologyTab } from "./_tabs/topology-tab";
+import { TrajectoryTab } from "./_tabs/trajectory-tab";
 
 const TABS = [
   { value: "sessions", label: "会话" },
+  { value: "trajectory", label: "轨迹" },
   { value: "overview", label: "总览" },
   { value: "graph", label: "探索链路" },
   { value: "broadcast", label: "播报板" },
@@ -434,6 +436,9 @@ function TaskDetailInner() {
       <div className="flex-1 p-4 lg:p-6">
         <TabsContent value="sessions" className="mt-0">
           <SessionsTab taskId={id} />
+        </TabsContent>
+        <TabsContent value="trajectory" className="mt-0">
+          <TrajectoryTab key={id} taskId={id} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0">
           <OverviewTab taskId={id} />

@@ -2,38 +2,40 @@
 
 本项目的重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-版本说明：`artex-ld` 从 `0.1.2` 起使用独立版本序列。Release 名称为 **artex-ld 0.1.5**，Git Tag 为 **v0.1.5**。文末 `0.3.15` 及更早内容是上游 ARTEX 历史，不属于 `artex-ld` 的版本号序列。
+版本说明：`artex-ld` 从 `0.1.2` 起使用独立版本序列。Release 名称为 **artex-ld 0.1.6**，Git Tag 为 **v0.1.6**。文末 `0.3.15` 及更早内容是上游 ARTEX 历史，不属于 `artex-ld` 的版本号序列。
 
 ## [Unreleased]
 
-### 版本默认值修正
+### 任务轨迹(Trajectory)Tab
 
-- 本地/无 git 构建的默认版本号由 `dev` 改为 `0.1.5`（`cmd/artex/main.go` 的 `version`、`server.BuildVersion`、`build.sh` 的 `ARTEX_BUILD_VERSION` 回退值），未经 `-ldflags -X main.version=…` 注入的构建也报告真实版本；`selfupdate.CompareVersions` 仍把旧二进制报告的 `dev` 视为不可比较版本（不触发一键更新），相关测试保留。
+- 任务详情页新增「轨迹」tab:单一时间线合并展示任务下所有 agent(主 Agent / 规划 / 各 Worker)的思考、工具调用与结果、文本与终答,SSE 实时追加 + 滚动到顶向上翻历史分页,支持按 agent(带步数 chips)与步骤类型(思考/文本/工具/结果/系统)本地筛选。计划与落地记录见 `docs/任务轨迹Tab-计划与落地.md`。
+- 轨迹可视化增强:① 右侧 minimap 密度导航条——每步压成 3px 色块(颜色=步骤类型),视口指示框随滚动同步,点击色块跳转定位并打开详情,被筛选步骤变暗但分布可见,运行中底部显示实时边缘线;② 步骤详情抽屉——点击时间线行或 minimap 色块打开,展示思考全文/工具入参(JSON 美化)+ 配对输出/终答全文,元信息含时间、执行者、所属意图、token;③ 意图归属条——基于 `Activity.intent_id` 聚合「哪个 Worker 执行哪个意图」(标题、状态、步数),点击按意图过滤时间线;Transcript 各分组根元素新增 `data-seq` 锚点(支撑跳转与选中高亮),合并视图步骤行新增 `#intent_id` 归属标签。零后端改动,全部基于既有 `session=all` 历史、`/exploration/intents` 与单步 `activity/{seq}` 接口。
+- 后端 `GET /api/exploration/activity/history` 的 `session` 参数新增 `all`（零值 `ActivitySessionFilter` = 整个任务全部 lane 不过滤）；既有会话键（`main`/`main:N`/`plan`/`intent:<id>`）行为不变。
+- `web/src/components/transcript.tsx` 工具配对键由 `tool_use_id` 改为 worker 作用域（合并多 agent 时间线时跨 worker 重复 id 不再错配）；`AnswerBlock`/`UserRow` 在混排视图显示 worker chip。
+- 修复 `createTask` 无界请求正文：新增 `maxCreateTaskBodyBytes`（1 MiB）并接入 `decodeJSON`（空 body 400、超限 413），同时消除 `server/jsonbody_test.go` 引用未定义常量导致的测试包编译失败。
 
-### 注释审计与规范修正
+### 资产凭据的发现与认证关系
 
-- 修正 22 处文档注释错位与 3 处文件头失名，补齐 8 个文件头，修正 4 处 60s 过期说明及 2 处审核继承语义注释（15s 审核轮；父任务开启则子任务强制开启，父任务关闭时按分类默认兜底）。
-- 归一 PR7 二开标记并拆分超长/空区间，代码注释中的行号锚点改为 `文件#符号`；新增 `scripts/check-comments` 检查器（`go run ./scripts/check-comments`），基于 Go AST 与 TS/SQL 正则检查文件头、doc 贴附、标记配对、行内长度和过期短语，先以 `-warn` 模式接入 CI 观察，再转为失败项。
+- 新增 `asset_credentials`（凭据身份，按 cred_type/username/domain/secret 唯一）与 `asset_credential_links`（凭据与资产的 `discovered`/`verified` 关系）两张表；存量 `assets.auth` 由一次性迁移（`asset_credential_auth_backfill_v1`）展开为各原始资产的 `discovered` 关系，历史列保留但代码不再读写。
+- Worker 新增 `record_credential` 与 `mark_credential_verified` 两个写工具：登记任务范围内资产的凭据发现、把已发现凭据标记为在任务内任意资产（含跨主机）认证成功；两次写入均校验任务范围与凭据可见性，返回不含 secret。
+- 资产读取（GetByIDs/DSL/按任务/公司/类型及 scope 查询）统一从新表批量回填脱敏凭据，`Asset.Auth` 每项含 `id/relation/target` 等字段，secret 不再经任何 API 或工具输出返回。
+- 资产页“认证”列改为“发现 n / 已认证 m”汇总，点击打开当前资产凭据 Sheet，分“本机发现/本机认证通过”两组展示；任务归档/恢复随资产一并保存并按唯一键合并恢复凭据关系，资产删除级联清理关系与孤儿凭据。实施细节见 `dev/assets-credentials-implementation.md`。
 
-### 授权范围回退与稳定性修复
+### MCP 命令拦截
 
-- 回退“Agent 无范围限制”改造：恢复 Planner/Worker 的 `task_constraints` 注入、内置场景授权边界、审核越界驳回及 `spawn_task` 的父 goal/deny 双重闸门；新增一次性回滚迁移，保留用户自定义提示词与任务快照。
-- `list_tasks` 与 Web 任务 API 统一使用 `resolvedTaskStatus`，消除 queued、LLM 链耗尽状态的重复推导。
-- 任务范围匹配统一复用同一 SQL 谓词，IP/CIDR 同时覆盖 `ip` 列和 IP 字面量 `domain`，修复资产列表、覆盖度、未测资产、Host 与覆盖图之间的不一致。
-- HTTP JSON 请求统一分档限长并映射 400/413；公开认证端点使用 16 KiB 上限，保留可选空体、严格尾随值和原始 body 键集等既有语义。
-- Guard 的 deny、审批拒绝和取消分支在内存审计中保留原始 shell 命令；报告严重度支持历史大小写归一、未知值置底，新写入统一校验 critical/high/medium/low。
-- Planner 心跳默认值统一为 600 秒，并为存量 PostgreSQL 库幂等更新列默认值；根镜像构建重新包含 `dist/artex-linux-*/artex`。
-- 修复 Next webpack `DefinePlugin` 回调，报告/日志动态模块改用可折叠的直接环境判断；字体选项裁剪为真实 Geist、Geist Mono、Geist Pixel Square，并兼容旧字体 cookie 回退。
+- 将 `ExecuteExtraTool` 加入 `intercept_enabled_tools` 后，经该入口执行的 MCP 与延迟自定义工具调用可纳入统一拦截链：按 `tool_name` 或完整 `tool_input` 匹配字符串/正则规则，支持 `allow`、`deny`、`ask` 人工审批，以及规则未命中时的可选 LLM 兜底判定和审计记录。
+- 默认拦截启用集仍不包含 `ExecuteExtraTool`，LLM 判官也保持默认关闭、`fail_action=allow`；需要 MCP 纳审时，须通过 `PUT /api/intercept/tool-config` 显式将该工具加入 `enabled_tools` 并配置相应规则，不能把本项理解为默认强制拦截全部 MCP 调用。
+
+## [0.1.6] - 2026-11-14
 
 ### 全局 Agent 控制与开关修复
 
 - `planner_controlled=false` 改为读取 Agent 当前配置并对所有 custom intent 生效，不再限定 `origin=seed` 或依赖 `planner_policy` 快照；已有 intent 与非首个触发路径均受同一门控，Agent 缺失时仍按 `true` 兼容。
-- 自定义执行器新增 `list_intents` 与 `claim_executor_intent` 工具：Agent 按服务端 `agents.executor_key` 原子 CAS 领取，无匹配直接退出且不改状态；`Agent.Key` 只用于配置、提示词和会话。非首个 custom intent 由 Engine 预领取后直接执行，不再要求模型重复 list/claim；自领路径仍保留冲突、executor 不匹配和重复领取防护。
-- `pre_agent` 首个种子统一由真实 Conversation/ChatAgent 执行，不再进入 `RunCustomExecutor` 特殊 Worker 链；对话完成后按真实 TerminalReason 结算 seed，普通 Worker 在 done/deleted 前保持互斥。`tasks.pre_agent` 持久化并支持活动 seed 回填，重启后恢复对话执行而不重放 `on_task_create`；任务会话列表不再为该 seed 新建 Executor/Worker 条目。对话创建/领取前的瞬时错误按 800ms 退避重试，不会永久放弃执行阶段；对话注入的领域工具继承任务 TaskID，finding/asset/fact 归属不再丢失。
-- `pre_agent` 新任务将匹配 Agent 的启用 `on_task_create` 消息合并进首个 Conversation，Scheduler 不再重复启动同一 Agent；blocked/exhausted/stopped 保留现场并等待人工重跑，批量接口扩大为 `/intents/rerun-recoverable`。
+- 自定义执行器新增 `list_intents` 与 `claim_executor_intent` 工具：Agent 先查询 proposed，再按服务端 executor_key 自行 CAS 为 running；无匹配直接退出且不改状态，真正完成后才写 done。Engine 不再为 pre_agent 预领取，只有自领成功后才恢复后续普通 Worker；领取冲突、executor 不匹配和重复领取均被拒绝。声明 executor_key 的对话型 Agent 自动获得这两个任务工具，普通 Worker 不注入。
+- `pre_agent` 任务按触发配置选择唯一入口：未启用 `on_task_create` 时由 `customExecutorLoop` 提供候选；已启用时由对话型 Agent 自领，Engine 不再重复启动 customExecutorLoop。两条路径都保持普通 Worker 互斥，直到对应 custom/对话执行结束后才恢复后续 Worker，避免同一 Agent 双路径并行执行相同目标。
 - Agent 编辑器开关更名为“不受 Planner 控制”，点击立即通过配置 API 保存，保存中防重入、失败回滚，不再要求额外点击“保存配置”；刷新后状态与服务端一致。普通“保存配置”不再提交该字段，避免页面加载时的旧值把刚选择的 false 覆盖为 true。
 
-## [0.1.5] - 2026-11-08
+## [0.1.5] - 2026-11-07
 
 ### 首个意图与 Agent 编排
 

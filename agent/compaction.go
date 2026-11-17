@@ -5,7 +5,6 @@
 //   - maintain：推进 round_no、重算冷热并落冷戳。
 //   - minor / major：增量折叠未覆盖冷节点 / 全量回源重压并按签名调和现有 digest。
 //   - foldBlock / compress：压缩单个块并写 digest（提交前复查活性）/ LLM 压缩块为综合结论。
-
 package agent
 
 // cold-digest §4/§5/§7: the Compactor ties the pure algorithms (coldgraph.go)

@@ -2,16 +2,17 @@
 // 主要函数/类型：
 //   - AuditEntry / Guard：审计条目与安全守卫主体。
 //   - New / NewWithInterceptor / newGuard：构造 Guard。
-//   - Hooks / preToolUse / auditCommand / applyIntercept / postToolUse：钩子注册与工具调用前中后拦截。
+//   - Hooks / preToolUse / applyIntercept / postToolUse：钩子注册与工具调用前中后拦截。
 //   - Attributions / block / record / Audit：失败归因、阻断与审计查询。
 //   - interceptorAPI / systemBlockMessage：拦截器抽象与系统阻断文案。
-
-// Package guard is the safety boundary layer (docs §11). Every tool call passes
-// through the PreToolUse hook before executing. (The RoE authorization-scope
-// mechanism was removed; a replacement may be added later.) Destructive/exfil
-// gating is not hard-coded here — it lives in the DB intercept rules (seeded as
-// ordinary [内置] rules, so users can disable or delete them), evaluated via
-// applyIntercept.
+//
+// Package guard implements the safety boundary layer (docs §11): an audit log,
+// user-configured intercept-rule evaluation, and Observer/G5 failure attribution.
+// Every tool call passes through the PreToolUse hook before executing.
+// (The RoE authorization-scope mechanism was removed; a replacement may be added
+// later.) Destructive/exfil gating is no longer hard-coded here — it lives in the
+// DB intercept rules (seeded as ordinary [内置] rules, so users can disable or
+// delete them), evaluated via applyIntercept.
 package guard
 
 import (
@@ -76,45 +77,35 @@ func newGuard(ic interceptorAPI) *Guard {
 func (g *Guard) Hooks() *hook.Registry { return g.reg }
 
 func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
-	// Extract the shell-command surface once so the allow record and every block
-	// branch log the same command: Bash + the interactive-shell tools (shell_open's
-	// command, shell_send's text). Destructive/exfil gating is no longer hard-coded
-	// here — it now lives in the DB intercept rules, evaluated by applyIntercept
-	// below. Other tools record an empty command.
-	cmd := auditCommand(ev)
-	result := g.applyIntercept(ctx, ev, cmd)
-	if result.Decision != "block" {
-		g.record(ev.ToolName, "allow", "", cmd)
-	}
-	return result
-}
-
-// auditCommand extracts the shell-command surface for the audit log. Bash and
-// shell_open carry it in "command"; shell_send carries it in "text". Non-shell
-// tools have no command to record.
-func auditCommand(ev hook.Event) string {
+	// Extract the shell-command surface for the audit log: Bash + the interactive-shell
+	// tools (shell_open's command, shell_send's text). Destructive/exfil gating is no
+	// longer hard-coded here — it now lives in the DB intercept rules, evaluated by
+	// applyIntercept below. Other tools record an empty command.
+	var cmd string
 	switch ev.ToolName {
 	case "Bash", "shell_open":
 		var in struct {
 			Command string `json:"command"`
 		}
 		_ = json.Unmarshal(ev.Input, &in)
-		return in.Command
+		cmd = in.Command
 	case "shell_send":
 		var in struct {
 			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(ev.Input, &in)
-		return in.Text
+		cmd = in.Text
 	}
-	return ""
+	result := g.applyIntercept(ctx, ev)
+	if result.Decision != "block" {
+		g.record(ev.ToolName, "allow", "", cmd)
+	}
+	return result
 }
 
 // applyIntercept evaluates user-configured intercept rules against the tool call.
-// Both rules and the fallback judge receive the complete tool input. cmd is the
-// audit surface extracted by auditCommand, recorded on every block path; it is
-// deliberately not added to the model-facing block message.
-func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event, cmd string) hook.Result {
+// Both rules and the fallback judge receive the complete tool input.
+func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
@@ -142,7 +133,7 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event, cmd string) h
 	case "deny":
 		// 观测:deny 命中不阻塞审批,直接记一条 denied（历史/任务拦截页可见）。
 		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "denied")
-		return g.block(ev.ToolName, systemBlockMessage(dec.Message), cmd)
+		return g.block(ev.ToolName, systemBlockMessage(dec.Message), "")
 	case "allow":
 		// Record explicit rule and model approvals so review details remain auditable.
 		g.interceptor.Log(ctx, intercept.ConvIDFromContext(ctx), dec, ev.ToolName, ev.Input, "allowed")
@@ -152,11 +143,11 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event, cmd string) h
 		// immediately without creating a pending record — avoids orphaned DB entries
 		// and makes execOne complete fast, reducing the race against drainSynthetic.
 		if ctx.Err() != nil {
-			return g.block(ev.ToolName, systemBlockMessage("工作已取消，平台安全管控阻止执行"), cmd)
+			return g.block(ev.ToolName, systemBlockMessage("工作已取消，平台安全管控阻止执行"), "")
 		}
 		convID := intercept.ConvIDFromContext(ctx)
 		if !g.interceptor.HandleAsk(ctx, convID, dec, ev.ToolName, ev.Input) {
-			return g.block(ev.ToolName, systemBlockMessage("人工审批未通过（用户拒绝或审批超时）"), cmd)
+			return g.block(ev.ToolName, systemBlockMessage("人工审批未通过（用户拒绝或审批超时）"), "")
 		}
 		return hook.Result{}
 	}

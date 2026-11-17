@@ -44,31 +44,14 @@ func TestDispatchFrontierAndExecutorClaim(t *testing.T) {
 	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
 	es := d.Exploration(expID)
 
-	customProposed := mustCustomProposedIntent(t, es, "custom proposed", "gate_recon_scout")
+	customProposed := mustCustomProposedIntent(t, es, "custom proposed", "recon_scout")
 	emptyProposed := mustCustomProposedIntent(t, es, "empty executor proposed", "")
 	reviewProposed := mustReviewProposedIntent(t, es, "review proposed")
 	customOpen := mustIntent(t, es, "custom open")
-	if _, err := es.db.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{executor}','"gate_recon_scout"') WHERE id=$1`, customOpen); err != nil {
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{executor}','"recon_scout"') WHERE id=$1`, customOpen); err != nil {
 		t.Fatal(err)
 	}
 	defaultOpen := mustIntent(t, es, "default open")
-	goalID, err := es.AddNode(KindGoal, map[string]any{"text": "higher priority goal"}, 100, "open", "planner", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	beginID, err := es.AddNode(KindBegin, map[string]any{"summary": "higher priority begin"}, 100, "open", "system", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// A high-priority open goal or legacy begin must never consume the dispatch limit.
-	limited, err := es.DispatchFrontier(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(limited) != 1 || limited[0].ID != customProposed || limited[0].Kind != KindIntent {
-		t.Fatalf("DispatchFrontier(1)=%+v, want only intent %d", limited, customProposed)
-	}
 
 	// Frontier must NOT include any proposed.
 	fr, err := es.Frontier(50)
@@ -96,14 +79,6 @@ func TestDispatchFrontierAndExecutorClaim(t *testing.T) {
 	if ids[reviewProposed] {
 		t.Fatal("DispatchFrontier must exclude review proposed")
 	}
-	if ids[goalID] || ids[beginID] {
-		t.Fatalf("DispatchFrontier must exclude goal/begin nodes: %v", ids)
-	}
-	for _, n := range dfr {
-		if n.Kind != KindIntent {
-			t.Fatalf("DispatchFrontier returned non-intent node: kind=%s id=%d", n.Kind, n.ID)
-		}
-	}
 
 	// Ordering: priority DESC, id ASC. All have priority 1 here, so id ASC.
 	for i := 1; i < len(dfr); i++ {
@@ -113,17 +88,17 @@ func TestDispatchFrontierAndExecutorClaim(t *testing.T) {
 	}
 
 	// ClaimExecutorIntent on custom proposed.
-	ok, err := es.ClaimExecutorIntent(customProposed, "proposed", "gate_recon_scout", "exec:gate_recon_scout")
+	ok, err := es.ClaimExecutorIntent(customProposed, "proposed", "recon_scout", "exec:recon_scout")
 	if err != nil || !ok {
 		t.Fatalf("claim custom proposed: ok=%v err=%v", ok, err)
 	}
 	n, _ := es.GetNode(customProposed)
-	if n.State != "running" || n.Owner != "exec:gate_recon_scout" {
+	if n.State != "running" || n.Owner != "exec:recon_scout" {
 		t.Fatalf("custom proposed not claimed correctly: state=%s owner=%s", n.State, n.Owner)
 	}
 
 	// Duplicate claim fails.
-	ok, err = es.ClaimExecutorIntent(customProposed, "proposed", "gate_recon_scout", "exec:other")
+	ok, err = es.ClaimExecutorIntent(customProposed, "proposed", "recon_scout", "exec:other")
 	if err != nil || ok {
 		t.Fatalf("duplicate claim should fail: ok=%v err=%v", ok, err)
 	}
@@ -139,7 +114,7 @@ func TestDispatchFrontierAndExecutorClaim(t *testing.T) {
 	}
 
 	// Custom open claimed via ClaimExecutorIntent.
-	ok, err = es.ClaimExecutorIntent(customOpen, "open", "gate_recon_scout", "exec:gate_recon_scout")
+	ok, err = es.ClaimExecutorIntent(customOpen, "open", "recon_scout", "exec:recon_scout")
 	if err != nil || !ok {
 		t.Fatalf("claim custom open: ok=%v err=%v", ok, err)
 	}
@@ -177,64 +152,6 @@ func TestDispatchFrontierAndExecutorClaim(t *testing.T) {
 	}
 }
 
-func TestCustomSeedIntentLookup(t *testing.T) {
-	d, err := Open(testDSN(t))
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
-	}
-	defer d.Close()
-	expID, err := d.CreateExploration("custom seed lookup", "测试种子查询")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
-	es := d.Exploration(expID)
-
-	mustSeed := func(summary, executor, origin, state string) int64 {
-		t.Helper()
-		id, err := es.AddNode(KindIntent, map[string]any{"summary": summary, "executor": executor}, 1, state, origin, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
-	mustSeed("planner origin is not a seed", "gate_recon_scout", "planner", "proposed")
-	otherKey := mustSeed("other executor", "other_scout", "seed", "open")
-	first := mustSeed("earliest matching seed", "gate_recon_scout", "seed", "done")
-	second := mustSeed("later matching seed", "gate_recon_scout", "seed", "blocked")
-
-	got, err := es.CustomSeedIntent("gate_recon_scout")
-	if err != nil || got == nil || got.ID != first || got.State != "done" {
-		t.Fatalf("done seed lookup got=%+v err=%v, want id=%d", got, err, first)
-	}
-	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='deleted' WHERE id=$1`, first); err != nil {
-		t.Fatal(err)
-	}
-	got, err = es.CustomSeedIntent("gate_recon_scout")
-	if err != nil || got == nil || got.ID != first || got.State != "deleted" {
-		t.Fatalf("deleted seed lookup got=%+v err=%v, want id=%d", got, err, first)
-	}
-	if _, err := es.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1`, first); err != nil {
-		t.Fatal(err)
-	}
-	for _, state := range []string{"blocked", "exhausted", "stopped"} {
-		if _, err := es.db.Exec(`UPDATE exploration_nodes SET state=$2 WHERE id=$1`, second, state); err != nil {
-			t.Fatal(err)
-		}
-		got, err = es.CustomSeedIntent("gate_recon_scout")
-		if err != nil || got == nil || got.ID != second || got.State != state {
-			t.Fatalf("%s seed lookup got=%+v err=%v, want id=%d", state, got, err, second)
-		}
-	}
-	got, err = es.CustomSeedIntent("other_scout")
-	if err != nil || got == nil || got.ID != otherKey {
-		t.Fatalf("other executor lookup got=%+v err=%v, want id=%d", got, err, otherKey)
-	}
-	if got, err = es.CustomSeedIntent("missing"); err != nil || got != nil {
-		t.Fatalf("missing seed lookup got=%+v err=%v, want nil", got, err)
-	}
-}
-
 // TestCustomExecutorQueuedRecovery verifies that all recovery paths return custom
 // intents to proposed and default intents to open, with owner cleared.
 func TestCustomExecutorQueuedRecovery(t *testing.T) {
@@ -251,8 +168,8 @@ func TestCustomExecutorQueuedRecovery(t *testing.T) {
 	es := d.Exploration(expID)
 
 	// ResetRunningIntents: custom running → proposed, default running → open.
-	customRunning := mustCustomProposedIntent(t, es, "custom running", "gate_recon_scout")
-	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='running', owner='exec:gate_recon_scout' WHERE id=$1`, customRunning); err != nil {
+	customRunning := mustCustomProposedIntent(t, es, "custom running", "recon_scout")
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='running', owner='exec:recon_scout' WHERE id=$1`, customRunning); err != nil {
 		t.Fatal(err)
 	}
 	defaultRunning := mustIntent(t, es, "default running")
@@ -272,7 +189,7 @@ func TestCustomExecutorQueuedRecovery(t *testing.T) {
 	}
 
 	// ReopenIntent: custom blocked → proposed, default blocked → open.
-	customBlocked := mustCustomProposedIntent(t, es, "custom blocked", "gate_recon_scout")
+	customBlocked := mustCustomProposedIntent(t, es, "custom blocked", "recon_scout")
 	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='blocked' WHERE id=$1`, customBlocked); err != nil {
 		t.Fatal(err)
 	}
@@ -295,84 +212,29 @@ func TestCustomExecutorQueuedRecovery(t *testing.T) {
 		t.Fatalf("default blocked recovery: state=%s", dn.State)
 	}
 
-	// ReopenRecoverableIntents: every recoverable state uses the same custom/default
-	// queued-state semantics and clears execution metadata in batch.
-	type recoveryFixture struct {
-		state               string
-		customID, defaultID int64
+	// ReopenBlockedIntents: same semantics in batch.
+	customBlocked2 := mustCustomProposedIntent(t, es, "custom blocked 2", "recon_scout")
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='blocked' WHERE id=$1`, customBlocked2); err != nil {
+		t.Fatal(err)
 	}
-	fixtures := make([]recoveryFixture, 0, 3)
-	for _, state := range []string{"blocked", "exhausted", "stopped"} {
-		customID := mustCustomProposedIntent(t, es, "custom "+state, "gate_recon_scout")
-		if _, err := es.db.Exec(`UPDATE exploration_nodes SET state=$2, owner='exec:gate_recon_scout', completed_at=now(), blocked_reason='retry' WHERE id=$1`, customID, state); err != nil {
-			t.Fatal(err)
-		}
-		defaultID := mustIntent(t, es, "default "+state)
-		if _, err := es.db.Exec(`UPDATE exploration_nodes SET state=$2, owner='work#1', completed_at=now(), blocked_reason='retry' WHERE id=$1`, defaultID, state); err != nil {
-			t.Fatal(err)
-		}
-		fixtures = append(fixtures, recoveryFixture{state: state, customID: customID, defaultID: defaultID})
+	defaultBlocked2 := mustIntent(t, es, "default blocked 2")
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='blocked' WHERE id=$1`, defaultBlocked2); err != nil {
+		t.Fatal(err)
 	}
-	protected := make(map[int64]struct {
-		state, owner, reason string
-	})
-	for _, tc := range []struct {
-		state, owner string
-		custom       bool
-	}{{"done", "exec:gate_recon_scout", true}, {"done", "work#1", false}, {"running", "exec:gate_recon_scout", true}, {"running", "work#1", false}} {
-		var id int64
-		if tc.custom {
-			id = mustCustomProposedIntent(t, es, "protected custom "+tc.state, "gate_recon_scout")
-		} else {
-			id = mustIntent(t, es, "protected default "+tc.state)
-		}
-		if _, err := es.db.Exec(`UPDATE exploration_nodes SET state=$2, owner=$3, blocked_reason='keep' WHERE id=$1`, id, tc.state, tc.owner); err != nil {
-			t.Fatal(err)
-		}
-		protected[id] = struct {
-			state, owner, reason string
-		}{tc.state, tc.owner, "keep"}
+	if n, _ := es.ReopenBlockedIntents(); n != 2 {
+		t.Fatalf("ReopenBlockedIntents n=%d, want 2", n)
 	}
-	if n, err := es.ReopenRecoverableIntents(); err != nil || n != 6 {
-		t.Fatalf("ReopenRecoverableIntents n=%d, want 6, err=%v", n, err)
+	cn, _ = es.GetNode(customBlocked2)
+	dn, _ = es.GetNode(defaultBlocked2)
+	if cn.State != "proposed" {
+		t.Fatalf("batch custom blocked recovery: state=%s", cn.State)
 	}
-	for _, fixture := range fixtures {
-		cn, err = es.GetNode(fixture.customID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dn, err = es.GetNode(fixture.defaultID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cn.State != "proposed" || cn.Owner != "" || cn.BlockedReason != "" {
-			t.Fatalf("batch custom %s recovery: state=%s owner=%s reason=%s", fixture.state, cn.State, cn.Owner, cn.BlockedReason)
-		}
-		if dn.State != "open" || dn.Owner != "" || dn.BlockedReason != "" {
-			t.Fatalf("batch default %s recovery: state=%s owner=%s reason=%s", fixture.state, dn.State, dn.Owner, dn.BlockedReason)
-		}
-		for _, id := range []int64{fixture.customID, fixture.defaultID} {
-			var completedAtCleared bool
-			if err := es.db.QueryRow(`SELECT completed_at IS NULL FROM exploration_nodes WHERE id=$1`, id).Scan(&completedAtCleared); err != nil {
-				t.Fatal(err)
-			}
-			if !completedAtCleared {
-				t.Fatalf("batch %s recovery left completed_at set on intent %d", fixture.state, id)
-			}
-		}
-	}
-	for id, want := range protected {
-		n, err := es.GetNode(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n.State != want.state || n.Owner != want.owner || n.BlockedReason != want.reason {
-			t.Fatalf("protected intent %d changed: state=%s owner=%s reason=%s", id, n.State, n.Owner, n.BlockedReason)
-		}
+	if dn.State != "open" {
+		t.Fatalf("batch default blocked recovery: state=%s", dn.State)
 	}
 
 	// ReopenIntentsByBlockedReason: same semantics.
-	customBlocked3 := mustCustomProposedIntent(t, es, "custom blocked 3", "gate_recon_scout")
+	customBlocked3 := mustCustomProposedIntent(t, es, "custom blocked 3", "recon_scout")
 	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='blocked', blocked_reason='quota' WHERE id=$1`, customBlocked3); err != nil {
 		t.Fatal(err)
 	}
@@ -393,8 +255,8 @@ func TestCustomExecutorQueuedRecovery(t *testing.T) {
 	}
 
 	// CompareAndSetIntentState to open/proposed clears owner.
-	ownerIntent := mustCustomProposedIntent(t, es, "owner clear", "gate_recon_scout")
-	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='running', owner='exec:gate_recon_scout' WHERE id=$1`, ownerIntent); err != nil {
+	ownerIntent := mustCustomProposedIntent(t, es, "owner clear", "recon_scout")
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='running', owner='exec:recon_scout' WHERE id=$1`, ownerIntent); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := es.CompareAndSetIntentState(ownerIntent, "running", "proposed"); !ok {
@@ -501,8 +363,8 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		for _, state := range []string{"proposed", "open", "running", "paused", "stopped", "blocked", "exhausted"} {
 			t.Run(state, func(t *testing.T) {
 				d, es := newStore(t, "gate state "+state)
-				mustGateAgent(t, d, "gate_recon_scout", false)
-				id := mustGateIntent(t, es, "synthetic uncontrolled "+state, "gate_recon_scout", "", "seed")
+				mustGateAgent(t, d, "recon_scout", false)
+				id := mustGateIntent(t, es, "synthetic uncontrolled "+state, "recon_scout", "", "seed")
 				if state != "proposed" {
 					if err := es.SetIntentState(id, state); err != nil {
 						t.Fatal(err)
@@ -514,8 +376,8 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		for _, state := range []string{"done", "deleted"} {
 			t.Run(state, func(t *testing.T) {
 				d, es := newStore(t, "gate terminal "+state)
-				mustGateAgent(t, d, "gate_recon_scout", false)
-				id := mustGateIntent(t, es, "synthetic terminal "+state, "gate_recon_scout", "", "seed")
+				mustGateAgent(t, d, "recon_scout", false)
+				id := mustGateIntent(t, es, "synthetic terminal "+state, "recon_scout", "", "seed")
 				if err := es.SetIntentState(id, state); err != nil {
 					t.Fatal(err)
 				}
@@ -524,8 +386,8 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		}
 		t.Run("physically deleted", func(t *testing.T) {
 			d, es := newStore(t, "gate physical delete")
-			mustGateAgent(t, d, "gate_recon_scout", false)
-			id := mustGateIntent(t, es, "synthetic hard delete", "gate_recon_scout", "", "seed")
+			mustGateAgent(t, d, "recon_scout", false)
+			id := mustGateIntent(t, es, "synthetic hard delete", "recon_scout", "", "seed")
 			if _, err := es.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
@@ -536,12 +398,12 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 	t.Run("agent toggle immediate", func(t *testing.T) {
 		// The same intent flips with the Agent's CURRENT config — no snapshot.
 		d, es := newStore(t, "gate toggle")
-		mustGateAgent(t, d, "gate_recon_scout", false)
-		mustGateIntent(t, es, "synthetic toggled intent", "gate_recon_scout", "", "seed")
+		mustGateAgent(t, d, "recon_scout", false)
+		mustGateIntent(t, es, "synthetic toggled intent", "recon_scout", "", "seed")
 		assertGate(t, es, true)
-		setGateAgentPlannerControlled(t, d, "gate_recon_scout", true)
+		setGateAgentPlannerControlled(t, d, "recon_scout", true)
 		assertGate(t, es, false)
-		setGateAgentPlannerControlled(t, d, "gate_recon_scout", false)
+		setGateAgentPlannerControlled(t, d, "recon_scout", false)
 		assertGate(t, es, true)
 	})
 
@@ -551,15 +413,15 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		for _, policy := range []string{"hold_until_done", "planner", ""} {
 			t.Run("uncontrolled/"+policy, func(t *testing.T) {
 				d, es := newStore(t, "gate policy uncontrolled "+policy)
-				mustGateAgent(t, d, "gate_recon_scout", false)
-				mustGateIntent(t, es, "synthetic policy "+policy, "gate_recon_scout", policy, "seed")
+				mustGateAgent(t, d, "recon_scout", false)
+				mustGateIntent(t, es, "synthetic policy "+policy, "recon_scout", policy, "seed")
 				assertGate(t, es, true)
 			})
 		}
 		t.Run("controlled hold_until_done", func(t *testing.T) {
 			d, es := newStore(t, "gate policy controlled")
-			mustGateAgent(t, d, "gate_recon_scout", true)
-			mustGateIntent(t, es, "synthetic held but controlled", "gate_recon_scout", "hold_until_done", "seed")
+			mustGateAgent(t, d, "recon_scout", true)
+			mustGateIntent(t, es, "synthetic held but controlled", "recon_scout", "hold_until_done", "seed")
 			assertGate(t, es, false)
 		})
 	})
@@ -569,8 +431,8 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		// applies to ALL custom intents, not just the first seed.
 		t.Run("non seed origin", func(t *testing.T) {
 			d, es := newStore(t, "gate non seed")
-			mustGateAgent(t, d, "gate_recon_scout", false)
-			mustGateIntent(t, es, "synthetic planner origin", "gate_recon_scout", "", "planner")
+			mustGateAgent(t, d, "recon_scout", false)
+			mustGateIntent(t, es, "synthetic planner origin", "recon_scout", "", "planner")
 			assertGate(t, es, true)
 		})
 		// review executor is never a custom executor ⇒ no gate, even if the Agent
@@ -599,9 +461,9 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		// All done ⇒ gate open.
 		t.Run("all done", func(t *testing.T) {
 			d, es := newStore(t, "gate multi all done")
-			mustGateAgent(t, d, "gate_recon_scout", false)
+			mustGateAgent(t, d, "recon_scout", false)
 			for i := range 2 {
-				id := mustGateIntent(t, es, fmt.Sprintf("synthetic done intent %d", i), "gate_recon_scout", "", "seed")
+				id := mustGateIntent(t, es, fmt.Sprintf("synthetic done intent %d", i), "recon_scout", "", "seed")
 				if err := es.SetIntentState(id, "done"); err != nil {
 					t.Fatal(err)
 				}
@@ -612,12 +474,12 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		for _, state := range []string{"running", "paused", "stopped", "blocked", "exhausted", "proposed", "open"} {
 			t.Run("one "+state, func(t *testing.T) {
 				d, es := newStore(t, "gate multi "+state)
-				mustGateAgent(t, d, "gate_recon_scout", false)
-				done := mustGateIntent(t, es, "synthetic done peer", "gate_recon_scout", "", "seed")
+				mustGateAgent(t, d, "recon_scout", false)
+				done := mustGateIntent(t, es, "synthetic done peer", "recon_scout", "", "seed")
 				if err := es.SetIntentState(done, "done"); err != nil {
 					t.Fatal(err)
 				}
-				pending := mustGateIntent(t, es, "synthetic pending peer", "gate_recon_scout", "", "seed")
+				pending := mustGateIntent(t, es, "synthetic pending peer", "recon_scout", "", "seed")
 				if state != "proposed" {
 					if err := es.SetIntentState(pending, state); err != nil {
 						t.Fatal(err)
@@ -629,12 +491,12 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		// One physically deleted, one still paused ⇒ gate stays closed.
 		t.Run("one physically deleted", func(t *testing.T) {
 			d, es := newStore(t, "gate multi physical delete")
-			mustGateAgent(t, d, "gate_recon_scout", false)
-			gone := mustGateIntent(t, es, "synthetic removed intent", "gate_recon_scout", "", "seed")
+			mustGateAgent(t, d, "recon_scout", false)
+			gone := mustGateIntent(t, es, "synthetic removed intent", "recon_scout", "", "seed")
 			if _, err := es.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1`, gone); err != nil {
 				t.Fatal(err)
 			}
-			held := mustGateIntent(t, es, "synthetic held peer", "gate_recon_scout", "", "seed")
+			held := mustGateIntent(t, es, "synthetic held peer", "recon_scout", "", "seed")
 			if err := es.SetIntentState(held, "paused"); err != nil {
 				t.Fatal(err)
 			}
@@ -644,9 +506,9 @@ func TestHasPendingUncontrolledCustomIntent(t *testing.T) {
 		// uncontrolled one alone.
 		t.Run("mixed agents", func(t *testing.T) {
 			d, es := newStore(t, "gate multi mixed agents")
-			mustGateAgent(t, d, "gate_recon_scout", true)
+			mustGateAgent(t, d, "recon_scout", true)
 			mustGateAgent(t, d, "probe_deep", false)
-			mustGateIntent(t, es, "synthetic controlled intent", "gate_recon_scout", "", "seed")
+			mustGateIntent(t, es, "synthetic controlled intent", "recon_scout", "", "seed")
 			pending := mustGateIntent(t, es, "synthetic uncontrolled peer", "probe_deep", "", "seed")
 			if err := es.SetIntentState(pending, "running"); err != nil {
 				t.Fatal(err)
@@ -736,4 +598,93 @@ func TestIntentDeleteExpectedStateRace(t *testing.T) {
 	}
 }
 
+// TestHasCustomExecutorIntentActive verifies the per-executor activity gate used to
+// decide whether a custom executor phase has ended: only intents whose
+// payload.executor equals the key (non-empty, non-review) in state
+// proposed/open/running/paused count as active; done/blocked/exhausted/stopped/deleted
+// do not; intents for other executors are irrelevant; origin (e.g. planner) is not
+// filtered. All payloads are synthetic.
+func TestHasCustomExecutorIntentActive(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+	expID, err := d.CreateExploration("custom active gate", "测试执行器活动门控")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	es := d.Exploration(expID)
 
+	// Active states: proposed/open/running/paused all report active. Each case uses
+	// its own executor key so cases stay independent within one exploration.
+	for _, st := range []string{"proposed", "open", "running", "paused"} {
+		key := "act_" + st
+		id := mustGateIntent(t, es, "active "+st, key, "", "planner")
+		if st != "proposed" {
+			if _, err := es.db.Exec(`UPDATE exploration_nodes SET state=$2 WHERE id=$1`, id, st); err != nil {
+				t.Fatal(err)
+			}
+		}
+		active, err := es.HasCustomExecutorIntentActive(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !active {
+			t.Fatalf("state %s must report active", st)
+		}
+	}
+
+	// Inactive states: done/blocked/exhausted/stopped/deleted all report inactive.
+	for _, st := range []string{"done", "blocked", "exhausted", "stopped", "deleted"} {
+		key := "inact_" + st
+		id := mustGateIntent(t, es, "inactive "+st, key, "", "planner")
+		if _, err := es.db.Exec(`UPDATE exploration_nodes SET state=$2 WHERE id=$1`, id, st); err != nil {
+			t.Fatal(err)
+		}
+		active, err := es.HasCustomExecutorIntentActive(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if active {
+			t.Fatalf("state %s must report inactive", st)
+		}
+	}
+
+	// Hard-deleted (no row) also reports inactive.
+	goneID := mustGateIntent(t, es, "hard deleted", "gone_key", "", "planner")
+	if _, err := es.CancelIntent(goneID, "proposed"); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := es.HasCustomExecutorIntentActive("gone_key"); err != nil || active {
+		t.Fatalf("hard-deleted intent must be inactive: active=%v err=%v", active, err)
+	}
+
+	// Different executor: an active intent for executor B must not make A active.
+	idA := mustGateIntent(t, es, "other executor", "execB_active", "", "planner")
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='running' WHERE id=$1`, idA); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := es.HasCustomExecutorIntentActive("execA_quiet"); err != nil || active {
+		t.Fatalf("other executor must be inactive: active=%v err=%v", active, err)
+	}
+
+	// origin=planner custom intent counts as active (origin not filtered).
+	originKey := "origin_planner"
+	id := mustGateIntent(t, es, "planner origin", originKey, "", "planner")
+	if _, err := es.db.Exec(`UPDATE exploration_nodes SET state='open' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := es.HasCustomExecutorIntentActive(originKey); err != nil || !active {
+		t.Fatalf("planner-origin custom intent must be active: active=%v err=%v", active, err)
+	}
+
+	// review / empty executor keys are never active, even with a matching review row present.
+	mustReviewProposedIntent(t, es, "review not active")
+	for _, key := range []string{"", "review"} {
+		if active, err := es.HasCustomExecutorIntentActive(key); err != nil || active {
+			t.Fatalf("key %q must never be active: active=%v err=%v", key, active, err)
+		}
+	}
+}

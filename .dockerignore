@@ -10,12 +10,10 @@ config.json
 .env.*
 !.env.example
 *.db
-# 根 Dockerfile 需要预编译二进制（dist/artex-linux-<arch>/artex）；其余 dist 内容仍排除。
-# 先排除 dist 的直接子项，再逐级放行目录和二进制，兼容仍不支持直接恢复文件的 legacy builder。
+# 根目录 Dockerfile 需要预编译二进制 dist/artex-linux-<arch>/artex；其余 dist 产物不进构建上下文
 /dist/*
-!/dist/artex-linux-*/
-/dist/artex-linux-*/*
-!/dist/artex-linux-*/artex
+!/dist/artex-linux-amd64
+!/dist/artex-linux-arm64
 /screenshots
 transcripts
 # 敏感文件：绝不进入构建上下文（Dockerfile.source 的 COPY . . 会整体收进 builder 层）
@@ -23,7 +21,6 @@ transcripts
 *.key
 *.pem
 config-export/
-evidence/
 backup/
 /dev/
 bench/kv

@@ -33,6 +33,9 @@ const (
 	maxLargeJSONBodyBytes = 4 << 20
 	// maxFileWriteJSONBodyBytes：工作区/技能源码写入与技能创建正文。
 	maxFileWriteJSONBodyBytes = 10 << 20
+	// maxCreateTaskBodyBytes：任务创建（目标/描述/场景与审核预设字段）。文本量级
+	// 远小于规则配置，1 MiB 留足转义开销余量。
+	maxCreateTaskBodyBytes = 1 << 20
 )
 
 // decodeJSONBounded bounds r.Body to maxBytes and decodes exactly one JSON value.

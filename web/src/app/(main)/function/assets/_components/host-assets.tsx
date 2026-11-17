@@ -1,5 +1,6 @@
 /**
- * host-assets.tsx：宿主标签页的资产表格，按企业分组展示主域名/子域名/IP/服务，选中行联动其发现列表。
+ * host-assets.tsx：宿主标签页的资产表格，按企业分组展示主域名/子域名/IP/端口/服务/凭据，
+ * 点击 IP 行打开右侧抽屉：域名、端口/服务、凭据汇总与该宿主的发现列表。
  * 主要函数/类型：
  *   - HostAssets：表格主体，选中行后经 api.findingsPage 拉取该宿主资产下的发现
  */
@@ -7,11 +8,12 @@
 
 import { useEffect, useState } from "react";
 
-import { Globe, Loader2, RotateCcw } from "lucide-react";
+import { Globe, KeyRound, Loader2, Network } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
+import { INTRANET_CREDENTIALS_UI } from "@/lib/feature-flags";
 import type { AssetHostRow, Finding, Severity } from "@/lib/types";
 
 const severityText: Record<Severity, string> = { critical: "严重", high: "高危", medium: "中危", low: "低危" };
@@ -71,7 +73,9 @@ export function HostAssets({
               <th className="px-4 py-3 font-medium">主域名</th>
               <th className="px-4 py-3 font-medium">子域名</th>
               <th className="px-4 py-3 font-medium">IP</th>
+              <th className="px-4 py-3 font-medium">端口</th>
               <th className="px-4 py-3 font-medium">应用 / 服务 / 接口</th>
+              {INTRANET_CREDENTIALS_UI && <th className="px-4 py-3 text-right font-medium">凭据</th>}
               <th className="px-4 py-3 text-right font-medium">发现数</th>
             </tr>
           </thead>
@@ -85,7 +89,7 @@ export function HostAssets({
                 <tr
                   key={row.key}
                   tabIndex={0}
-                  aria-pressed={selectedKey === row.key}
+                  data-open={selectedKey === row.key || undefined}
                   className={`cursor-pointer border-b outline-none transition-colors last:border-0 focus-visible:ring-2 focus-visible:ring-ring ${selectedKey === row.key ? "bg-muted" : "hover:bg-muted/40"}`}
                   onClick={() => onSelect(selectedKey === row.key ? null : row.key)}
                   onKeyDown={(event) => {
@@ -105,7 +109,32 @@ export function HostAssets({
                       </span>
                     )}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs">{row.ip}</td>
+                  <td className="px-4 py-3">
+                    <span className="font-mono text-xs">{row.ip}</span>
+                    {row.intranet && (
+                      <Badge variant="outline" className="ml-2 border-blue-500 text-blue-600">
+                        内网
+                      </Badge>
+                    )}
+                  </td>
+                  <td className="max-w-[220px] px-4 py-3">
+                    {!row.ports || row.ports.length === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <div
+                        className="truncate font-mono text-xs"
+                        title={row.ports.map((p) => `${p.port}/${p.service || "?"}`).join("\n")}
+                      >
+                        {row.ports
+                          .slice(0, 4)
+                          .map((p) => `${p.port}/${p.service || "?"}`)
+                          .join("  ")}
+                        {row.ports.length > 4 && (
+                          <span className="ml-2 text-muted-foreground">+{row.ports.length - 4}</span>
+                        )}
+                      </div>
+                    )}
+                  </td>
                   <td className="max-w-[360px] px-4 py-3">
                     <div className="truncate" title={row.services.map((service) => service.label).join("\n")}>
                       {row.services[0]?.label || "—"}
@@ -114,6 +143,20 @@ export function HostAssets({
                       )}
                     </div>
                   </td>
+                  {INTRANET_CREDENTIALS_UI && (
+                    <td className="px-4 py-3 text-right">
+                      {(row.credential_count ?? 0) === 0 ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <span className="text-xs">
+                          发现 {row.credential_count}
+                          {(row.verified_count ?? 0) > 0 && (
+                            <span className="text-green-600"> / 已认证 {row.verified_count}</span>
+                          )}
+                        </span>
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
                       {row.critical > 0 && <Badge className="bg-red-600 text-white">严 {row.critical}</Badge>}
@@ -130,52 +173,144 @@ export function HostAssets({
         </table>
       </div>
 
-      {selected && (
-        <section className="rounded-md border">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
-            <div>
-              <h2 className="flex items-center gap-2 text-sm font-medium">
-                <Globe className="size-4" />
-                {selected.ip} 的发现
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {selected.root_domain || "裸 IP"} · {findingTotal} 条
-              </p>
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => onSelect(null)}>
-              <RotateCcw className="size-4" />
-              取消筛选
-            </Button>
-          </div>
-          {loadingFindings ? (
-            <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              加载发现…
-            </div>
-          ) : error ? (
-            <div className="p-4 text-sm text-destructive">{error}</div>
-          ) : findings.length === 0 ? (
-            <div className="p-6 text-sm text-muted-foreground">该宿主暂无发现。</div>
-          ) : (
-            <div className="divide-y">
-              {findings.map((finding) => (
-                <article key={finding.id} className="grid gap-2 px-4 py-3 md:grid-cols-[auto_1fr_auto] md:items-start">
-                  <Badge className={severityClass[finding.severity]}>{severityText[finding.severity]}</Badge>
-                  <div className="min-w-0">
-                    <div className="font-medium">{finding.name || finding.vulnclass}</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      {finding.vulnclass} · {finding.summary || "暂无摘要"}
-                    </div>
+      <Sheet
+        open={selected !== null}
+        onOpenChange={(open) => {
+          if (!open) onSelect(null);
+        }}
+      >
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+          {selected && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="flex items-center gap-2">
+                  <Globe className="size-4" />
+                  <span className="font-mono">{selected.ip}</span>
+                  {selected.intranet && (
+                    <Badge variant="outline" className="border-blue-500 text-blue-600">
+                      内网
+                    </Badge>
+                  )}
+                </SheetTitle>
+                <SheetDescription>
+                  {selected.root_domain || "裸 IP"} · {selected.company_name || "未归属"} · {findingTotal} 条发现
+                </SheetDescription>
+              </SheetHeader>
+
+              <section className="px-4">
+                <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <Globe className="size-3.5" />
+                  域名
+                </h3>
+                <dl className="mt-2 space-y-2 text-sm">
+                  <div className="flex gap-2">
+                    <dt className="w-16 shrink-0 text-muted-foreground">主域名</dt>
+                    <dd>{selected.root_domain || "—"}</dd>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {finding.task_description || `任务 #${finding.task_id || "—"}`}
-                  </span>
-                </article>
-              ))}
-            </div>
+                  <div className="flex gap-2">
+                    <dt className="w-16 shrink-0 text-muted-foreground">子域名</dt>
+                    <dd className="flex flex-wrap gap-1">
+                      {selected.subdomains.length === 0 ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        selected.subdomains.map((domain) => (
+                          <Badge key={domain} variant="secondary" className="font-mono text-xs">
+                            {domain}
+                          </Badge>
+                        ))
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section className="px-4">
+                <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <Network className="size-3.5" />
+                  端口 / 服务
+                </h3>
+                {(selected.ports?.length ?? 0) === 0 && selected.services.length === 0 ? (
+                  <div className="mt-2 text-sm text-muted-foreground">暂无端口与服务。</div>
+                ) : (
+                  <div className="mt-2 divide-y rounded-md border text-sm">
+                    {(selected.ports ?? []).map((p) => (
+                      <div key={p.port} className="flex items-center gap-3 px-3 py-2">
+                        <span className="w-14 shrink-0 font-mono text-xs font-medium">{p.port}</span>
+                        <Badge variant="outline">{p.service || "unknown"}</Badge>
+                      </div>
+                    ))}
+                    {selected.services.map((service) => (
+                      <div key={`${service.asset_id}-${service.type}`} className="flex items-center gap-3 px-3 py-2">
+                        <Badge variant="secondary">{service.type}</Badge>
+                        <span className="truncate font-mono text-xs" title={service.url || service.label}>
+                          {service.label}
+                        </span>
+                        {service.method && <Badge variant="outline">{service.method}</Badge>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {INTRANET_CREDENTIALS_UI && (
+                <section className="px-4">
+                  <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <KeyRound className="size-3.5" />
+                    凭据
+                  </h3>
+                  <div className="mt-2 text-sm">
+                    {(selected.credential_count ?? 0) === 0 ? (
+                      <span className="text-muted-foreground">该宿主暂无凭据。</span>
+                    ) : (
+                      <span>
+                        发现 {selected.credential_count} 条
+                        {(selected.verified_count ?? 0) > 0 && (
+                          <span className="text-green-600">，其中 {selected.verified_count} 条已认证</span>
+                        )}
+                        ；明细见「内网凭据」标签页。
+                      </span>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              <section className="px-4 pb-4">
+                <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <Globe className="size-3.5" />
+                  发现（{findingTotal}）
+                </h3>
+                {loadingFindings ? (
+                  <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    加载发现…
+                  </div>
+                ) : error ? (
+                  <div className="py-4 text-sm text-destructive">{error}</div>
+                ) : findings.length === 0 ? (
+                  <div className="py-6 text-sm text-muted-foreground">该宿主暂无发现。</div>
+                ) : (
+                  <div className="mt-2 divide-y rounded-md border">
+                    {findings.map((finding) => (
+                      <article key={finding.id} className="space-y-1 px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <Badge className={severityClass[finding.severity]}>{severityText[finding.severity]}</Badge>
+                          <span className="min-w-0 truncate font-medium">{finding.name || finding.vulnclass}</span>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {finding.vulnclass} · {finding.summary || "暂无摘要"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {finding.task_description || `任务 #${finding.task_id || "—"}`}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </>
           )}
-        </section>
-      )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

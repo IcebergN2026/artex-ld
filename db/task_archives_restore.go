@@ -123,6 +123,10 @@ AND NOT EXISTS (
 )`, taskID, snapshot.ExclusiveAssetIDs); err != nil {
 			return err
 		}
+		// 归档快照已包含这些资产相关的凭据与关系；热库级联删除关系后清理孤儿凭据。
+		if err := pruneOrphanedCredentialsTx(tx); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`UPDATE explorations SET description='',goal='',status='open' WHERE id=$1`, expID); err != nil {
 		return err
@@ -209,6 +213,12 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 		return nil, err
 	}
 	warnings = append(warnings, assetWarnings...)
+
+	// 恢复归档资产相关的凭据身份与发现/认证关系：身份按唯一键合并，关系在
+	// credential/asset 重映射后恢复。旧版本归档没有这两张表时为空，天然跳过。
+	if err := restoreArchiveCredentials(tx, snapshot.Tables["asset_credentials"], snapshot.Tables["asset_credential_links"], assetMap); err != nil {
+		return nil, fmt.Errorf("restore asset credentials: %w", err)
+	}
 
 	// The task row exists as an archived stub. Restore its global references only
 	// when the current instance still owns them; never recreate categories/profiles.
@@ -545,6 +555,94 @@ func restoreArchiveAssets(tx *sql.Tx, taskID int64, raw json.RawMessage) (map[in
 		mapping[oldID] = candidate
 	}
 	return mapping, warnings, nil
+}
+
+// restoreArchiveCredentials 恢复归档中的凭据身份与发现/认证关系：
+//   - 身份按唯一键 (cred_type,username,domain,secret) 合并已有 asset_credentials，
+//     冲突时更新 last_seen 并复用已有 ID（重映射 old credential id → live id）。
+//   - 关系在 credential_id/asset_id 重映射后恢复 discovered/verified；冲突只更新
+//     非空 target/source/evidence 与 last_seen，重复恢复不增加行数。
+//
+// 旧版本归档（format v1-v3 早期）没有这两张表，raw 为空时直接跳过。
+func restoreArchiveCredentials(tx *sql.Tx, credentialsRaw, linksRaw json.RawMessage, assetMap map[int64]int64) error {
+	credRows, err := decodeArchiveRows(credentialsRaw)
+	if err != nil {
+		return err
+	}
+	linkRows, err := decodeArchiveRows(linksRaw)
+	if err != nil {
+		return err
+	}
+	if len(credRows) == 0 && len(linkRows) == 0 {
+		return nil
+	}
+	credMap := make(map[int64]int64, len(credRows))
+	for _, row := range credRows {
+		oldID, ok := jsonInt64(row["id"])
+		if !ok || oldID <= 0 {
+			return errors.New("archived credential has invalid id")
+		}
+		str := func(key string) string {
+			value, _ := row[key].(string)
+			return value
+		}
+		extraRaw, _ := json.Marshal(row["extra"])
+		if row["extra"] == nil {
+			extraRaw = []byte("{}")
+		}
+		var newID int64
+		if err := tx.QueryRow(`
+INSERT INTO asset_credentials(cred_type, username, domain, secret, extra)
+VALUES ($1, $2, $3, $4, $5::jsonb)
+ON CONFLICT (cred_type, username, domain, secret) DO UPDATE SET last_seen = now()
+RETURNING id`,
+			str("cred_type"), str("username"), str("domain"), str("secret"), string(extraRaw),
+		).Scan(&newID); err != nil {
+			return fmt.Errorf("restore credential %d: %w", oldID, err)
+		}
+		credMap[oldID] = newID
+	}
+	for _, row := range linkRows {
+		oldCredID, ok := jsonInt64(row["credential_id"])
+		if !ok || oldCredID <= 0 {
+			return errors.New("archived credential link has invalid credential_id")
+		}
+		oldAssetID, ok := jsonInt64(row["asset_id"])
+		if !ok || oldAssetID <= 0 {
+			return errors.New("archived credential link has invalid asset_id")
+		}
+		credID, found := credMap[oldCredID]
+		if !found {
+			// 链接指向的凭据不在归档凭据表里（归档不完整）：跳过而不是伪造身份。
+			continue
+		}
+		assetID, found := assetMap[oldAssetID]
+		if !found {
+			// 资产与现有库自然键合并过，assetMap 必然覆盖全部归档资产。
+			return fmt.Errorf("archived credential link references unmapped asset %d", oldAssetID)
+		}
+		relation, _ := row["relation"].(string)
+		if relation != CredentialRelationDiscovered && relation != CredentialRelationVerified {
+			return fmt.Errorf("archived credential link has invalid relation %q", relation)
+		}
+		str := func(key string) string {
+			value, _ := row[key].(string)
+			return value
+		}
+		if _, err := tx.Exec(`
+INSERT INTO asset_credential_links(credential_id, asset_id, relation, target, source, evidence)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (credential_id, asset_id, relation) DO UPDATE SET
+    target    = COALESCE(NULLIF(EXCLUDED.target, ''),   asset_credential_links.target),
+    source    = COALESCE(NULLIF(EXCLUDED.source, ''),   asset_credential_links.source),
+    evidence  = COALESCE(NULLIF(EXCLUDED.evidence, ''), asset_credential_links.evidence),
+    last_seen = now()`,
+			credID, assetID, relation, str("target"), str("source"), str("evidence"),
+		); err != nil {
+			return fmt.Errorf("restore credential link (%d,%d,%s): %w", credID, assetID, relation, err)
+		}
+	}
+	return nil
 }
 
 func mergeJSONTaskID(value any, taskID int64) []int64 {

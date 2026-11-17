@@ -9,6 +9,7 @@
 "use client";
 
 import * as React from "react";
+
 import {
   CheckIcon,
   ChevronDown,
@@ -24,24 +25,19 @@ import {
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+
+import { ApprovalDetail } from "@/components/approval-records";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ApprovalDetail } from "@/components/approval-records";
+import { api } from "@/lib/api";
 import type { Activity, InterceptPending } from "@/lib/types";
 import { fmtBytes } from "@/lib/utils";
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
-const workerColors = [
-  "bg-sky-600",
-  "bg-violet-600",
-  "bg-teal-600",
-  "bg-pink-600",
-  "bg-orange-600",
-];
-function workerColor(name: string): string {
+const workerColors = ["bg-sky-600", "bg-violet-600", "bg-teal-600", "bg-pink-600", "bg-orange-600"];
+export function workerColor(name: string): string {
   if (name === "planner") return "bg-amber-600"; // the intent generator, distinct
   if (name === "mainagent") return "bg-primary";
   const m = /#(\d+)/.exec(name);
@@ -77,13 +73,16 @@ function WorkerChip({ worker }: { worker: string }) {
   );
 }
 
+// 合并多 agent 时间线时的意图归属标签:步骤属于哪个 intent(与 worker chip 并列)。
+const intentTag = (intentId?: string) =>
+  intentId ? (
+    <span
+      className="mt-0.5 shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[9px] leading-4 font-medium text-amber-700 dark:text-amber-400"
+      title={`所属意图 #${intentId}`}
+    >
+      #{intentId}
     </span>
-  );
-}
-
-    </span>
-  );
-}
+  ) : null;
 
 // useInView latches true when the ref'd element first comes within `rootMargin` of
 // the enclosing scroll viewport. Blocks that always show their full body (user
@@ -128,7 +127,9 @@ type Group =
 
 function groupSteps(steps: Activity[], chat: boolean): Group[] {
   const out: Group[] = [];
-  const byToolId = new Map<string, Extract<Group, { type: "tool" }>>();
+  // tool_use_id 只在同一 worker 的会话内唯一;合并多 agent 时间线时,跨 worker
+  // 的重复 id 会把结果配到错误的调用上,所以配对键必须带 worker。
+  const byWorkerToolId = new Map<string, Extract<Group, { type: "tool" }>>();
   for (const s of steps) {
     if (s.kind === "usage") continue; // live token-usage marker — not a rendered step
     if (s.kind === "round") {
@@ -153,13 +154,14 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
     }
     if (s.kind === "tool_use") {
       const g: Extract<Group, { type: "tool" }> = { type: "tool", key: s.seq, worker: s.worker, use: s };
-      if (s.tool_use_id) byToolId.set(s.tool_use_id, g);
+      if (s.tool_use_id) byWorkerToolId.set(s.worker + "\n" + s.tool_use_id, g);
       out.push(g);
       continue;
     }
     if (s.kind === "tool_result") {
-      // bind to its tool_use by id (NOT adjacency — tools can run in parallel)
-      const g = s.tool_use_id ? byToolId.get(s.tool_use_id) : undefined;
+      // bind to its tool_use by id (NOT adjacency — tools can run in parallel),
+      // scoped to the same worker so merged lanes never cross-pair duplicate ids.
+      const g = s.tool_use_id ? byWorkerToolId.get(s.worker + "\n" + s.tool_use_id) : undefined;
       if (g && !g.result) g.result = s;
       else out.push({ type: "tool", key: s.seq, worker: s.worker, result: s }); // orphan result
       continue;
@@ -215,9 +217,7 @@ function toolInputText(tool: string, raw: string): string {
       return JSON.parse('"' + m[1] + '"');
     } catch {
       // truncated mid-escape — unescape the common sequences best-effort.
-      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) =>
-        c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c,
-      );
+      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) => (c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c));
     }
   }
   return raw;
@@ -226,13 +226,7 @@ function toolInputText(tool: string, raw: string): string {
 // InterceptCard renders an inline intercept_request approval card. The pending_id
 // is extracted from the summary (format: "工具 X 请求审批 (#N)") so buttons are
 // available immediately without waiting for the detail load.
-function InterceptCard({
-  step,
-  getDetail,
-}: {
-  step: Activity;
-  getDetail: (seq: number) => Promise<string>;
-}) {
+function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: number) => Promise<string> }) {
   // extract pending_id from summary: "工具 Bash 请求审批 (#42)"
   const pendingId = React.useMemo(() => {
     const m = /\(#(\d+)\)/.exec(step.summary);
@@ -259,25 +253,38 @@ function InterceptCard({
     getDetail(step.seq)
       .then((raw) => {
         if (!live || !raw) return;
-        try { setDetail(JSON.parse(raw)); } catch { /* ignore */ }
+        try {
+          setDetail(JSON.parse(raw));
+        } catch {
+          /* ignore */
+        }
       })
-      .catch(() => {/* ignore */});
-    return () => { live = false; };
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      live = false;
+    };
   }, [step.seq, getDetail]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Retry explicitly reloads the same approval after a failed request.
   React.useEffect(() => {
     if (!pendingId) return;
     let live = true;
-    api.interceptGetOne(pendingId)
+    api
+      .interceptGetOne(pendingId)
       .then((p) => {
         if (!live) return;
         setPending(p);
         setStatusError("");
         if (p.status !== "pending") setDecided(p.status as "allowed" | "denied" | "timeout");
       })
-      .catch((error) => { if (live) setStatusError((error as Error).message || "审批详情加载失败"); });
-    return () => { live = false; };
+      .catch((error) => {
+        if (live) setStatusError((error as Error).message || "审批详情加载失败");
+      });
+    return () => {
+      live = false;
+    };
   }, [pendingId, retry]);
 
   async function decide(decision: "allowed" | "denied") {
@@ -294,11 +301,11 @@ function InterceptCard({
     }
   }
 
-  const inputStr = detail?.input
-    ? JSON.stringify(detail.input).slice(0, 200)
-    : null;
+  const inputStr = detail?.input ? JSON.stringify(detail.input).slice(0, 200) : null;
 
-  const row = pending ? { ...pending, status: decided || pending.status, conv_title: "", conv_agent_key: "", rule_name: "" } : null;
+  const row = pending
+    ? { ...pending, status: decided || pending.status, conv_title: "", conv_agent_key: "", rule_name: "" }
+    : null;
 
   return (
     <div className="my-2 rounded-lg border border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/15 p-3 text-xs">
@@ -311,27 +318,25 @@ function InterceptCard({
               <code className="rounded bg-amber-100 dark:bg-amber-900/50 px-1 font-mono text-amber-800 dark:text-amber-300">
                 {toolName}
               </code>
-              {pendingId && (
-                <span className="text-muted-foreground">#{pendingId}</span>
-              )}
+              {pendingId && <span className="text-muted-foreground">#{pendingId}</span>}
             </div>
-            {inputStr && (
-              <p className="font-mono text-muted-foreground truncate">{inputStr}</p>
-            )}
+            {inputStr && <p className="font-mono text-muted-foreground truncate">{inputStr}</p>}
           </div>
         </div>
 
         {step.inherited ? (
           <Badge variant="outline">历史记录 · 只读</Badge>
         ) : decided ? (
-          <span className={
-            "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
-            (decided === "allowed"
-              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-              : decided === "timeout"
-                ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
-          }>
+          <span
+            className={
+              "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
+              (decided === "allowed"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+                : decided === "timeout"
+                  ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
+            }
+          >
             {decided === "allowed" ? "已允许" : decided === "timeout" ? "已超时" : "已拒绝"}
           </span>
         ) : (
@@ -380,9 +385,13 @@ function InterceptCard({
             ) : statusError ? (
               <div className="flex flex-wrap items-center gap-2 p-3" role="alert">
                 <span>{statusError}</span>
-                <Button variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)}>重试详情</Button>
+                <Button variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)}>
+                  重试详情
+                </Button>
               </div>
-            ) : <p className="p-3 text-muted-foreground">正在加载审批详情…</p>}
+            ) : (
+              <p className="p-3 text-muted-foreground">正在加载审批详情…</p>
+            )}
           </CollapsibleContent>
         </Collapsible>
       ) : null}
@@ -508,6 +517,7 @@ function ToolBlock({
         </span>
         <ToolIcon className={"mt-0.5 size-3.5 shrink-0 " + (running ? "text-sky-600 dark:text-sky-400" : statusTone)} />
         {showWorker && <WorkerChip worker={group.worker} />}
+        {showWorker && intentTag(group.use?.intent_id ?? group.result?.intent_id)}
         <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">{toolName}</span>
         {cmd && <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{cmd}</span>}
         <span className={"ml-auto shrink-0 font-medium " + statusTone}>{statusText}</span>
@@ -576,6 +586,7 @@ function MessageBlock({
         </span>
         <Icon className={"mt-0.5 size-3.5 shrink-0 " + tone} />
         {showWorker && <WorkerChip worker={group.worker} />}
+        {showWorker && intentTag(group.steps.find((s) => s.intent_id)?.intent_id)}
         <span className={"min-w-0 flex-1 truncate " + tone}>
           {body}
           {hasThinking && <span className="ml-1 text-[10px] text-muted-foreground">· 含推理</span>}
@@ -674,6 +685,8 @@ function UserRow({
       <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10">
         <Icon className="size-3.5 text-primary" />
       </div>
+      {showWorker && <WorkerChip worker={step.worker} />}
+      {showWorker && intentTag(step.intent_id)}
     </div>
   );
 }
@@ -683,8 +696,15 @@ function UserRow({
 // non-main session lanes) `collapsible` folds it into a one-line summary row, default
 // collapsed like thinking/tool blocks, so a long planner result doesn't push the rest
 // of the timeline off screen; expanding lazy-loads the full text.
-function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: number) => Promise<string> }) {
+function AnswerBlock({
+  step,
+  getDetail,
+  showWorker,
   collapsible = false,
+}: {
+  step: Activity;
+  getDetail: (seq: number) => Promise<string>;
+  showWorker?: boolean;
   /** true=回放视图:默认折叠为一行摘要,点击展开全文;对话视图保持全文常开。 */
   collapsible?: boolean;
 }) {
@@ -705,20 +725,29 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
     return () => {
       live = false;
     };
-  }, [inView, step.seq, getDetail, step.summary]);
-  return (
-    <div ref={ref} className="mb-2 mt-1 flex min-w-0 flex-col gap-1">
+  }, [inView, open, step.seq, getDetail, step.summary]);
+  const content = (
+    <div
+      className={
+        "min-w-0 flex-1 break-words rounded-lg bg-muted px-3 py-2 " +
+        (step.is_error ? "text-sm text-red-600 dark:text-red-400" : "")
+      }
+    >
+      {step.is_error ? (
+        <span className="whitespace-pre-wrap">{full ?? step.summary}</span>
+      ) : (
+        <Markdown text={full ?? step.summary} />
       )}
-      <div
-        className={
-          "min-w-0 flex-1 break-words rounded-lg bg-muted px-3 py-2 " +
-          (step.is_error ? "text-sm text-red-600 dark:text-red-400" : "")
-        }
-      >
-        {step.is_error ? (
-          <span className="whitespace-pre-wrap">{full ?? step.summary}</span>
-        ) : (
-          <Markdown text={full ?? step.summary} />
+    </div>
+  );
+  if (!collapsible) {
+    return (
+      <div ref={ref} className="mb-2 mt-1 flex min-w-0 flex-col gap-1">
+        {showWorker && (
+          <span className="flex items-center gap-1">
+            <WorkerChip worker={step.worker} />
+            {intentTag(step.intent_id)}
+          </span>
         )}
         {content}
         <ActivityTime ts={step.ts} />
@@ -787,31 +816,34 @@ function ExecView({
   );
   return (
     <div className="flex flex-col">
-      {groupSteps(activity, !!chat).map((g) =>
-        g.type === "round" ? (
-          <div key={"r" + g.key} className="my-2 flex items-center gap-2 text-[10px] font-medium text-muted-foreground">
-            <span className="h-px flex-1 bg-border" />
-            {g.label}
-            <span className="h-px flex-1 bg-border" />
-          </div>
-        ) : g.type === "user" ? (
-          <UserRow key={"u" + g.key} step={g.step} intent={g.intent} getDetail={getDetail} />
-        ) : g.type === "answer" ? (
-          <AnswerBlock key={"a" + g.key} step={g.step} getDetail={getDetail} />
-        ) : g.type === "tool" ? (
-          <ToolBlock
-            key={"t" + g.key}
-            group={g}
-            getDetail={getDetail}
-            showWorker={showWorker}
-            focused={focusedSeq != null && g.use?.seq === focusedSeq}
-          />
-        ) : g.type === "intercept" ? (
-          <InterceptCard key={"ic" + g.key} step={g.step} getDetail={getDetail} />
-        ) : (
-          <MessageBlock key={"m" + g.key} group={g} getDetail={getDetail} showWorker={showWorker} />
-        ),
-      )}
+      {/* 每个分组包一层 data-seq 锚点(= 组首条 activity 的 seq),供轨迹页的
+          minimap 跳转、选中高亮与详情抽屉定位;不改变内部布局。 */}
+      {groupSteps(activity, !!chat).map((g) => (
+        <div key={`${g.type}-${g.key}`} data-seq={g.key} className="min-w-0">
+          {g.type === "round" ? (
+            <div className="my-2 flex items-center gap-2 text-[10px] font-medium text-muted-foreground">
+              <span className="h-px flex-1 bg-border" />
+              {g.label}
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          ) : g.type === "user" ? (
+            <UserRow step={g.step} intent={g.intent} getDetail={getDetail} showWorker={showWorker} />
+          ) : g.type === "answer" ? (
+            <AnswerBlock step={g.step} getDetail={getDetail} showWorker={showWorker} collapsible={!chat} />
+          ) : g.type === "tool" ? (
+            <ToolBlock
+              group={g}
+              getDetail={getDetail}
+              showWorker={showWorker}
+              focused={focusedSeq != null && g.use?.seq === focusedSeq}
+            />
+          ) : g.type === "intercept" ? (
+            <InterceptCard step={g.step} getDetail={getDetail} />
+          ) : (
+            <MessageBlock group={g} getDetail={getDetail} showWorker={showWorker} />
+          )}
+        </div>
+      ))}
     </div>
   );
 }
@@ -840,7 +872,10 @@ export function Transcript({
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const [focusPadding, setFocusPadding] = React.useState(0);
   React.useLayoutEffect(() => {
-    if (focusedSeq == null) { setFocusPadding(0); return; }
+    if (focusedSeq == null) {
+      setFocusPadding(0);
+      return;
+    }
     const viewport = transcriptRef.current?.closest('[data-slot="scroll-area-viewport"]');
     if (!viewport) return;
     const measure = () => setFocusPadding(viewport.clientHeight / 2);
@@ -850,7 +885,11 @@ export function Transcript({
     return () => observer.disconnect();
   }, [focusedSeq]);
   return (
-    <div ref={transcriptRef} className="flex flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
+    <div
+      ref={transcriptRef}
+      className="flex flex-col gap-1"
+      style={focusPadding ? { paddingBlock: focusPadding } : undefined}
+    >
       <ExecView
         activity={activity}
         taskId={taskId}

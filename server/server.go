@@ -6,7 +6,6 @@
 //   - providerForProfile / chatAgentForProfile / invalidateProfileAgents：按 profile 构建并缓存 provider 与聊天 agent。
 //   - restoreTaskRuntimes：重启后恢复任务运行时。
 //   - health / stats / listTasks / setActive / control / controlIntent：健康、统计与任务控制类 HTTP 接口。
-
 package server
 
 import (
@@ -45,7 +44,7 @@ import (
 // BuildVersion is the backend application version, injected from cmd/artex at
 // startup (which in turn gets it from -ldflags "-X main.version=<tag>").
 // Defaults to the current release for local builds. Exposed to the frontend via GET /api/health.
-var BuildVersion = "0.1.5"
+var BuildVersion = "0.1.6"
 
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
@@ -80,7 +79,7 @@ type Server struct {
 	chatMu   sync.Mutex
 	chatBusy map[string]bool
 	// 【二开·审核流 PR1/§2.6】reviewRunner 句柄：add_review_intent / update_intent 送审后
-	// 即时唤醒审核轮（原 ticker 唯一唤醒源退化为兜底，ReviewRunner 现 15s 一轮）。
+	// 即时唤醒审核轮（原 60s ticker 唯一唤醒源退化为兜底）。
 	reviewRunner *ReviewRunner
 	// chatCancel holds the cancel func for each in-flight conversation run (keyed by
 	// convBusyKey), so a manual stop can abort JUST that session's agent run. Set/
@@ -157,7 +156,6 @@ type triggeredRun struct {
 	taskDesc    string // 任务描述(任务级,同任务相同);合并时只渲染一次
 	taskGoal    string // 任务目标(任务级,同任务相同);合并时只渲染一次
 	mergeable   bool   // true for finding/goal event triggers (merge by taskID)
-	executorKey string // non-empty only for the conversation-owned pre_agent seed
 	invocations []findingInvocationRef
 }
 
@@ -188,7 +186,6 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		return prov, cfg, true
 	}
-	s.engine.preAgentFn = s.runPreAgentConversation
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -283,6 +280,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// 【二开·P-REVIEW·D9】止
 		s.seedOrchestrationTools()      // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
 		s.backfillTaskDispatchTargets() // 旧内网任务按 description 中 finding #N / finding_id=N 回填资产去重目标
+		s.migrateLegacyAssetAuth()      // 存量 assets.auth 一次性迁移为 discovered 凭据关系(幂等)
 		if err := s.seedFindingRetester(); err != nil {
 			log.Printf("[retester] seed: %v", err)
 		}
@@ -834,8 +832,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{id}/llm/resolution", s.taskLLMResolutionHandler)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/control", s.controlIntent)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/messages", s.sendWorkerMessage)
-	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/rerun", s.rerunIntent)            // 重跑单条 blocked/exhausted/stopped 意图
-	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-recoverable", s.rerunRecoverable) // 批量重跑 blocked/exhausted/stopped 意图
+	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/rerun", s.rerunIntent)    // 重跑单条 blocked/exhausted/stopped 意图
+	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked) // 批量重跑本任务全部 blocked 意图
 	mux.HandleFunc("POST /api/active", s.setActive)
 
 	mux.HandleFunc("GET /api/llm", s.getLLM)
@@ -847,6 +845,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/assets/counts", s.assetCounts)
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
+	mux.HandleFunc("GET /api/credentials/intranet", s.getIntranetCredentials)
 
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)
@@ -1198,7 +1197,8 @@ func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
 	}
-	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	// 与删除/归档共用调度锁和 inflight 屏障，避免打开任务时复活正在 teardown 的运行态。
@@ -1239,7 +1239,8 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Action string `json:"action"`
 	}
-	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	if req.Action != "pause" && req.Action != "resume" {
@@ -1279,7 +1280,8 @@ func (s *Server) controlIntent(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"` // cancel(删除)时必填:删除原因
 		Mode   string `json:"mode"`   // cancel 专用:soft(默认,假删除)| hard(真删除,级联移除独占子孙)
 	}
-	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
 	if req.Action != "pause" && req.Action != "resume" && req.Action != "cancel" {
@@ -1295,7 +1297,9 @@ func (s *Server) controlIntent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, result)
 }
 
-// restoreRerunIntent 把意图状态回滚到重跑前的快照（准入失败时用）。
+// rerunIntent 重跑一条没跑成功的意图(blocked/exhausted/stopped):把它置回 open,worker
+// 会重新认领、从头再跑(已写回图谱的 fact/finding/asset 保留);若任务已终态/暂停则顺带复活。
+// 用于「出错的 work 点击继续运行」——网络/LLM 抖动导致 blocked 后可一键重试。
 func restoreRerunIntent(t *Task, before *db.Node) error {
 	if t == nil || before == nil {
 		return fmt.Errorf("missing intent rollback snapshot")
@@ -1306,9 +1310,6 @@ func restoreRerunIntent(t *Task, before *db.Node) error {
 	return t.Store.SetIntentState(before.ID, before.State)
 }
 
-// rerunIntent 重跑一条没跑成功的意图(blocked/exhausted/stopped):把它置回 open,worker
-// 会重新认领、从头再跑(已写回图谱的 fact/finding/asset 保留);若任务已终态/暂停则顺带复活。
-// 用于「出错的 work 点击继续运行」——网络/LLM 抖动导致 blocked 后可一键重试。
 func (s *Server) rerunIntent(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
@@ -1351,9 +1352,9 @@ func (s *Server) rerunIntent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"id": t.ID, "reopened": iid, "queued": queued})
 }
 
-// rerunRecoverable 批量重跑本任务全部 blocked/exhausted/stopped 意图。
-// 状态由 DB 按 executor 决定回 proposed/open；准入失败逐条回滚原状态。
-func (s *Server) rerunRecoverable(w http.ResponseWriter, r *http.Request) {
+// rerunBlocked 批量重跑本任务全部 blocked 意图(适合一次网络/LLM 断连导致多条 blocked 后
+// 一键全部重试),置回 open 并复活任务;返回重开的条数。
+func (s *Server) rerunBlocked(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.m.Task(r.PathValue("id"))
 	if !ok {
 		writeErr(w, 404, "task not found")
@@ -1371,12 +1372,12 @@ func (s *Server) rerunRecoverable(w http.ResponseWriter, r *http.Request) {
 	}
 	before := make([]*db.Node, 0)
 	for _, intent := range intents {
-		if intent.State == "blocked" || intent.State == "exhausted" || intent.State == "stopped" {
+		if intent.State == "blocked" {
 			copy := *intent
 			before = append(before, &copy)
 		}
 	}
-	n, err := t.Store.ReopenRecoverableIntents()
+	n, err := t.Store.ReopenBlockedIntents()
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1392,12 +1393,12 @@ func (s *Server) rerunRecoverable(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if len(rollbackErrors) > 0 {
-				err = fmt.Errorf("%w; restore recoverable intents after admission failure: %s", err, strings.Join(rollbackErrors, "; "))
+				err = fmt.Errorf("%w; restore blocked intents after admission failure: %s", err, strings.Join(rollbackErrors, "; "))
 			}
 			writeErr(w, 500, err.Error())
 			return
 		}
-		log.Printf("[task] #%s 批量重开 %d 条 blocked/exhausted/stopped 意图", t.ID, n)
+		log.Printf("[task] #%s 批量重开 %d 条 blocked 意图", t.ID, n)
 	}
 	writeJSON(w, 200, map[string]any{"id": t.ID, "reopened": n, "queued": queued})
 }
@@ -1435,7 +1436,8 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		ThinkingType    string  `json:"thinking_type"`
 		ReasoningEffort string  `json:"reasoning_effort"`
 	}
-	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
@@ -1493,7 +1495,8 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
 	}
-	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
@@ -1558,28 +1561,19 @@ func truncateReply(s string) string {
 	return string(r[:max]) + "…"
 }
 
-// maxCreateTaskBodyBytes leaves room for both full prompt snapshots (each capped
-// at 32KB by the DB) plus intercept rules, profile chains and company/source id
-// lists, without accepting an unbounded body.
-const maxCreateTaskBodyBytes = 1 << 20
-
 type createTaskReq struct {
 	Name                 string   `json:"name,omitempty"` // 可选任务名称;省略/空=未命名
 	CategoryID           *int64   `json:"category_id,omitempty"`
 	Description          string   `json:"description"`
 	Goal                 string   `json:"goal"`
-	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`  // 指定运行本任务的 LLM 配置;省略/null=用激活配置
-	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"` // 有序任务级配置链;第一项初始生效
-	SourceTaskIDs        []string `json:"source_task_ids,omitempty"` // 仅直接、只读继承的来源任务
-	CompanyIDs           []int64  `json:"company_ids,omitempty"`     // 关联企业范围并快照关联当前企业资产;不复制资产或强制生成意图
-	TimeoutSeconds       int      `json:"timeout_seconds"`           // 任务级超时(秒);0/省略=不限时
-	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`    // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
-	// 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;
-	// 省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
-	SeedFirstIntent *bool `json:"seed_first_intent,omitempty"`
-	// 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏
-	// add_task_scope/list_untested_assets。company 关联不受影响。
-	CoverageEnabled *bool `json:"coverage_enabled,omitempty"`
+	LLMProfileID         *int64   `json:"llm_profile_id,omitempty"`    // 指定运行本任务的 LLM 配置;省略/null=用激活配置
+	LLMProfileIDs        []int64  `json:"llm_profile_ids,omitempty"`   // 有序任务级配置链;第一项初始生效
+	SourceTaskIDs        []string `json:"source_task_ids,omitempty"`   // 仅直接、只读继承的来源任务
+	CompanyIDs           []int64  `json:"company_ids,omitempty"`       // 关联企业范围并快照关联当前企业资产;不复制资产或强制生成意图
+	TimeoutSeconds       int      `json:"timeout_seconds"`             // 任务级超时(秒);0/省略=不限时
+	PlanHeartbeatSeconds int      `json:"plan_heartbeat_seconds"`      // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
+	SeedFirstIntent      *bool    `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
+	CoverageEnabled      *bool    `json:"coverage_enabled,omitempty"`  // 资产覆盖度功能;省略/null=默认开(true)。false=关闭覆盖度计算/展示/自动累积范围+隐藏 add_task_scope/list_untested_assets。company 关联不受影响。
 	// InterceptRules 任务级资产拦截/允许规则(创建时录入,存 task_intercept_rules,不进全局表)。
 	InterceptRules []taskInterceptRuleReq `json:"intercept_rules,omitempty"`
 	// 【二开·P-INTENT·S7】起 —— 建任务四新字段（00 册 S7）
@@ -1817,7 +1811,8 @@ func (s *Server) updateTaskLLMProfiles(w http.ResponseWriter, r *http.Request) {
 		LLMProfileIDs      []int64 `json:"llm_profile_ids"`
 		ActiveLLMProfileID *int64  `json:"active_llm_profile_id"`
 	}
-	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
 	if err := s.validateTaskProfileIDs(req.LLMProfileIDs); err != nil {
@@ -2132,7 +2127,8 @@ func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
 		Value  string `json:"value"`
 		Reason string `json:"reason"`
 	}
-	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid JSON")
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
@@ -2540,7 +2536,8 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		Name      *string `json:"name"`
 		VulnClass *string `json:"vulnclass"`
 	}
-	if !decodeJSON(w, r, &body, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
 	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil {
@@ -2943,14 +2940,18 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor})
 }
 
-// parseActivitySession maps a stable session key (main | plan | intent:<ID>) to a
-// DB session filter. Goal Agent + Planner both live under worker="planner" (the
-// single Plan session); a Worker session is one intent, keyed by its node id.
+// parseActivitySession maps a stable session key (main | plan | intent:<ID> | all)
+// to a DB session filter. Goal Agent + Planner both live under worker="planner" (the
+// single Plan session); a Worker session is one intent, keyed by its node id; "all"
+// selects the whole task merged across every lane (zero-value filter).
 func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 	switch {
 	case sess == "" || sess == "main":
 		// bare "main" = the current segment; caller resolves MainSeg via the store.
 		return db.ActivitySessionFilter{Main: true}, true
+	case sess == "all":
+		// 零值过滤器 = 整个任务全部 lane(见 ActivitySessionFilter.cond default 分支)。
+		return db.ActivitySessionFilter{}, true
 	case strings.HasPrefix(sess, "main:"):
 		seg, err := strconv.Atoi(strings.TrimPrefix(sess, "main:"))
 		if err != nil || seg < 0 {
@@ -3143,6 +3144,10 @@ func (s *Server) conversationTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, rows)
 }
 
+// streamActivity is the live SSE tail: it replays history after ?since=<seq>, then
+// pushes each newly appended activity for the task. The seq cursor makes history +
+// live join gap-free; on reconnect the client passes its last seq to catch any
+// dropped events. Optional ?intent=<id> scopes the stream to one worker session.
 // getLogs returns recent backend log lines (Seq > since), newest-last.
 func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {
 	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
@@ -3244,10 +3249,6 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// streamActivity is the live SSE tail: it replays history after ?since=<seq>, then
-// pushes each newly appended activity for the task. The seq cursor makes history +
-// live join gap-free; on reconnect the client passes its last seq to catch any
-// dropped events. Optional ?intent=<id> scopes the stream to one worker session.
 func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
@@ -3456,7 +3457,8 @@ func (s *Server) deleteTrafficHosts(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Hosts []string `json:"hosts"`
 	}
-	if !decodeJSON(w, r, &req, maxLargeJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "invalid body")
 		return
 	}
 	hosts := make([]string, 0, len(req.Hosts))
@@ -3666,7 +3668,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		// 【P-LOG·M0】日志级别热切换：debug/info/warn/error；立即生效，无需重启。
 		LogLevel *string `json:"log_level"`
 	}
-	if !decodeJSON(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	if req.LogLevel != nil {
@@ -3862,7 +3865,8 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 		TavilyKey string `json:"tavily_search_api_key"`
 	}
 	// Empty body is fine — fall back entirely to the saved config below.
-	if !decodeJSONOptional(w, r, &req, maxSmallJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	_, backend, storedBraveKey, storedTavilyKey, _ := s.m.WebSearch()
@@ -3973,7 +3977,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		Attachments []chatAttachment `json:"attachments,omitempty"` // 方式1 上传的文件(路径相对任务工作目录)
 		Seg         *int             `json:"seg,omitempty"`         // 目标主会话分段;缺省=最新段
 	}
-	if !decodeJSON(w, r, &req, maxMediumJSONBodyBytes) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err.Error())
 		return
 	}
 	agentMessage, ok := s.prepareChatMentionMessage(w, req.Message)

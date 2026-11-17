@@ -5,7 +5,6 @@
 //   - findingRetestTools：读取复测上下文、登记复测结论两个 agent 工具。
 //   - seedFindingRetester：种子可编辑的复测 Agent 与工具绑定。
 //   - finishRetest：结束复测记录并写状态与原因。
-
 package server
 
 import (
@@ -79,7 +78,7 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Notes string `json:"notes"`
 	}
-	if !decodeJSON(w, r, &req, maxConversationRequestBytes) {
+	if !decodeConversationRequest(w, r, &req) {
 		return
 	}
 	req.Notes = strings.TrimSpace(req.Notes)
