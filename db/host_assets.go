@@ -1,0 +1,445 @@
+// host_assets.go：资产库按主机（IP）视角的投影查询，聚合资产、服务与发现命中。
+// 主要函数/类型：
+//   - AssetHostRow / AssetHostFilter / AssetHostService：主机投影行、查询条件与服务条目结构。
+//   - QueryHosts：按过滤条件查询资产并折叠为主机行（含命中发现统计）。
+//   - buildAssetHostRows / assetHostBuilder：把资产列表流式折叠为去重、合并后的主机行集合。
+//   - containsAssetID / hostServiceLabel：资产 id 二分查找与服务显示名辅助。
+package db
+
+import (
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/url"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// AssetHostService is an app, service or endpoint projected onto one host row.
+type AssetHostService struct {
+	AssetID int64  `json:"asset_id"`
+	Type    string `json:"type"`
+	Label   string `json:"label"`
+	URL     string `json:"url,omitempty"`
+	Method  string `json:"method,omitempty"`
+	// 指纹展示(资产页「服务明细」表):端口归并与技术/标题/状态码。
+	Port         *int     `json:"port,omitempty"`
+	Technologies []string `json:"technologies,omitempty"`
+	PageTitle    string   `json:"page_title,omitempty"`
+	StatusCode   *int     `json:"status_code,omitempty"`
+}
+
+// AssetHostRow is the six-column host projection used by the Assets page.
+type AssetHostRow struct {
+	Key          string             `json:"key"`
+	CompanyID    int64              `json:"company_id,omitempty"`
+	CompanyName  string             `json:"company_name,omitempty"`
+	RootDomain   string             `json:"root_domain,omitempty"`
+	Subdomains   []string           `json:"subdomains"`
+	IP           string             `json:"ip"`
+	Services     []AssetHostService `json:"services"`
+	AssetIDs     []int64            `json:"asset_ids"`
+	FindingCount int                `json:"finding_count"`
+	Critical     int                `json:"critical"`
+	High         int                `json:"high"`
+	Medium       int                `json:"medium"`
+	Low          int                `json:"low"`
+	// Intranet：IP 落在 RFC1918 私网段（与拓扑内网判定同一口径）。
+	Intranet bool `json:"intranet"`
+	// Ports：宿主 IP 资产 open_ports 的去重合并（{port, service}）。
+	Ports []PortService `json:"ports"`
+	// CredentialCount / VerifiedCount：宿主全部资产的凭据关系计数（discovered/verified）。
+	CredentialCount int `json:"credential_count"`
+	VerifiedCount   int `json:"verified_count"`
+}
+
+type AssetHostFilter struct {
+	CompanyID int64
+	TaskID    int64
+	DSL       string
+	// Intranet:三态过滤——nil 不过滤,true 仅内网(RFC1918),false 仅外网。
+	Intranet *bool
+	Limit    int
+	Offset   int
+}
+
+type hostFindingHit struct {
+	id       int64
+	severity string
+	assetIDs []int64
+}
+
+// QueryHosts builds host rows from the same assets used by the existing type
+// tabs, then applies filters and pagination to hosts rather than flat assets.
+// shortcut: assemble in memory like the finding asset tree; move this projection
+// to SQL when full asset scans become measurable in production.
+func (s *AssetStore) QueryHosts(f AssetHostFilter) ([]AssetHostRow, int, error) {
+	rows, err := s.db.Query(assetSelectCols + " ORDER BY id")
+	if err != nil {
+		return nil, 0, err
+	}
+	assets, err := scanAssets(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	companyNames := map[int64]string{}
+	companyRows, err := s.db.Query(`SELECT id, name FROM companies`)
+	if err != nil {
+		return nil, 0, err
+	}
+	for companyRows.Next() {
+		var id int64
+		var name string
+		if err := companyRows.Scan(&id, &name); err != nil {
+			companyRows.Close()
+			return nil, 0, err
+		}
+		companyNames[id] = name
+	}
+	if err := companyRows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	findingRows, err := s.db.Query(`SELECT id, COALESCE(severity,''), COALESCE(asset_ids::text,'[]') FROM findings`)
+	if err != nil {
+		return nil, 0, err
+	}
+	var hits []hostFindingHit
+	for findingRows.Next() {
+		var hit hostFindingHit
+		var raw string
+		if err := findingRows.Scan(&hit.id, &hit.severity, &raw); err != nil {
+			findingRows.Close()
+			return nil, 0, err
+		}
+		_ = json.Unmarshal([]byte(raw), &hit.assetIDs)
+		hits = append(hits, hit)
+	}
+	if err := findingRows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	var dslMatches map[int64]bool
+	if strings.TrimSpace(f.DSL) != "" {
+		matched, err := s.QueryDSL(f.DSL, "", f.TaskID, 0, 0)
+		if err != nil {
+			return nil, 0, err
+		}
+		dslMatches = map[int64]bool{}
+		for _, a := range matched {
+			dslMatches[a.ID] = true
+		}
+	}
+
+	credCounts := map[int64][2]int{}
+	credRows, err := s.db.Query(`SELECT asset_id, relation, COUNT(*) FROM asset_credential_links GROUP BY asset_id, relation`)
+	if err != nil {
+		return nil, 0, err
+	}
+	for credRows.Next() {
+		var assetID int64
+		var relation string
+		var count int
+		if err := credRows.Scan(&assetID, &relation, &count); err != nil {
+			credRows.Close()
+			return nil, 0, err
+		}
+		counts := credCounts[assetID]
+		if relation == CredentialRelationVerified {
+			counts[1] += count
+		} else {
+			counts[0] += count
+		}
+		credCounts[assetID] = counts
+	}
+	if err := credRows.Close(); err != nil {
+		return nil, 0, err
+	}
+
+	hosts := buildAssetHostRows(assets, companyNames, hits)
+	for i := range hosts {
+		for _, assetID := range hosts[i].AssetIDs {
+			counts := credCounts[assetID]
+			hosts[i].CredentialCount += counts[0] + counts[1]
+			hosts[i].VerifiedCount += counts[1]
+		}
+	}
+	filtered := hosts[:0]
+	for _, row := range hosts {
+		if f.Intranet != nil && row.Intranet != *f.Intranet {
+			continue
+		}
+		companyOK, taskOK, dslOK := f.CompanyID == 0, f.TaskID == 0, dslMatches == nil
+		for _, a := range assets {
+			if !containsAssetID(row.AssetIDs, a.ID) {
+				continue
+			}
+			if a.CompanyID != nil && *a.CompanyID == f.CompanyID {
+				companyOK = true
+			}
+			for _, taskID := range a.TaskIDs {
+				if taskID == f.TaskID {
+					taskOK = true
+				}
+			}
+			if dslMatches[a.ID] {
+				dslOK = true
+			}
+		}
+		if companyOK && taskOK && dslOK {
+			filtered = append(filtered, row)
+		}
+	}
+	total := len(filtered)
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	if f.Offset >= total {
+		return []AssetHostRow{}, total, nil
+	}
+	filtered = filtered[f.Offset:]
+	if f.Limit > 0 && len(filtered) > f.Limit {
+		filtered = filtered[:f.Limit]
+	}
+	return filtered, total, nil
+}
+
+func containsAssetID(ids []int64, id int64) bool {
+	i := sort.Search(len(ids), func(i int) bool { return ids[i] >= id })
+	return i < len(ids) && ids[i] == id
+}
+
+type assetHostBuilder struct {
+	row          AssetHostRow
+	assetSet     map[int64]bool
+	rootSet      map[string]bool
+	subdomainSet map[string]bool
+	companyVotes map[int64]int
+	portSet      map[int]bool
+}
+
+func newAssetHostBuilder(ip string) *assetHostBuilder {
+	return &assetHostBuilder{
+		row: AssetHostRow{
+			Key: "host:" + ip, IP: ip, Subdomains: []string{}, Services: []AssetHostService{}, AssetIDs: []int64{},
+			Ports: []PortService{}, Intranet: topologyInternalIPv4(ip),
+		},
+		assetSet: map[int64]bool{}, rootSet: map[string]bool{}, subdomainSet: map[string]bool{}, companyVotes: map[int64]int{},
+		portSet: map[int]bool{},
+	}
+}
+
+// addPorts 把 IP 资产 open_ports 的 {port, service} 合并进主机行（按端口号去重）。
+func (b *assetHostBuilder) addPorts(openPorts []map[string]any) {
+	for _, entry := range openPorts {
+		portValue, ok := entry["port"].(float64)
+		if !ok {
+			continue
+		}
+		port := int(portValue)
+		if port <= 0 || b.portSet[port] {
+			continue
+		}
+		b.portSet[port] = true
+		service, _ := entry["service"].(string)
+		product, _ := entry["product"].(string)
+		version, _ := entry["version"].(string)
+		b.row.Ports = append(b.row.Ports, PortService{Port: port, Service: service, Product: product, Version: version})
+	}
+}
+
+func (b *assetHostBuilder) addBase(a *Asset) {
+	if a.ID > 0 && !b.assetSet[a.ID] {
+		b.assetSet[a.ID] = true
+		b.row.AssetIDs = append(b.row.AssetIDs, a.ID)
+	}
+	if a.CompanyID != nil {
+		b.companyVotes[*a.CompanyID]++
+	}
+	if a.RootDomain != "" {
+		b.rootSet[strings.ToLower(a.RootDomain)] = true
+	}
+}
+
+func buildAssetHostRows(assets []*Asset, companyNames map[int64]string, hits []hostFindingHit) []AssetHostRow {
+	hosts := map[string]*assetHostBuilder{}
+	domainRecords := map[string][]string{}
+	ensure := func(ip string) *assetHostBuilder {
+		ip = strings.TrimSpace(ip)
+		if net.ParseIP(ip) == nil {
+			return nil
+		}
+		if hosts[ip] == nil {
+			hosts[ip] = newAssetHostBuilder(ip)
+		}
+		return hosts[ip]
+	}
+	for _, a := range assets {
+		if a.Type == "ip" {
+			if b := ensure(a.IP); b != nil {
+				b.addBase(a)
+				b.addPorts(a.OpenPorts)
+			}
+		}
+		if a.Type == "subdomain" {
+			domain := strings.ToLower(strings.TrimSuffix(a.Domain, "."))
+			domainRecords[domain] = append(domainRecords[domain], a.RecordValue...)
+		}
+	}
+	for _, a := range assets {
+		if a.Type != "ip" {
+			continue
+		}
+		for _, domain := range a.BoundDomains {
+			domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+			domainRecords[domain] = append(domainRecords[domain], a.IP)
+		}
+	}
+
+	var resolveDomain func(string, map[string]bool) []string
+	resolveDomain = func(domain string, seen map[string]bool) []string {
+		domain = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+		if domain == "" || seen[domain] {
+			return nil
+		}
+		if net.ParseIP(domain) != nil {
+			return []string{domain}
+		}
+		seen[domain] = true
+		var out []string
+		for _, value := range domainRecords[domain] {
+			value = strings.TrimSpace(value)
+			if net.ParseIP(value) != nil {
+				out = append(out, value)
+			} else {
+				out = append(out, resolveDomain(value, seen)...)
+			}
+		}
+		return out
+	}
+
+	for _, a := range assets {
+		switch a.Type {
+		case "subdomain":
+			for _, ip := range resolveDomain(a.Domain, map[string]bool{}) {
+				b := ensure(ip)
+				b.addBase(a)
+				b.subdomainSet[strings.ToLower(a.Domain)] = true
+			}
+		case "service", "endpoint", "app":
+			ips := []string{}
+			if net.ParseIP(a.IP) != nil {
+				ips = []string{a.IP}
+			} else {
+				host := a.Domain
+				if host == "" && a.URL != "" {
+					if u, err := url.Parse(a.URL); err == nil {
+						host = u.Hostname()
+					}
+				}
+				ips = resolveDomain(host, map[string]bool{})
+			}
+			for _, ip := range ips {
+				b := ensure(ip)
+				b.addBase(a)
+				label := hostServiceLabel(a)
+				b.row.Services = append(b.row.Services, AssetHostService{
+					AssetID: a.ID, Type: a.Type, Label: label, URL: a.URL, Method: a.Method,
+					Port: a.Port, Technologies: a.Technologies, PageTitle: a.PageTitle, StatusCode: a.StatusCode,
+				})
+			}
+		}
+	}
+
+	assetHost := map[int64]*assetHostBuilder{}
+	for _, b := range hosts {
+		sort.Slice(b.row.AssetIDs, func(i, j int) bool { return b.row.AssetIDs[i] < b.row.AssetIDs[j] })
+		for _, id := range b.row.AssetIDs {
+			assetHost[id] = b
+		}
+		roots := make([]string, 0, len(b.rootSet))
+		subdomains := make([]string, 0, len(b.subdomainSet))
+		for root := range b.rootSet {
+			roots = append(roots, root)
+		}
+		for domain := range b.subdomainSet {
+			subdomains = append(subdomains, domain)
+		}
+		sort.Strings(roots)
+		sort.Strings(subdomains)
+		if len(roots) > 0 {
+			b.row.RootDomain = roots[0]
+		}
+		b.row.Subdomains = subdomains
+		sort.Slice(b.row.Services, func(i, j int) bool {
+			if b.row.Services[i].Type != b.row.Services[j].Type {
+				return b.row.Services[i].Type < b.row.Services[j].Type
+			}
+			return b.row.Services[i].Label < b.row.Services[j].Label
+		})
+		sort.Slice(b.row.Ports, func(i, j int) bool { return b.row.Ports[i].Port < b.row.Ports[j].Port })
+		var bestCompany, bestVotes int64
+		for id, votes := range b.companyVotes {
+			if votes > int(bestVotes) || (votes == int(bestVotes) && (bestCompany == 0 || id < bestCompany)) {
+				bestCompany, bestVotes = id, int64(votes)
+			}
+		}
+		if bestCompany > 0 {
+			b.row.CompanyID = bestCompany
+			b.row.CompanyName = companyNames[bestCompany]
+		}
+	}
+	for _, hit := range hits {
+		seen := map[*assetHostBuilder]bool{}
+		for _, assetID := range hit.assetIDs {
+			b := assetHost[assetID]
+			if b == nil || seen[b] {
+				continue
+			}
+			seen[b] = true
+			b.row.FindingCount++
+			switch hit.severity {
+			case "critical":
+				b.row.Critical++
+			case "high":
+				b.row.High++
+			case "medium":
+				b.row.Medium++
+			case "low":
+				b.row.Low++
+			}
+		}
+	}
+	out := make([]AssetHostRow, 0, len(hosts))
+	for _, b := range hosts {
+		out = append(out, b.row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].FindingCount != out[j].FindingCount {
+			return out[i].FindingCount > out[j].FindingCount
+		}
+		return out[i].IP < out[j].IP
+	})
+	return out
+}
+
+func hostServiceLabel(a *Asset) string {
+	if a.Type == "app" && a.AppName != "" {
+		return a.AppName
+	}
+	if a.Type == "endpoint" {
+		return strings.TrimSpace(a.Method + " " + a.URL)
+	}
+	if a.URL != "" {
+		return a.URL
+	}
+	if a.ServiceName != "" || a.ServiceType != "" {
+		name := strings.TrimSpace(a.ServiceName + " " + a.ServiceType)
+		if a.Port != nil {
+			return name + ":" + strconv.Itoa(*a.Port)
+		}
+		return name
+	}
+	return fmt.Sprintf("asset #%d", a.ID)
+}

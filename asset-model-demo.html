@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>资产模型 Demo — artex</title>
+<style>
+  /* artex 前端风格（shadcn 默认 light preset）：白卡、muted 表头、severity 色 Badge、等宽 IP */
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --border: oklch(0.922 0 0);
+    --secondary: oklch(0.97 0 0);
+    --ring: oklch(0.708 0 0);
+    --radius: 0.625rem;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .page { max-width: 1200px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+  h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .desc { margin-top: 4px; font-size: 14px; color: var(--muted-foreground); }
+  svg.icon { width: 16px; height: 16px; flex: none; }
+  svg.icon.lg { width: 20px; height: 20px; }
+
+  /* Tabs */
+  .tabs { display: inline-flex; align-items: center; gap: 4px; background: var(--muted); border-radius: var(--radius); padding: 4px; width: fit-content; }
+  .tab {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border: none; border-radius: calc(var(--radius) - 2px);
+    background: transparent; color: var(--muted-foreground);
+    font-size: 14px; cursor: pointer; white-space: nowrap;
+  }
+  .tab:hover { color: var(--foreground); }
+  .tab.active { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
+  .tab .task-no { font-size: 12px; color: var(--muted-foreground); }
+
+  /* Badge */
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 8px; border-radius: 9999px;
+    font-size: 12px; font-weight: 500; line-height: 18px;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .badge-green  { background: #16a34a; color: #fff; }
+  .badge-slate  { background: #64748b; color: #fff; }
+  .badge-yellow { background: #eab308; color: #000; }
+  .badge-secondary { background: var(--secondary); color: var(--foreground); border-color: var(--border); }
+  .badge-outline { background: transparent; color: var(--foreground); border-color: var(--border); }
+  .badge-blue { background: transparent; color: #2563eb; border-color: #3b82f6; }
+  .badge-web { background: transparent; color: #15803d; border-color: #16a34a; }
+
+  /* Card / table */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .card-title { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .card-sub { margin-top: 4px; font-size: 12px; color: var(--muted-foreground); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; min-width: 1080px; border-collapse: collapse; font-size: 14px; }
+  thead { background: color-mix(in oklab, var(--muted) 40%, transparent); }
+  th { padding: 12px 16px; text-align: left; font-weight: 500; border-bottom: 1px solid var(--border); }
+  th.right, td.right { text-align: right; }
+  td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr.row { cursor: pointer; transition: background 0.15s; }
+  tbody tr.row:hover { background: color-mix(in oklab, var(--muted) 40%, transparent); }
+  tbody tr.row.open { background: var(--muted); }
+  tbody tr.row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+  .chev { display: inline-block; color: var(--muted-foreground); transition: transform 0.15s; }
+  .chev.open { transform: rotate(90deg); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ip { font-size: 12px; font-weight: 500; }
+  .dim { color: var(--muted-foreground); }
+  .xs { font-size: 12px; }
+
+  /* Detail section */
+  .detail-grid { display: grid; grid-template-columns: 1fr; }
+  @media (min-width: 768px) { .detail-grid { grid-template-columns: 1fr 1fr; } .detail-grid > section + section { border-left: 1px solid var(--border); } }
+  .detail-grid section { padding: 12px 16px; }
+  .sec-title { font-size: 12px; font-weight: 500; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; }
+  .kv { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .kv .row { display: flex; gap: 8px; }
+  .kv dt { width: 64px; flex: none; color: var(--muted-foreground); }
+  .list { margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .list > div { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .list > div:last-child { border-bottom: none; }
+  .list .port { width: 56px; flex: none; font-size: 12px; font-weight: 500; }
+  .list .banner { font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cred-item { padding: 8px 12px; border-bottom: 1px solid var(--border); display: block; }
+  .cred-item:last-child { border-bottom: none; }
+  .cred-item .target { margin-top: 4px; font-size: 12px; color: var(--muted-foreground); }
+  .empty { margin-top: 8px; border: 1px dashed var(--border); border-radius: var(--radius); padding: 16px; color: var(--muted-foreground); }
+
+  .btn-ghost {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border: none; border-radius: var(--radius);
+    background: transparent; font-size: 13px; cursor: pointer; color: var(--foreground);
+  }
+  .btn-ghost:hover { background: var(--muted); }
+  .pad { padding: 24px; color: var(--muted-foreground); }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1>
+      <svg class="icon lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg>
+      资产模型 Demo
+    </h1>
+    <p class="desc">任务 = 企业 · IP 为核心资产（父域名 / 子域名 / 端口服务下挂）· 内网资产凭据表</p>
+  </header>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="card table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:32px; padding:12px 8px;"></th>
+          <th>IP（核心资产）</th>
+          <th>C 段</th>
+          <th>父域名</th>
+          <th>子域名</th>
+          <th>端口 / 服务</th>
+          <th class="right">凭据</th>
+        </tr>
+      </thead>
+      <tbody id="assetRows"></tbody>
+    </table>
+  </div>
+
+  <div id="detail"></div>
+
+  <div class="card">
+    <div class="card-head">
+      <h2 class="card-title">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+        内网资产凭据 <span class="badge badge-secondary" id="credCount"></span>
+      </h2>
+      <span class="dim xs">仅统计内网（RFC1918）资产上的 discovered / verified 关系</span>
+    </div>
+    <div class="table-wrap" id="credTable"></div>
+  </div>
+</div>
+
+<script>
+// ================= Mock 数据：任务 = 企业 =================
+const ENTERPRISES = [
+  {
+    id: 101, name: "云帆科技", task_status: "running",
+    ips: [
+      { ip: "203.0.113.10", c: "203.0.113.0/24", intranet: false, root: "yunfan.com",
+        subs: ["www.yunfan.com", "api.yunfan.com", "mail.yunfan.com"],
+        ports: [
+          { port: 80, service: "http", banner: "nginx 1.24", web: true },
+          { port: 443, service: "https", banner: "nginx 1.24", web: true },
+          { port: 22, service: "ssh", banner: "OpenSSH 8.9" },
+        ] },
+      { ip: "203.0.113.11", c: "203.0.113.0/24", intranet: false, root: "yunfan.com",
+        subs: ["oa.yunfan.com"],
+        ports: [
+          { port: 8443, service: "https", banner: "Tomcat 9.0", web: true },
+          { port: 3306, service: "mysql", banner: "MySQL 8.0.33" },
+        ] },
+      { ip: "10.20.1.15", c: "10.20.1.0/24", intranet: true, root: "", subs: [],
+        ports: [
+          { port: 445, service: "smb", banner: "Windows Server 2019" },
+          { port: 3389, service: "rdp" },
+          { port: 135, service: "msrpc" },
+        ] },
+      { ip: "10.20.1.20", c: "10.20.1.0/24", intranet: true, root: "", subs: [],
+        ports: [
+          { port: 22, service: "ssh", banner: "OpenSSH 7.4" },
+          { port: 8080, service: "http", banner: "Jenkins 2.401", web: true },
+        ] },
+    ],
+    creds: [
+      { type: "password", user: "Administrator", domain: "YUNFAN", relation: "verified", target: "smb://10.20.1.15", source: "lsass 转储", ip: "10.20.1.15" },
+      { type: "ntlm_hash", user: "svc_backup", domain: "YUNFAN", relation: "verified", target: "smb://10.20.1.15", source: "SAM 数据库", ip: "10.20.1.15" },
+      { type: "ssh_key", user: "jenkins", domain: "", relation: "verified", target: "ssh://10.20.1.20:22", source: "~/.ssh/id_rsa", ip: "10.20.1.20" },
+      { type: "password", user: "root", domain: "", relation: "discovered", target: "mysql://203.0.113.11:3306", source: "oa.yunfan.com 配置文件", ip: "203.0.113.11" },
+    ],
+  },
+  {
+    id: 102, name: "星汉制造", task_status: "paused",
+    ips: [
+      { ip: "198.51.100.7", c: "198.51.100.0/24", intranet: false, root: "xinghan.cn",
+        subs: ["www.xinghan.cn", "vpn.xinghan.cn"],
+        ports: [
+          { port: 443, service: "https", banner: "Apache 2.4", web: true },
+          { port: 1194, service: "openvpn" },
+        ] },
+      { ip: "192.168.8.10", c: "192.168.8.0/24", intranet: true, root: "", subs: [],
+        ports: [
+          { port: 445, service: "smb", banner: "Windows 10 22H2" },
+          { port: 5985, service: "winrm" },
+        ] },
+    ],
+    creds: [
+      { type: "password", user: "xinghan_admin", domain: "XINGHAN", relation: "discovered", target: "winrm://192.168.8.10:5985", source: "浏览器密码库", ip: "192.168.8.10" },
+    ],
+  },
+];
+
+const STATUS = {
+  running: { label: "进行中", cls: "badge-green" },
+  done:    { label: "已完成", cls: "badge-slate" },
+  paused:  { label: "已暂停", cls: "badge-yellow" },
+};
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+
+const ICON_CHEVRON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+const ICON_KEY = '<svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>';
+const ICON_GLOBE = '<svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>';
+const ICON_NET = '<svg class="icon" style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/></svg>';
+const ICON_SERVER = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>';
+const ICON_RESET = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
+const ICON_BUILDING = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/></svg>';
+
+let currentEnterprise = ENTERPRISES[0].id;
+let selectedIP = null;
+
+function enterprise() { return ENTERPRISES.find((e) => e.id === currentEnterprise); }
+function credsOf(ip) { return enterprise().creds.filter((c) => c.ip === ip); }
+
+function renderTabs() {
+  document.getElementById("tabs").innerHTML = ENTERPRISES.map((e) => {
+    const st = STATUS[e.task_status];
+    return `<button class="tab ${e.id === currentEnterprise ? "active" : ""}" data-id="${e.id}">
+      ${ICON_BUILDING}${esc(e.name)}<span class="task-no">任务 #${e.id}</span>
+      <span class="badge ${st.cls}">${st.label}</span>
+    </button>`;
+  }).join("");
+  document.querySelectorAll(".tab").forEach((btn) =>
+    btn.addEventListener("click", () => { currentEnterprise = Number(btn.dataset.id); selectedIP = null; render(); }));
+}
+
+function renderAssets() {
+  const e = enterprise();
+  document.getElementById("assetRows").innerHTML = e.ips.map((a) => {
+    const creds = credsOf(a.ip);
+    const verified = creds.filter((c) => c.relation === "verified").length;
+    const open = selectedIP === a.ip;
+    const subs = a.subs.length === 0
+      ? '<span class="dim">—</span>'
+      : `<div class="chips">${a.subs.slice(0, 2).map((d) => `<span class="badge badge-secondary mono xs">${esc(d)}</span>`).join("")}
+         ${a.subs.length > 2 ? `<span class="dim xs" title="${esc(a.subs.slice(2).join("\n"))}">+${a.subs.length - 2}</span>` : ""}</div>`;
+    const ports = `<div class="chips">${a.ports.map((p) =>
+      `<span class="badge ${p.web ? "badge-web" : "badge-outline"} mono xs">${p.port}/${esc(p.service)}</span>`).join("")}</div>`;
+    const credCell = creds.length === 0
+      ? '<span class="dim">—</span>'
+      : `<span class="xs" style="display:inline-flex;align-items:center;gap:4px">${ICON_KEY}发现 ${creds.length}${verified > 0 ? ` <span style="color:#16a34a">/ 已认证 ${verified}</span>` : ""}</span>`;
+    return `<tr class="row ${open ? "open" : ""}" tabindex="0" data-ip="${esc(a.ip)}">
+      <td style="padding:12px 8px"><span class="chev ${open ? "open" : ""}">${ICON_CHEVRON}</span></td>
+      <td><span class="mono ip">${esc(a.ip)}</span>${a.intranet ? ' <span class="badge badge-blue">内网</span>' : ""}</td>
+      <td class="mono xs dim">${esc(a.c)}</td>
+      <td>${a.root ? esc(a.root) : '<span class="dim">—</span>'}</td>
+      <td>${subs}</td>
+      <td>${ports}</td>
+      <td class="right">${credCell}</td>
+    </tr>`;
+  }).join("");
+  document.querySelectorAll("#assetRows tr.row").forEach((tr) => {
+    const toggle = () => { selectedIP = selectedIP === tr.dataset.ip ? null : tr.dataset.ip; renderAssets(); renderDetail(); };
+    tr.addEventListener("click", toggle);
+    tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); } });
+  });
+}
+
+function credCard(c) {
+  const ok = c.relation === "verified";
+  return `<div class="cred-item">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="badge ${ok ? "badge-green" : "badge-outline"}">${ok ? "已认证" : "已发现"}</span>
+      <span class="badge badge-secondary">${esc(c.type)}</span>
+      <span class="mono xs" style="font-weight:500">${c.domain ? esc(c.domain) + "\\" : ""}${esc(c.user)}</span>
+    </div>
+    <div class="target mono">${esc(c.target)}</div>
+    <div class="target">来源：${esc(c.source)}</div>
+  </div>`;
+}
+
+function renderDetail() {
+  const box = document.getElementById("detail");
+  const a = enterprise().ips.find((x) => x.ip === selectedIP);
+  if (!a) { box.innerHTML = ""; return; }
+  const creds = credsOf(a.ip);
+  box.innerHTML = `
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">${ICON_SERVER}<span class="mono">${esc(a.ip)}</span>
+          ${a.intranet ? '<span class="badge badge-blue">内网资产</span>' : ""}</h2>
+        <p class="card-sub">${a.root ? `父域名 ${esc(a.root)}` : "裸 IP"} · ${esc(a.c)} · ${a.ports.length} 个端口</p>
+      </div>
+      <button class="btn-ghost" id="closeDetail">${ICON_RESET}取消筛选</button>
+    </div>
+    <div class="detail-grid">
+      <section>
+        <h3 class="sec-title">${ICON_GLOBE}域名</h3>
+        <dl class="kv">
+          <div class="row"><dt>父域名</dt><dd class="mono xs">${a.root ? esc(a.root) : "—"}</dd></div>
+          <div class="row"><dt>子域名</dt><dd><div class="chips">${
+            a.subs.length === 0 ? '<span class="dim">—</span>'
+            : a.subs.map((d) => `<span class="badge badge-secondary mono xs">${esc(d)}</span>`).join("")
+          }</div></dd></div>
+        </dl>
+        <h3 class="sec-title" style="margin-top:16px">${ICON_NET}端口 / 服务</h3>
+        <div class="list">${a.ports.map((p) => `
+          <div><span class="port mono">${p.port}</span>
+            <span class="badge ${p.web ? "badge-green" : "badge-outline"}">${esc(p.service)}</span>
+            <span class="banner">${esc(p.banner || "")}</span></div>`).join("")}
+        </div>
+      </section>
+      <section>
+        <h3 class="sec-title">${ICON_KEY}关联凭据</h3>
+        ${creds.length === 0
+          ? '<div class="empty">该资产暂无凭据。</div>'
+          : `<div class="list" style="display:block">${creds.map(credCard).join("")}</div>`}
+      </section>
+    </div>
+  </section>`;
+  document.getElementById("closeDetail").addEventListener("click", () => { selectedIP = null; renderAssets(); renderDetail(); });
+}
+
+function renderCreds() {
+  const e = enterprise();
+  const intranetIPs = new Set(e.ips.filter((a) => a.intranet).map((a) => a.ip));
+  const list = e.creds.filter((c) => intranetIPs.has(c.ip));
+  document.getElementById("credCount").textContent = list.length;
+  document.getElementById("credTable").innerHTML = list.length === 0
+    ? '<div class="pad">该企业暂无内网凭据。</div>'
+    : `<table style="min-width:880px">
+      <thead><tr><th>状态</th><th>类型</th><th>账号</th><th>域</th><th>目标</th><th>来源 / 证据</th><th>所在资产</th></tr></thead>
+      <tbody>${list.map((c) => `
+        <tr>
+          <td>${c.relation === "verified" ? '<span class="badge badge-green">已认证</span>' : '<span class="badge badge-outline">已发现</span>'}</td>
+          <td><span class="badge badge-secondary">${esc(c.type)}</span></td>
+          <td class="mono xs" style="font-weight:500">${esc(c.user)}</td>
+          <td class="mono xs">${c.domain ? esc(c.domain) : '<span class="dim">—</span>'}</td>
+          <td class="mono xs">${esc(c.target)}</td>
+          <td class="xs dim" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.source)}">${esc(c.source)}</td>
+          <td class="mono xs">${esc(c.ip)}</td>
+        </tr>`).join("")}
+      </tbody></table>`;
+}
+
+function render() { renderTabs(); renderAssets(); renderDetail(); renderCreds(); }
+render();
+</script>
+</body>
+</html>
