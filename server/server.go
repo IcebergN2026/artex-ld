@@ -44,7 +44,7 @@ import (
 // BuildVersion is the backend application version, injected from cmd/artex at
 // startup (which in turn gets it from -ldflags "-X main.version=<tag>").
 // Defaults to the current release for local builds. Exposed to the frontend via GET /api/health.
-var BuildVersion = "0.1.6"
+var BuildVersion = "0.1.7"
 
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
